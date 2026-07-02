@@ -18,6 +18,7 @@ APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
+APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_HTTP_TIMEOUT_MS=5000
 APP_LLM_TIMEOUT_MS=15000
 APP_READINESS_DEEP_CHECKS=true
@@ -82,13 +83,18 @@ X-Actor-Roles: user,admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
+X-Request-Nonce: <unique request nonce>
+X-Request-Body-SHA256: <sha256 of the exact HTTP request body bytes>
+X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/method/path/body hash>
 ```
 
 `X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed.
 
 `X-Actor-Signature` is an HMAC-SHA256 signature produced by the gateway with `APP_ACTOR_SIGNATURE_SECRET`. The canonical signed fields are: signature version `v1`, tenant id, user id, canonical comma-separated roles, canonical comma-separated scopes, and Unix timestamp. Roles and scopes are trimmed and empty entries are removed, but their order is preserved and not sorted. `X-Actor-Signature` may be the bare hex digest or `sha256=<digest>`. The service rejects missing signatures, invalid signatures, and timestamps outside `APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS` so that a downstream proxy or client cannot add `admin`, broaden scopes, or swap user ids after the gateway has authenticated the request.
 
-This is a deployable baseline for a trusted internal gateway. High-risk deployments should add gateway-side nonce or `jti` replay tracking for signed admin requests.
+When `APP_REQUEST_SIGNATURE_REQUIRED=true`, or when it is unset and `APP_REQUIRE_PRODUCTION=true`, the service also requires `X-Request-Nonce`, `X-Request-Body-SHA256`, and `X-Request-Signature` on non-health endpoints. The request signature binds the same actor claims to the actual HTTP method, path plus query string, request body hash, and nonce. The nonce is recorded in SQLite `api_request_nonces` until the actor signature time window expires, so a captured signed request cannot be replayed inside the normal timestamp window. In scaled production, move this nonce table to Redis/Postgres with the same unique key: tenant, actor user id, nonce.
+
+This is a deployable baseline for a trusted internal gateway. Higher-risk deployments should also add mTLS/JWT at the gateway boundary and central nonce storage across all replicas.
 
 This HMAC protects the Agent API ingress boundary. It is not a replacement for tenant/resource authorization inside the business service. `ToolBroker` enforces business tool scopes before every tool call, and your business API must still enforce tenant/resource ownership.
 
@@ -102,6 +108,9 @@ python scripts/sign_actor_headers.py \
   --user-id user_prod \
   --roles user \
   --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
+  --method POST \
+  --path /api/v1/chat/sessions \
+  --body '{"user_id":"user_prod"}' \
   --format curl
 ```
 
@@ -208,6 +217,7 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_KNOWLEDGE_API_KEY`
 - `APP_INTERNAL_API_KEY`
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
+- `APP_REQUEST_SIGNATURE_REQUIRED=true` is recommended; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.
@@ -230,14 +240,15 @@ python scripts/run_release_check.py \
 
 The default release check is deterministic and local. `--prod-smoke` is intentionally explicit because it calls a deployed service and can reach your real OpenAI, business, and knowledge integrations through `/api/v1/ready?deep=true` and `/api/v1/chat/messages`.
 
-- GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production header signer smoke test, and Docker image build.
+- GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
 - Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
-- `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --format curl` emits signed headers when the gateway secrets are present in the environment.
+- `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
+- Changing the path, body, body hash, or reusing the same `X-Request-Nonce` makes the request fail with `401`.
 - Calling `/api/v1/admin/evals/golden` in production fails with `409`; offline eval remains a CI/staging concern, not a live production tool call.
 - A production `/api/v1/chat/messages` request creates matching `X-Trace-Id` / `X-Request-Id` entries in your business backend logs.
 - The returned `trace_id` can query `/api/v1/admin/tools/audit?trace_id=...` with `audit:read`, and the records contain hashes/status/latency but no raw arguments, PII, tokens, or full upstream payloads.

@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 from collections.abc import Sequence
 
-from support_agent_lab.security.actor_signature import build_actor_headers
+from support_agent_lab.security.actor_signature import build_actor_headers, build_signed_request_headers
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,6 +20,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--roles", default="user")
     parser.add_argument("--scopes", required=True)
     parser.add_argument("--timestamp")
+    parser.add_argument("--nonce")
+    parser.add_argument("--method", help="HTTP method to bind a request signature, for example POST.")
+    parser.add_argument("--path", help="Path and query to bind, for example /api/v1/chat/messages.")
+    parser.add_argument("--body", default="", help="Raw request body to hash and bind. Defaults to empty.")
+    parser.add_argument("--body-file", help="Read the request body from a file instead of --body.")
     parser.add_argument("--format", choices=["plain", "curl", "json"], default="plain")
     return parser
 
@@ -38,15 +44,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     if missing:
         parser.error(f"missing required values: {', '.join(missing)}")
 
-    headers = build_actor_headers(
-        internal_api_key=args.internal_api_key,
-        signature_secret=args.signature_secret,
-        tenant_id=args.tenant_id,
-        user_id=args.user_id,
-        roles=args.roles,
-        scopes=args.scopes,
-        timestamp=args.timestamp,
-    )
+    if bool(args.method) != bool(args.path):
+        parser.error("--method and --path must be provided together for request signatures")
+    body = Path(args.body_file).read_bytes() if args.body_file else args.body
+    if args.method and args.path:
+        headers = build_signed_request_headers(
+            internal_api_key=args.internal_api_key,
+            signature_secret=args.signature_secret,
+            tenant_id=args.tenant_id,
+            user_id=args.user_id,
+            roles=args.roles,
+            scopes=args.scopes,
+            method=args.method,
+            path=args.path,
+            body=body,
+            timestamp=args.timestamp,
+            nonce=args.nonce,
+        )
+    else:
+        headers = build_actor_headers(
+            internal_api_key=args.internal_api_key,
+            signature_secret=args.signature_secret,
+            tenant_id=args.tenant_id,
+            user_id=args.user_id,
+            roles=args.roles,
+            scopes=args.scopes,
+            timestamp=args.timestamp,
+        )
 
     if args.format == "json":
         print(json.dumps(headers, indent=2, ensure_ascii=False))
@@ -62,4 +86,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

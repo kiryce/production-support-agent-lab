@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -11,7 +12,7 @@ from pathlib import Path
 import httpx
 
 from support_agent_lab.config import Settings
-from support_agent_lab.security.actor_signature import build_actor_headers
+from support_agent_lab.security.actor_signature import build_signed_request_headers
 
 
 SMOKE_ENV = {
@@ -36,7 +37,7 @@ def build_steps(include_docker: bool = False) -> list[GateStep]:
     steps = [
         GateStep("package health", [sys.executable, "-m", "pip", "check"]),
         GateStep(
-            "production actor signer smoke",
+            "production request signer smoke",
             [
                 sys.executable,
                 "-m",
@@ -49,6 +50,14 @@ def build_steps(include_docker: bool = False) -> list[GateStep]:
                 AGENT_SCOPES,
                 "--timestamp",
                 "1783014000",
+                "--nonce",
+                "nonce_release_check_1234567890",
+                "--method",
+                "POST",
+                "--path",
+                "/api/v1/chat/sessions",
+                "--body",
+                '{"user_id":"user_prod"}',
                 "--format",
                 "json",
             ],
@@ -136,16 +145,28 @@ def load_settings(root: Path) -> Settings:
     return Settings(_env_file=env_file if env_file.exists() else None)
 
 
-def production_headers(settings: Settings, user_id: str, roles: str, scopes: str) -> dict[str, str]:
+def production_headers(
+    settings: Settings,
+    user_id: str,
+    roles: str,
+    scopes: str,
+    *,
+    method: str,
+    path: str,
+    body: bytes | str = b"",
+) -> dict[str, str]:
     if not settings.app_internal_api_key or not settings.app_actor_signature_secret:
         raise RuntimeError("APP_INTERNAL_API_KEY and APP_ACTOR_SIGNATURE_SECRET are required")
-    return build_actor_headers(
+    return build_signed_request_headers(
         internal_api_key=settings.app_internal_api_key,
         signature_secret=settings.app_actor_signature_secret,
         tenant_id=settings.app_tenant_id,
         user_id=user_id,
         roles=roles,
         scopes=scopes,
+        method=method,
+        path=path,
+        body=body,
     )
 
 
@@ -161,8 +182,6 @@ def run_production_smoke(
     settings = load_settings(root)
     settings.validate_production_ready()
     base_url = base_url.rstrip("/")
-    user_headers = production_headers(settings, user_id=user_id, roles="user", scopes=AGENT_SCOPES)
-    admin_headers = production_headers(settings, user_id=admin_user_id, roles="admin", scopes=ADMIN_SCOPES)
 
     with httpx.Client(base_url=base_url, timeout=timeout_seconds) as client:
         ready = client.get("/api/v1/ready?deep=true")
@@ -171,12 +190,23 @@ def run_production_smoke(
         if ready_body.get("status") != "ok":
             raise RuntimeError(f"deep readiness returned {ready_body.get('status')}: {ready_body}")
 
+        session_body = _json_body({"user_id": user_id})
+        user_headers = production_headers(
+            settings,
+            user_id=user_id,
+            roles="user",
+            scopes=AGENT_SCOPES,
+            method="POST",
+            path="/api/v1/chat/sessions",
+            body=session_body,
+        )
+        user_headers["Content-Type"] = "application/json"
         tampered_headers = dict(user_headers)
         tampered_headers["X-Actor-Scopes"] = f"{AGENT_SCOPES},admin:read"
         tampered = client.post(
             "/api/v1/chat/sessions",
             headers=tampered_headers,
-            json={"user_id": user_id},
+            content=session_body,
         )
         if tampered.status_code != 401:
             raise RuntimeError(
@@ -187,34 +217,61 @@ def run_production_smoke(
         session = client.post(
             "/api/v1/chat/sessions",
             headers=user_headers,
-            json={"user_id": user_id},
+            content=session_body,
         )
         _require_json_status(session, 200, "create chat session")
         conversation_id = session.json()["conversation_id"]
 
-        chat = client.post(
-            "/api/v1/chat/messages",
-            headers=user_headers,
-            json={
+        chat_body = _json_body(
+            {
                 "conversation_id": conversation_id,
                 "user_id": user_id,
                 "content": message,
-            },
+            }
+        )
+        chat_headers = production_headers(
+            settings,
+            user_id=user_id,
+            roles="user",
+            scopes=AGENT_SCOPES,
+            method="POST",
+            path="/api/v1/chat/messages",
+            body=chat_body,
+        )
+        chat_headers["Content-Type"] = "application/json"
+        chat = client.post(
+            "/api/v1/chat/messages",
+            headers=chat_headers,
+            content=chat_body,
         )
         _require_json_status(chat, 200, "chat message")
         trace_id = chat.json()["trace_id"]
 
+        audit_path = f"/api/v1/admin/tools/audit?trace_id={trace_id}&limit=100"
         audit = client.get(
-            "/api/v1/admin/tools/audit",
-            headers=admin_headers,
-            params={"trace_id": trace_id, "limit": 100},
+            audit_path,
+            headers=production_headers(
+                settings,
+                user_id=admin_user_id,
+                roles="admin",
+                scopes=ADMIN_SCOPES,
+                method="GET",
+                path=audit_path,
+            ),
         )
         _require_json_status(audit, 200, "tool audit lookup")
 
+        incident_path = f"/api/v1/admin/incidents/runs/{trace_id}?include_memory=true"
         incident = client.get(
-            f"/api/v1/admin/incidents/runs/{trace_id}",
-            headers=admin_headers,
-            params={"include_memory": "true"},
+            incident_path,
+            headers=production_headers(
+                settings,
+                user_id=admin_user_id,
+                roles="admin",
+                scopes=ADMIN_SCOPES,
+                method="GET",
+                path=incident_path,
+            ),
         )
         _require_json_status(incident, 200, "incident bundle lookup")
         incident_body = incident.json()
@@ -233,6 +290,10 @@ def _require_json_status(response: httpx.Response, expected: int, step_name: str
         response.json()
     except ValueError as exc:
         raise RuntimeError(f"{step_name} did not return JSON: {response.text[:500]}") from exc
+
+
+def _json_body(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
 def run_step(step: GateStep, root: Path) -> int:

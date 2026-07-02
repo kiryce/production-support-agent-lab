@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -16,6 +16,13 @@ from support_agent_lab.api.auth import (
 )
 from support_agent_lab.bootstrap import AppContainer, create_container
 from support_agent_lab.api.readiness import ReadinessResponse, check_readiness
+from support_agent_lab.api.request_signature import (
+    RequestSignatureError,
+    read_body_and_restore,
+    request_signature_required,
+    reserve_request_nonce,
+    verify_request_signature,
+)
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import (
@@ -29,6 +36,7 @@ from support_agent_lab.models import (
 )
 from support_agent_lab.monitoring.monitor import MonitorSummary, summarize_monitor_events
 from support_agent_lab.tools.registry import ToolAuditRecord
+from support_agent_lab.config import get_settings
 
 
 class CreateSessionRequest(BaseModel):
@@ -80,6 +88,18 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="A production-shaped customer support agent for learning agent engineering.",
     )
+
+    @app.middleware("http")
+    async def production_request_signature_middleware(request: Request, call_next):
+        settings = get_settings()
+        if request_signature_required(settings, request.url.path):
+            body = await read_body_and_restore(request)
+            try:
+                verified = verify_request_signature(settings=settings, request=request, body=body)
+                reserve_request_nonce(settings, verified)
+            except RequestSignatureError as exc:
+                return JSONResponse(status_code=401, content={"detail": str(exc)})
+        return await call_next(request)
 
     @app.get("/api/v1/health")
     def health() -> dict[str, str]:

@@ -14,7 +14,7 @@
 | SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records | Postgres append-only events + Kafka stream + durable outbox |
 | Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
-| API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` trusted gateway claims | mTLS/JWT, nonce-backed replay defense, tenant isolation |
+| API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table | mTLS/JWT, centralized Redis/Postgres nonce table, tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
 
 ## 数据层

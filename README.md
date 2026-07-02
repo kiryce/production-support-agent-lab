@@ -87,6 +87,7 @@ APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
+APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_LLM_TIMEOUT_MS=15000
 ```
 
@@ -118,6 +119,9 @@ X-Actor-Roles: user 或 admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
+X-Request-Nonce: <unique request nonce>
+X-Request-Body-SHA256: <sha256 of the exact HTTP request body bytes>
+X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/method/path/body hash>
 ```
 
 Generate production smoke-test headers with the same signer used by the API tests:
@@ -130,10 +134,13 @@ $env:APP_ACTOR_SIGNATURE_SECRET="your_actor_signature_secret_min_32_chars"
   --user-id user_prod `
   --roles user `
   --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" `
+  --method POST `
+  --path /api/v1/chat/sessions `
+  --body '{"user_id":"user_prod"}' `
   --format curl
 ```
 
-After `pip install -e ".[dev]"`, the same helper is available as `support-agent-sign-headers`. It shares `support_agent_lab.security.actor_signature` with the server-side verifier, so gateway smoke tests use the exact canonicalization for roles, scopes, tenant, user id, and timestamp.
+After `pip install -e ".[dev]"`, the same helper is available as `support-agent-sign-headers`. It shares `support_agent_lab.security.actor_signature` with the server-side verifier, so gateway smoke tests use the exact canonicalization for roles, scopes, tenant, user id, timestamp, request nonce, method, path, and body hash.
 
 Admin endpoints 还需要管理面 scopes。示例：
 
@@ -142,9 +149,12 @@ X-Actor-Roles: admin
 X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,memory:replay,admin:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
+X-Request-Nonce: <unique request nonce>
+X-Request-Body-SHA256: <sha256 of the exact HTTP request body bytes>
+X-Request-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp/nonce/method/path/body hash>
 ```
 
-生产 API 不只检查网关共享密钥，还会校验 `X-Actor-*` claims 的 HMAC 签名和时间窗。网关必须用 `APP_ACTOR_SIGNATURE_SECRET` 对 tenant、user id、roles、scopes、timestamp 生成签名；如果请求到达服务后有人改了 user、role 或 scope，会直接返回 `401`。
+生产 API 不只检查网关共享密钥，还会校验 `X-Actor-*` claims 的 HMAC 签名和时间窗。`APP_REQUIRE_PRODUCTION=true` 时还会校验请求级签名：method、path+query、精确 body hash 和一次性 nonce 都必须进入签名，并通过 SQLite `api_request_nonces` 做时间窗内 replay 防护。网关必须用 `APP_ACTOR_SIGNATURE_SECRET` 对这些字段生成签名；如果请求到达服务后有人改了 user、role、scope、path、body 或重放同一个 nonce，会直接返回 `401`。
 
 `X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。`admin` 是角色，不是全能权限；读写 monitor、查看工具 audit、回放 memory、跑 eval 仍然要显式 scope。
 
@@ -305,7 +315,7 @@ If omitted in local mode, the actor defaults to `user_demo`. If the request body
 Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, `X-Actor-Scopes`, `X-Actor-Timestamp`, and `X-Actor-Signature` from your trusted gateway.
 For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `audit:read`. The bundled golden eval endpoint is for local/staging learning and is disabled in production.
 
-For production smoke tests, run `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --format curl` and add the emitted `-H` lines to the same curl commands below.
+For production smoke tests, run `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` and add the emitted `-H` lines to the same curl commands below. Use a fresh nonce for each request.
 
 创建会话：
 
@@ -537,7 +547,7 @@ python scripts/run_monitor_eval.py
 python scripts/run_retrieval_eval.py
 ```
 
-如果本机安装了 Docker，还可以追加容器镜像构建和镜像内 signer smoke：
+如果本机安装了 Docker，还可以追加容器镜像构建和镜像内 request-level signer smoke：
 
 ```bash
 python scripts/run_release_check.py --include-docker
@@ -701,7 +711,7 @@ GitHub Actions runs the same deterministic release gate on every push and pull r
 python scripts/run_release_check.py
 ```
 
-That gate covers package health, the HMAC actor-header signer smoke test, unit tests, golden evals, security regressions, tool-failure regressions, memory multiturn regressions, routing regressions, monitor regressions, and retrieval challenge evals. A second CI job builds the Docker image and runs a signer smoke test inside the image.
+That gate covers package health, the HMAC request-level signer smoke test, unit tests, golden evals, security regressions, tool-failure regressions, memory multiturn regressions, routing regressions, monitor regressions, and retrieval challenge evals. A second CI job builds the Docker image and runs a request-level signer smoke test inside the image.
 
 That CI is intentionally local and deterministic: it does not call OpenAI or your production CRM/OMS/knowledge services. Eval CLIs return a non-zero exit code when their report has failures, so the workflow is a real regression gate.
 

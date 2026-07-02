@@ -76,6 +76,14 @@ def test_require_production_rejects_accidental_local_mode():
         settings.validate_production_ready()
 
 
+def test_require_production_enables_request_signature_by_default():
+    settings = Settings(app_env="production", app_require_production=True)
+
+    assert settings.require_request_signature is True
+    assert Settings(app_env="production", app_require_production=True, app_request_signature_required=False).require_request_signature is False
+    assert Settings(app_env="production", app_require_production=False).require_request_signature is False
+
+
 def test_production_mode_rejects_demo_tenant():
     settings = Settings(
         app_env="production",

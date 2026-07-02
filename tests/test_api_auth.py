@@ -1,4 +1,5 @@
 import time
+import json
 
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
@@ -8,7 +9,7 @@ from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
 from support_agent_lab.models import IntentType, MonitorEvent, RiskLevel
-from support_agent_lab.security.actor_signature import sign_actor_claims
+from support_agent_lab.security.actor_signature import build_signed_request_headers, sign_actor_claims
 
 
 ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
@@ -63,6 +64,37 @@ def _production_headers(
             timestamp=timestamp,
         ),
     }
+
+
+def _json_body(payload: dict) -> bytes:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def _signed_request_headers(
+    *,
+    method: str,
+    path: str,
+    body: bytes | str = b"",
+    user_id: str = "user_prod",
+    roles: str = "user",
+    scopes: str = "crm:read",
+    nonce: str = "nonce_1234567890abcdef",
+) -> dict[str, str]:
+    headers = build_signed_request_headers(
+        internal_api_key="secret",
+        signature_secret=ACTOR_SIGNATURE_SECRET,
+        tenant_id="demo_tenant",
+        user_id=user_id,
+        roles=roles,
+        scopes=scopes,
+        method=method,
+        path=path,
+        body=body,
+        nonce=nonce,
+    )
+    if body:
+        headers["Content-Type"] = "application/json"
+    return headers
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -405,6 +437,83 @@ def test_production_api_rejects_tampered_signed_scopes(tmp_path, monkeypatch):
 
     assert response.status_code == 401
     assert response.json()["detail"] == "Production actor signature is invalid."
+
+
+def test_production_request_signature_required_when_require_production(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "true")
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+    get_settings.cache_clear()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/chat/sessions",
+            headers=_production_headers(roles="user", scopes="crm:read"),
+            json={"user_id": "user_prod"},
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 401
+    assert "X-Request-Nonce" in response.json()["detail"]
+
+
+def test_production_request_signature_rejects_replayed_nonce(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "true")
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+    get_settings.cache_clear()
+    body = _json_body({"user_id": "user_prod"})
+    headers = _signed_request_headers(
+        method="POST",
+        path="/api/v1/chat/sessions",
+        body=body,
+        scopes="crm:read",
+        nonce="nonce_replay_1234567890",
+    )
+    try:
+        client = TestClient(app)
+        first = client.post("/api/v1/chat/sessions", headers=headers, content=body)
+        replay = client.post("/api/v1/chat/sessions", headers=headers, content=body)
+    finally:
+        get_settings.cache_clear()
+
+    assert first.status_code == 200
+    assert replay.status_code == 401
+    assert "already been used" in replay.json()["detail"]
+
+
+def test_production_request_signature_rejects_tampered_body(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "true")
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+    get_settings.cache_clear()
+    signed_body = _json_body({"user_id": "user_prod"})
+    tampered_body = _json_body({"user_id": "user_other"})
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/chat/sessions",
+            headers=_signed_request_headers(
+                method="POST",
+                path="/api/v1/chat/sessions",
+                body=signed_body,
+                scopes="crm:read",
+                nonce="nonce_tamper_123456789",
+            ),
+            content=tampered_body,
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 401
+    assert "Body-SHA256" in response.json()["detail"]
 
 
 def test_admin_can_list_tool_audit_records_without_raw_arguments(tmp_path, monkeypatch):

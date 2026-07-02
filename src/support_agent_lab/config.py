@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_internal_api_key: str | None = None
     app_actor_signature_secret: str | None = None
     app_actor_signature_max_age_seconds: int = Field(default=300, ge=30, le=3600)
+    app_request_signature_required: bool | None = None
     app_http_timeout_ms: int = Field(default=5000, ge=500, le=60000)
     app_llm_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
     app_readiness_deep_checks: bool | None = None
@@ -76,6 +77,12 @@ class Settings(BaseSettings):
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Production mode is not ready; missing required config: {joined}")
+
+    @property
+    def require_request_signature(self) -> bool:
+        if self.app_request_signature_required is not None:
+            return self.app_request_signature_required
+        return self.is_production and self.app_require_production
 
     def _looks_like_placeholder(self, value: str | None) -> bool:
         if not value:

@@ -92,6 +92,32 @@ class SQLiteEventStore:
             payload=event.model_dump(mode="json"),
         )
 
+    def reserve_api_request_nonce(
+        self,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        nonce: str,
+        request_hash: str,
+        expires_at: str,
+    ) -> bool:
+        now = utc_now().isoformat()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            conn.execute("delete from api_request_nonces where expires_at <= ?", (now,))
+            try:
+                conn.execute(
+                    """
+                    insert into api_request_nonces (
+                      tenant_id, actor_user_id, nonce, request_hash, created_at, expires_at
+                    ) values (?, ?, ?, ?, ?, ?)
+                    """,
+                    (tenant_id, actor_user_id, nonce, request_hash, now, expires_at),
+                )
+            except sqlite3.IntegrityError:
+                return False
+        return True
+
     def reserve(self, key: str, arg_hash: str) -> IdempotencyDecision:
         now = utc_now().isoformat()
         with self._connect() as conn:
@@ -461,6 +487,11 @@ class SQLiteEventStore:
             ).fetchone()
             if not tool_audit_records:
                 raise RuntimeError("tool_audit_records table is missing")
+            api_request_nonces = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'api_request_nonces'"
+            ).fetchone()
+            if not api_request_nonces:
+                raise RuntimeError("api_request_nonces table is missing")
             conn.execute("begin immediate")
             conn.execute(
                 """
@@ -559,3 +590,17 @@ class SQLiteEventStore:
             conn.execute("create index if not exists idx_tool_audit_tenant on tool_audit_records(tenant_id)")
             conn.execute("create index if not exists idx_tool_audit_trace on tool_audit_records(trace_id)")
             conn.execute("create index if not exists idx_tool_audit_tool on tool_audit_records(tool_name)")
+            conn.execute(
+                """
+                create table if not exists api_request_nonces (
+                  tenant_id text not null,
+                  actor_user_id text not null,
+                  nonce text not null,
+                  request_hash text not null,
+                  created_at text not null,
+                  expires_at text not null,
+                  primary key (tenant_id, actor_user_id, nonce)
+                )
+                """
+            )
+            conn.execute("create index if not exists idx_api_request_nonces_expires on api_request_nonces(expires_at)")

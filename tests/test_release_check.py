@@ -9,7 +9,7 @@ def test_default_release_gate_covers_all_regression_suites():
 
     assert names == [
         "package health",
-        "production actor signer smoke",
+        "production request signer smoke",
         "unit tests",
         "golden eval",
         "security regression eval",

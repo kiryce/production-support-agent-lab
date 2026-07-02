@@ -5,8 +5,11 @@ import pytest
 from support_agent_lab.api.auth import _get_production_actor
 from support_agent_lab.scripts.sign_actor_headers import main as sign_headers_main
 from support_agent_lab.security.actor_signature import (
+    body_sha256,
     build_actor_headers,
+    build_signed_request_headers,
     canonical_actor_claims,
+    canonical_request_claims,
     sign_actor_claims,
 )
 
@@ -84,6 +87,41 @@ def test_actor_signature_canonicalizes_csv_and_sequence_inputs():
     )
 
 
+def test_signed_request_headers_bind_method_path_nonce_and_body():
+    headers = build_signed_request_headers(
+        internal_api_key="internal-key",
+        signature_secret=ACTOR_SIGNATURE_SECRET,
+        tenant_id="tenant_live",
+        user_id="user_prod",
+        roles="user",
+        scopes="crm:read",
+        method="POST",
+        path="/api/v1/chat/messages",
+        body='{"content":"hello"}',
+        timestamp="1783014000",
+        nonce="nonce_1234567890abcdef",
+    )
+
+    assert headers["X-Request-Nonce"] == "nonce_1234567890abcdef"
+    assert headers["X-Request-Body-SHA256"] == body_sha256('{"content":"hello"}')
+    assert headers["X-Request-Signature"].startswith("sha256=")
+    assert (
+        canonical_request_claims(
+            tenant_id="tenant_live",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header="crm:read",
+            timestamp="1783014000",
+            nonce="nonce_1234567890abcdef",
+            method="post",
+            path="/api/v1/chat/messages",
+            body_hash=headers["X-Request-Body-SHA256"],
+        )
+        == "v1\ntenant_live\nuser_prod\nuser\ncrm:read\n1783014000\nnonce_1234567890abcdef\nPOST\n/api/v1/chat/messages\n"
+        + headers["X-Request-Body-SHA256"]
+    )
+
+
 def test_sign_actor_headers_cli_outputs_json(capsys):
     result = sign_headers_main(
         [
@@ -111,6 +149,43 @@ def test_sign_actor_headers_cli_outputs_json(capsys):
     assert headers["X-Internal-Auth"] == "internal-key"
     assert headers["X-Actor-Roles"] == "admin,user"
     assert headers["X-Actor-Signature"].startswith("sha256=")
+
+
+def test_sign_actor_headers_cli_can_bind_request_signature(capsys):
+    result = sign_headers_main(
+        [
+            "--tenant-id",
+            "tenant_live",
+            "--internal-api-key",
+            "internal-key",
+            "--signature-secret",
+            ACTOR_SIGNATURE_SECRET,
+            "--user-id",
+            "user_prod",
+            "--roles",
+            "user",
+            "--scopes",
+            "crm:read",
+            "--timestamp",
+            "1783014000",
+            "--nonce",
+            "nonce_1234567890abcdef",
+            "--method",
+            "POST",
+            "--path",
+            "/api/v1/chat/messages",
+            "--body",
+            '{"content":"hello"}',
+            "--format",
+            "json",
+        ]
+    )
+
+    assert result == 0
+    headers = json.loads(capsys.readouterr().out)
+    assert headers["X-Request-Nonce"] == "nonce_1234567890abcdef"
+    assert headers["X-Request-Body-SHA256"] == body_sha256('{"content":"hello"}')
+    assert headers["X-Request-Signature"].startswith("sha256=")
 
 
 def test_sign_actor_headers_cli_requires_gateway_secrets(monkeypatch):

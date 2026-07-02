@@ -44,4 +44,8 @@ jobs:
               --roles user \
               --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
               --timestamp 1783014000 \
+              --nonce nonce_docker_smoke_1234567890 \
+              --method POST \
+              --path /api/v1/chat/sessions \
+              --body '{"user_id":"user_prod"}' \
               --format json
