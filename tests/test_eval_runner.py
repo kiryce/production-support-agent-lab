@@ -2,7 +2,9 @@ import pytest
 
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.evals.monitor_runner import load_suite as load_monitor_suite
+from support_agent_lab.evals.monitor_runner import report_exit_code as monitor_report_exit_code
 from support_agent_lab.evals.monitor_runner import run_suite as run_monitor_suite
+from support_agent_lab.evals.runner import report_exit_code as eval_report_exit_code
 from support_agent_lab.evals.runner import load_cases, run_cases
 
 
@@ -15,6 +17,8 @@ async def test_golden_core_eval_passes():
 
     assert report.total == 5
     assert report.passed == 5
+    assert eval_report_exit_code(report) == 0
+    assert eval_report_exit_code(report.model_copy(update={"passed": 4})) == 1
 
 
 @pytest.mark.asyncio
@@ -73,3 +77,5 @@ async def test_monitor_regression_eval_passes():
     assert report.summary.by_failure_type["PROMPT_INJECTION_ATTEMPT"] == 1
     assert report.summary.by_failure_type["FORBIDDEN"] == 1
     assert report.summary.by_failure_type["TIMEOUT"] == 1
+    assert monitor_report_exit_code(report) == 0
+    assert monitor_report_exit_code(report.model_copy(update={"passed": False})) == 1

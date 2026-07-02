@@ -82,8 +82,8 @@ monitor.review
 
 ## 发布策略
 
-- PR 跑 unit tests 和 golden eval。
-- merge 前跑 memory、routing、tool failure、monitor regression、retrieval challenge。
+- PR 跑 unit tests、golden/security/tool/memory/routing eval、monitor regression、retrieval challenge、signer smoke test 和 Docker build。
+- merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
 - 发布前 staging replay。
 - canary 1% 流量。
 - P0/P1 自动告警和回滚。

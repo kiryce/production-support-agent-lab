@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from support_agent_lab.bootstrap import create_container
@@ -245,12 +246,17 @@ async def async_main(path: str) -> EvalReport:
     return report
 
 
-def main() -> None:
+def report_exit_code(report: EvalReport) -> int:
+    return 0 if report.passed == report.total else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run offline agent evals.")
     parser.add_argument("path", nargs="?", default="examples/evals/golden_core.json")
-    args = parser.parse_args()
-    asyncio.run(async_main(args.path))
+    args = parser.parse_args(argv)
+    report = asyncio.run(async_main(args.path))
+    return report_exit_code(report)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -214,6 +214,7 @@ If any are missing, unsupported, or still look like placeholders such as `replac
 
 Do not prove production mode by checking only that the container starts. Verify:
 
+- GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production header signer smoke test, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.

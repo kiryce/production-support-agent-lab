@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test-and-eval:
     runs-on: ubuntu-latest
@@ -16,6 +19,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
+      - name: Package health
+        run: python -m pip check
+      - name: Production header signer smoke
+        env:
+          APP_TENANT_ID: tenant_live
+          APP_INTERNAL_API_KEY: internal-key
+          APP_ACTOR_SIGNATURE_SECRET: actor-signing-secret-with-32-byte-minimum
+        run: |
+          support-agent-sign-headers \
+            --user-id user_prod \
+            --roles user \
+            --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
+            --timestamp 1783014000 \
+            --format json
       - name: Unit tests
         run: python -m pytest
       - name: Golden eval
@@ -32,3 +49,27 @@ jobs:
         run: python scripts/run_monitor_eval.py
       - name: Retrieval challenge eval
         run: python scripts/run_retrieval_eval.py
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t production-support-agent-lab:ci .
+      - name: Smoke package inside image
+        env:
+          APP_TENANT_ID: tenant_live
+          APP_INTERNAL_API_KEY: internal-key
+          APP_ACTOR_SIGNATURE_SECRET: actor-signing-secret-with-32-byte-minimum
+        run: |
+          docker run --rm \
+            -e APP_TENANT_ID \
+            -e APP_INTERNAL_API_KEY \
+            -e APP_ACTOR_SIGNATURE_SECRET \
+            production-support-agent-lab:ci \
+            python scripts/sign_actor_headers.py \
+              --user-id user_prod \
+              --roles user \
+              --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" \
+              --timestamp 1783014000 \
+              --format json

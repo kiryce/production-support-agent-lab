@@ -647,6 +647,21 @@ python scripts/run_monitor_eval.py
 
 ## 评测
 
+GitHub Actions runs the same regression gate on every push and pull request:
+
+- `python -m pytest`
+- `examples/evals/golden_core.json`
+- `examples/evals/security_regression.json`
+- `examples/evals/tool_failure_regression.json`
+- `examples/evals/memory_multiturn_regression.json`
+- `examples/evals/routing_regression.json`
+- `scripts/run_monitor_eval.py`
+- `scripts/run_retrieval_eval.py`
+- `support-agent-sign-headers` smoke test
+- Docker image build plus a signer smoke test inside the image
+
+That CI is intentionally local and deterministic: it does not call OpenAI or your production CRM/OMS/knowledge services. Eval CLIs return a non-zero exit code when their report has failures, so the workflow is a real regression gate.
+
 运行：
 
 ```bash

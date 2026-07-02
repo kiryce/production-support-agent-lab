@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -95,13 +96,18 @@ def _check_case(
     return failures
 
 
-def main() -> None:
+def report_exit_code(report: RetrievalEvalReport) -> int:
+    return 0 if report.passed == report.total else 1
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run retrieval challenge evals.")
     parser.add_argument("path", nargs="?", default="examples/evals/retrieval_challenge.json")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     report = run_cases(load_cases(args.path))
     print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    return report_exit_code(report)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
