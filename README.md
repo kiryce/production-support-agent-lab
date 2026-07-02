@@ -324,6 +324,7 @@ pytest
 python scripts/run_eval.py
 python scripts/run_eval.py examples/evals/security_regression.json
 python scripts/run_eval.py examples/evals/tool_failure_regression.json
+python scripts/run_eval.py examples/evals/routing_regression.json
 python scripts/run_retrieval_eval.py
 ```
 
@@ -332,6 +333,7 @@ python scripts/run_retrieval_eval.py
 - 单测是否全绿。
 - golden eval 是否 `passed=5`。
 - tool failure eval 是否 `passed=5`。
+- routing regression 是否 `passed=10`。
 - retrieval challenge 是否 `passed=5`。
 - 每条 case 调用了哪些工具。
 
@@ -375,7 +377,13 @@ data/local/support-agent-lab.db
 
 ### 第 4 步：理解 routing
 
-读 `agent/router.py`。
+读 `agent/router.py` 和 `docs/routing-playbook.md`。
+
+运行：
+
+```bash
+python scripts/run_eval.py examples/evals/routing_regression.json
+```
 
 小练习：把 angry sentiment 的投诉都强制 `handoff_required=true`，然后补测试。
 
@@ -446,6 +454,19 @@ python scripts/run_eval.py
 - `shipping.track` 注入 `TIMEOUT` 时不编造最新物流节点。
 - CRM 用户不存在时不编造客户或订单。
 
+`routing_regression.json` 覆盖：
+
+- 退款/退货路由到 `order_agent`。
+- 订单物流查询路由到 `order_agent` 并触发 `shipping.track`。
+- 缺少订单号时仍走订单路径，但只能搜索候选订单，不编造物流。
+- 发票/账单路由到 `billing_agent`。
+- 技术故障路由到 `tech_agent`。
+- 愤怒投诉路由到 `retention_agent` 并人工升级。
+- 账号安全路由到 `safety_agent`，并禁止订单/物流工具。
+- prompt injection 会覆盖业务意图，进入 `safety_agent`。
+- PII 只记录 policy finding，不错误覆盖正常订单路由。
+- 开放域问题路由到 `general_agent`。
+
 `retrieval_challenge.json` 覆盖：
 
 - 退换货政策召回。
@@ -457,7 +478,11 @@ python scripts/run_eval.py
 评测不只看最终自然语言，还检查：
 
 - intent 是否正确。
+- route target 是否正确。
+- route needs_human 是否符合人工介入策略。
+- allowed tools 是否符合路由白名单。
 - required tools 是否调用。
+- policy finding 是否按预期出现或不出现。
 - answer 是否包含必须信息。
 - 是否避免违规承诺。
 - 是否正确升级人工。

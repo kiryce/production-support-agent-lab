@@ -229,9 +229,17 @@ class MonitorEvent(BaseModel):
 
 
 class EvalExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     intent: IntentType | None = None
+    route_target: RouteTarget | None = None
+    route_needs_human: bool | None = None
     required_tools: list[str] = Field(default_factory=list)
+    required_allowed_tools: list[str] = Field(default_factory=list)
+    forbidden_allowed_tools: list[str] = Field(default_factory=list)
     required_error_codes: list[str] = Field(default_factory=list)
+    required_policy_codes: list[str] = Field(default_factory=list)
+    forbidden_policy_codes: list[str] = Field(default_factory=list)
     must_include: list[str] = Field(default_factory=list)
     must_not_include: list[str] = Field(default_factory=list)
     escalation: bool | None = None
@@ -256,6 +264,8 @@ ToolFaultErrorCode = Literal[
 
 
 class EvalToolFault(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tool_name: str
     error_code: ToolFaultErrorCode
     message: str = "Injected eval tool fault."
@@ -265,6 +275,8 @@ class EvalToolFault(BaseModel):
 
 
 class EvalCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     case_id: str
     scenario: str
     locale: str = "zh-CN"
@@ -281,8 +293,12 @@ class EvalCaseResult(BaseModel):
     score: float
     failures: list[str] = Field(default_factory=list)
     observed_intent: IntentType
+    observed_route: RouteTarget | None = None
+    observed_route_needs_human: bool | None = None
+    observed_allowed_tools: list[str] = Field(default_factory=list)
     observed_tools: list[str]
     observed_error_codes: list[str] = Field(default_factory=list)
+    observed_policy_codes: list[str] = Field(default_factory=list)
     answer: str
 
 

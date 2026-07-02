@@ -100,7 +100,7 @@ HTTP message
 关键对象在 `models.py`：
 
 - `IntentResult`: 主意图、置信度、实体、缺失槽位、情绪。
-- `RouteDecision`: 目标 agent、路由原因、工具白名单。
+- `RouteDecision`: 目标 agent、路由原因、工具白名单。Routing regression 会断言 `route.target`、`needs_human`、`allowed_tools` 和 policy codes，避免只靠最终回答判断分流是否正确。
 - `AgentPlan`: 工具请求、检索 query、回复目标、handoff 原因。
 - `AgentRunTrace`: 一次 agent run 的完整轨迹。
 - `ToolResult`: 工具结果、错误码、retryable、耗时。

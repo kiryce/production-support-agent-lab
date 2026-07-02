@@ -35,3 +35,14 @@ async def test_tool_failure_regression_eval_passes():
 
     assert report.total == 5
     assert report.passed == 5
+
+
+@pytest.mark.asyncio
+async def test_routing_regression_eval_passes():
+    container = create_container()
+    cases = load_cases("examples/evals/routing_regression.json")
+
+    report = await run_cases(cases, container.orchestrator)
+
+    assert report.total == 10
+    assert report.passed == 10

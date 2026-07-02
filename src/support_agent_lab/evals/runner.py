@@ -40,7 +40,8 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
         observed_error_codes = [
             tool.error_code for tool in response.trace.tool_results if tool.error_code
         ]
-        failures = _check_case(case, response, observed_tools, observed_error_codes)
+        observed_policy_codes = [finding.code for finding in response.trace.policy_findings]
+        failures = _check_case(case, response, observed_tools, observed_error_codes, observed_policy_codes)
         score = max(0.0, 1.0 - 0.2 * len(failures))
         results.append(
             EvalCaseResult(
@@ -49,8 +50,12 @@ async def run_cases(cases: list[EvalCase], orchestrator) -> EvalReport:
                 score=score,
                 failures=failures,
                 observed_intent=response.trace.intent.primary,
+                observed_route=response.trace.route.target if response.trace.route else None,
+                observed_route_needs_human=response.trace.route.needs_human if response.trace.route else None,
+                observed_allowed_tools=response.trace.route.allowed_tools if response.trace.route else [],
                 observed_tools=observed_tools,
                 observed_error_codes=observed_error_codes,
+                observed_policy_codes=observed_policy_codes,
                 answer=response.message.content,
             )
         )
@@ -63,18 +68,41 @@ def _check_case(
     response,
     observed_tools: list[str],
     observed_error_codes: list[str],
+    observed_policy_codes: list[str],
 ) -> list[str]:
     failures: list[str] = []
     expected = case.expected
     answer = response.message.content
     if expected.intent and response.trace.intent.primary != expected.intent:
         failures.append(f"intent expected {expected.intent.value}, got {response.trace.intent.primary.value}")
+    observed_route = response.trace.route.target if response.trace.route else None
+    observed_allowed_tools = response.trace.route.allowed_tools if response.trace.route else []
+    if expected.route_target and observed_route != expected.route_target:
+        got = observed_route.value if observed_route else "None"
+        failures.append(f"route expected {expected.route_target.value}, got {got}")
+    observed_route_needs_human = response.trace.route.needs_human if response.trace.route else None
+    if expected.route_needs_human is not None and observed_route_needs_human != expected.route_needs_human:
+        failures.append(
+            f"route needs_human expected {expected.route_needs_human}, got {observed_route_needs_human}"
+        )
+    for tool in expected.required_allowed_tools:
+        if tool not in observed_allowed_tools:
+            failures.append(f"allowed tool missing from route: {tool}")
+    for tool in expected.forbidden_allowed_tools:
+        if tool in observed_allowed_tools:
+            failures.append(f"forbidden tool present in route: {tool}")
     for tool in expected.required_tools:
         if tool not in observed_tools:
             failures.append(f"required tool not called: {tool}")
     for error_code in expected.required_error_codes:
         if error_code not in observed_error_codes:
             failures.append(f"required error code not observed: {error_code}")
+    for code in expected.required_policy_codes:
+        if code not in observed_policy_codes:
+            failures.append(f"required policy code not observed: {code}")
+    for code in expected.forbidden_policy_codes:
+        if code in observed_policy_codes:
+            failures.append(f"forbidden policy code observed: {code}")
     for text in expected.must_include:
         if text not in answer:
             failures.append(f"answer missing: {text}")

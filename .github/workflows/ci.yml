@@ -24,5 +24,7 @@ jobs:
         run: python scripts/run_eval.py examples/evals/security_regression.json
       - name: Tool failure regression eval
         run: python scripts/run_eval.py examples/evals/tool_failure_regression.json
+      - name: Routing regression eval
+        run: python scripts/run_eval.py examples/evals/routing_regression.json
       - name: Retrieval challenge eval
         run: python scripts/run_retrieval_eval.py
