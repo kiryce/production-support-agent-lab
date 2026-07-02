@@ -63,6 +63,8 @@ APP_BUSINESS_API_KEY=...
 APP_KNOWLEDGE_API_BASE_URL=https://your-knowledge-service
 APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
+APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
+APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
 APP_LLM_TIMEOUT_MS=15000
 ```
 
@@ -92,6 +94,8 @@ X-Internal-Auth: <APP_INTERNAL_API_KEY>
 X-Actor-User-Id: <authenticated user>
 X-Actor-Roles: user 或 admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
+X-Actor-Timestamp: <unix timestamp>
+X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
 Admin endpoints 还需要管理面 scopes。示例：
@@ -99,7 +103,11 @@ Admin endpoints 还需要管理面 scopes。示例：
 ```text
 X-Actor-Roles: admin
 X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,eval:run,memory:replay,admin:read
+X-Actor-Timestamp: <unix timestamp>
+X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
+
+生产 API 不只检查网关共享密钥，还会校验 `X-Actor-*` claims 的 HMAC 签名和时间窗。网关必须用 `APP_ACTOR_SIGNATURE_SECRET` 对 tenant、user id、roles、scopes、timestamp 生成签名；如果请求到达服务后有人改了 user、role 或 scope，会直接返回 `401`。
 
 `X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。`admin` 是角色，不是全能权限；读写 monitor、查看工具 audit、回放 memory、跑 eval 仍然要显式 scope。
 
@@ -255,7 +263,7 @@ X-Demo-Role: user
 
 If omitted in local mode, the actor defaults to `user_demo`. If the request body `user_id` does not match `X-Demo-User`, the API returns `403`. Admin endpoints require `X-Demo-Role: admin`.
 
-Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, and `X-Actor-Roles` from your trusted gateway.
+Production mode does not accept these as authentication. Use `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, `X-Actor-Scopes`, `X-Actor-Timestamp`, and `X-Actor-Signature` from your trusted gateway.
 For admin APIs, also pass the matching management scope such as `monitor:read`, `monitor:write`, `events:read`, `memory:replay`, or `eval:run`.
 
 创建会话：
@@ -765,7 +773,7 @@ python -m support_agent_lab.mcp.server
 | Tool audit | SQLite tool audit records + in-process recent audit_log + admin audit API | SIEM / warehouse / audit center |
 | API | FastAPI service | API service + worker service + autoscaling |
 
-Local API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teach the boundary. Production mode uses a trusted gateway principal and rejects missing `X-Internal-Auth`.
+Local API auth is intentionally lightweight: `X-Demo-User` and `X-Demo-Role` teach the boundary. Production mode uses a trusted gateway principal, requires `X-Internal-Auth`, and verifies HMAC-signed actor claims before trusting `X-Actor-*`.
 
 ## Roadmap
 

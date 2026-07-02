@@ -38,9 +38,10 @@
 
 ## API 身份边界
 
-Local mode uses `X-Demo-User` and `X-Demo-Role` as a lightweight teaching actor. Production mode uses `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, and required `X-Actor-Scopes` from a trusted gateway.
+Local mode uses `X-Demo-User` and `X-Demo-Role` as a lightweight teaching actor. Production mode uses `X-Internal-Auth` plus HMAC-signed `X-Actor-User-Id`, `X-Actor-Roles`, `X-Actor-Scopes`, and `X-Actor-Timestamp` from a trusted gateway.
 
 - API identity comes from trusted request context, not from a freely editable JSON body.
+- Signed actor claims fail closed if a client or proxy tampers with user id, roles, scopes, or timestamp after gateway authentication.
 - Tool calls still enforce resource ownership, because API checks are not enough by themselves.
 
 Do not expose `X-Demo-*` in production.

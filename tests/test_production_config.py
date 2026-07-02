@@ -6,6 +6,9 @@ from support_agent_lab.config import get_settings
 from support_agent_lab.llm.gateway import create_llm_gateway
 
 
+ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
+
+
 def test_production_mode_requires_real_provider_and_integrations():
     settings = Settings(app_env="production")
 
@@ -24,6 +27,7 @@ def test_production_mode_rejects_local_deterministic_llm():
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
     with pytest.raises(RuntimeError, match="APP_MODEL_PROVIDER=openai"):
@@ -41,6 +45,7 @@ def test_production_mode_accepts_real_integration_config():
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
     settings.validate_production_ready()
@@ -57,6 +62,7 @@ def test_production_mode_rejects_placeholder_values():
         app_knowledge_api_base_url="https://knowledge.example.com",
         app_knowledge_api_key="replace_with_real_knowledge_token",
         app_internal_api_key="replace_with_real_internal_gateway_secret",
+        app_actor_signature_secret="replace_with_real_actor_signature_secret",
     )
 
     with pytest.raises(RuntimeError, match="placeholder"):
@@ -80,6 +86,7 @@ def test_production_mode_rejects_demo_tenant():
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
     with pytest.raises(RuntimeError, match="APP_TENANT_ID"):
@@ -95,6 +102,7 @@ def test_production_mode_rejects_missing_adapter_keys():
         app_business_api_base_url="https://business.internal.test",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
     with pytest.raises(RuntimeError, match="APP_BUSINESS_API_KEY"):
@@ -112,6 +120,7 @@ def test_production_mode_rejects_unsupported_event_store_url():
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_database_url="postgresql://events.internal/support",
     )
 
@@ -126,6 +135,41 @@ def test_openai_provider_requires_api_key():
         create_llm_gateway(settings)
 
 
+def test_production_mode_requires_actor_signature_secret():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+    )
+
+    with pytest.raises(RuntimeError, match="APP_ACTOR_SIGNATURE_SECRET"):
+        settings.validate_production_ready()
+
+
+def test_production_mode_rejects_short_actor_signature_secret():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+        app_actor_signature_secret="short-secret",
+    )
+
+    with pytest.raises(RuntimeError, match="at least 32 characters"):
+        settings.validate_production_ready()
+
+
 def test_production_container_uses_http_integrations_not_demo_store(monkeypatch, tmp_path):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_TENANT_ID", "tenant_live")
@@ -136,6 +180,7 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
     monkeypatch.setenv("APP_KNOWLEDGE_API_BASE_URL", "https://knowledge.internal.test")
     monkeypatch.setenv("APP_KNOWLEDGE_API_KEY", "knowledge-token")
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "internal-test-key")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
     try:

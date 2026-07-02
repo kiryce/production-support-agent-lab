@@ -97,6 +97,7 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
         app_internal_api_key="internal-test-key",
+        app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
         app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
     )
     container = AppContainer(

@@ -1,11 +1,67 @@
+import time
+
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
-from support_agent_lab.api.auth import get_request_actor, _get_production_actor
+from support_agent_lab.api.auth import get_request_actor, sign_actor_claims, _get_production_actor
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
 from support_agent_lab.models import IntentType, MonitorEvent, RiskLevel
+
+
+ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
+
+
+def _actor_signature_kwargs(
+    *,
+    user_id: str = "user_prod",
+    roles_header: str = "admin,user",
+    scopes_header: str = "crm:read,kb:read",
+    timestamp: str | None = None,
+    secret: str = ACTOR_SIGNATURE_SECRET,
+):
+    issued_at = timestamp or str(int(time.time()))
+    return {
+        "actor_signature_secret": secret,
+        "actor_signature_timestamp": issued_at,
+        "actor_signature": sign_actor_claims(
+            secret=secret,
+            tenant_id="demo_tenant",
+            user_id=user_id,
+            roles_header=roles_header,
+            scopes_header=scopes_header,
+            timestamp=issued_at,
+        ),
+        "tenant_id": "demo_tenant",
+    }
+
+
+def _production_headers(
+    *,
+    user_id: str = "user_prod",
+    roles: str = "admin",
+    scopes: str,
+    internal_key: str = "secret",
+    secret: str = ACTOR_SIGNATURE_SECRET,
+) -> dict[str, str]:
+    timestamp = str(int(time.time()))
+    return {
+        "X-Internal-Auth": internal_key,
+        "X-Actor-User-Id": user_id,
+        "X-Actor-Roles": roles,
+        "X-Actor-Scopes": scopes,
+        "X-Actor-Timestamp": timestamp,
+        "X-Actor-Signature": "sha256="
+        + sign_actor_claims(
+            secret=secret,
+            tenant_id="demo_tenant",
+            user_id=user_id,
+            roles_header=roles,
+            scopes_header=scopes,
+            timestamp=timestamp,
+        ),
+    }
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -76,11 +132,154 @@ def test_production_actor_uses_gateway_principal():
         user_id="user_prod",
         roles_header="admin,user",
         scopes_header="crm:read,kb:read",
+        **_actor_signature_kwargs(),
     )
 
     assert actor.user_id == "user_prod"
     assert actor.is_admin
     assert actor.scopes == ["crm:read", "kb:read"]
+
+
+def test_production_actor_requires_signed_claims():
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header="crm:read",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "signed" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("production actor claims should require a signature")
+
+
+def test_production_actor_rejects_invalid_or_tampered_signature():
+    signed_for_less_scope = _actor_signature_kwargs(
+        roles_header="admin",
+        scopes_header="crm:read",
+    )
+
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="admin",
+            scopes_header="crm:read,kb:read",
+            **signed_for_less_scope,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "signature is invalid" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("tampered actor scopes should invalidate the signature")
+
+
+def test_production_actor_rejects_tampered_user_and_roles():
+    signed_for_user_role = _actor_signature_kwargs(
+        user_id="user_prod",
+        roles_header="user",
+        scopes_header="crm:read",
+    )
+
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_other",
+            roles_header="user",
+            scopes_header="crm:read",
+            **signed_for_user_role,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "signature is invalid" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("tampered actor user should invalidate the signature")
+
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="admin",
+            scopes_header="crm:read",
+            **signed_for_user_role,
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "signature is invalid" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("tampered actor roles should invalidate the signature")
+
+
+def test_production_actor_rejects_expired_signature():
+    old_timestamp = str(int(time.time()) - 999)
+
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header="crm:read",
+            actor_signature_max_age_seconds=300,
+            **_actor_signature_kwargs(
+                user_id="user_prod",
+                roles_header="user",
+                scopes_header="crm:read",
+                timestamp=old_timestamp,
+            ),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "expired" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("expired actor signature should fail closed")
+
+
+def test_production_actor_rejects_malformed_or_future_timestamp():
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header="crm:read",
+            actor_signature_secret=ACTOR_SIGNATURE_SECRET,
+            actor_signature_timestamp="not-a-timestamp",
+            actor_signature="sha256=bad",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "Unix timestamp" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("malformed actor signature timestamp should fail closed")
+
+    future_timestamp = str(int(time.time()) + 999)
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header="crm:read",
+            actor_signature_max_age_seconds=300,
+            **_actor_signature_kwargs(
+                user_id="user_prod",
+                roles_header="user",
+                scopes_header="crm:read",
+                timestamp=future_timestamp,
+            ),
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "expired" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("future actor signature should fail closed outside clock skew")
 
 
 def test_local_demo_admin_gets_management_scopes_but_user_does_not():
@@ -117,34 +316,30 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
 
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     get_settings.cache_clear()
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
-        base_headers = {
-            "X-Internal-Auth": "secret",
-            "X-Actor-User-Id": "user_prod",
-            "X-Actor-Roles": "admin",
-        }
         missing_read = client.get(
             "/api/v1/admin/monitor/summary",
-            headers={**base_headers, "X-Actor-Scopes": "crm:read"},
+            headers=_production_headers(scopes="crm:read"),
             params={"source": "event_store"},
         )
         read_allowed = client.get(
             "/api/v1/admin/monitor/summary",
-            headers={**base_headers, "X-Actor-Scopes": "monitor:read"},
+            headers=_production_headers(scopes="monitor:read"),
             params={"source": "event_store"},
         )
         alert_key = read_allowed.json()["alerts"][0]["key"]
         missing_write = client.post(
             f"/api/v1/admin/monitor/alerts/{alert_key}/triage",
-            headers={**base_headers, "X-Actor-Scopes": "monitor:read"},
+            headers=_production_headers(scopes="monitor:read"),
             json={"status": "acknowledged"},
         )
         write_allowed = client.post(
             f"/api/v1/admin/monitor/alerts/{alert_key}/triage",
-            headers={**base_headers, "X-Actor-Scopes": "monitor:write"},
+            headers=_production_headers(scopes="monitor:write"),
             json={"status": "acknowledged", "note": "Scoped production ack."},
         )
     finally:
@@ -158,6 +353,33 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
     assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
     assert write_allowed.status_code == 200
     assert write_allowed.json()["actor_user_id"] == "user_prod"
+
+
+def test_production_api_rejects_tampered_signed_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        headers = _production_headers(scopes="crm:read")
+        headers["X-Actor-Scopes"] = "crm:read,monitor:read"
+
+        response = client.get(
+            "/api/v1/admin/monitor/summary",
+            headers=headers,
+            params={"source": "event_store"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Production actor signature is invalid."
 
 
 def test_admin_can_list_tool_audit_records_without_raw_arguments(tmp_path, monkeypatch):
@@ -241,25 +463,21 @@ def test_production_admin_tool_audit_requires_explicit_audit_scope(tmp_path, mon
 
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
         get_settings.cache_clear()
-        base_headers = {
-            "X-Internal-Auth": "secret",
-            "X-Actor-User-Id": "user_prod",
-            "X-Actor-Roles": "admin",
-        }
         missing_scope = client.get(
             "/api/v1/admin/tools/audit",
-            headers={**base_headers, "X-Actor-Scopes": "events:read"},
+            headers=_production_headers(scopes="events:read"),
             params={"trace_id": trace_id},
         )
         metadata_scope_only = client.get(
             "/api/v1/admin/tools/audit",
-            headers={**base_headers, "X-Actor-Scopes": "admin:read"},
+            headers=_production_headers(scopes="admin:read"),
             params={"trace_id": trace_id},
         )
         allowed = client.get(
             "/api/v1/admin/tools/audit",
-            headers={**base_headers, "X-Actor-Scopes": "audit:read"},
+            headers=_production_headers(scopes="audit:read"),
             params={"trace_id": trace_id},
         )
     finally:
@@ -335,31 +553,36 @@ def test_production_incident_bundle_requires_investigation_scopes(tmp_path, monk
 
         monkeypatch.setenv("APP_ENV", "production")
         monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
         get_settings.cache_clear()
-        base_headers = {
-            "X-Internal-Auth": "secret",
-            "X-Actor-User-Id": "incident_responder",
-            "X-Actor-Roles": "admin",
-        }
         missing_audit = client.get(
             f"/api/v1/admin/incidents/runs/{trace_id}",
-            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,memory:replay"},
+            headers=_production_headers(
+                user_id="incident_responder",
+                scopes="events:read,monitor:read,memory:replay",
+            ),
         )
         without_memory = client.get(
             f"/api/v1/admin/incidents/runs/{trace_id}",
-            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,audit:read"},
+            headers=_production_headers(
+                user_id="incident_responder",
+                scopes="events:read,monitor:read,audit:read",
+            ),
             params={"include_memory": False},
         )
         missing_memory = client.get(
             f"/api/v1/admin/incidents/runs/{trace_id}",
-            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,audit:read"},
+            headers=_production_headers(
+                user_id="incident_responder",
+                scopes="events:read,monitor:read,audit:read",
+            ),
         )
         allowed = client.get(
             f"/api/v1/admin/incidents/runs/{trace_id}",
-            headers={
-                **base_headers,
-                "X-Actor-Scopes": "events:read,monitor:read,audit:read,memory:replay",
-            },
+            headers=_production_headers(
+                user_id="incident_responder",
+                scopes="events:read,monitor:read,audit:read,memory:replay",
+            ),
         )
     finally:
         app.dependency_overrides.clear()
@@ -378,15 +601,14 @@ def test_production_incident_bundle_requires_investigation_scopes(tmp_path, monk
 def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     get_settings.cache_clear()
     try:
         client = TestClient(app)
-        headers = {
-            "X-Internal-Auth": "secret",
-            "X-Actor-User-Id": "user_prod",
-            "X-Actor-Roles": "user",
-            "X-Actor-Scopes": "crm:read,order:read,shipping:read,kb:read",
-        }
+        headers = _production_headers(
+            roles="user",
+            scopes="crm:read,order:read,shipping:read,kb:read",
+        )
         session = client.post("/api/v1/chat/sessions", headers=headers, json={})
         assert session.status_code == 200
         body = session.json()

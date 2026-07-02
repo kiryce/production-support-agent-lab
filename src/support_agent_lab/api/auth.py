@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from hmac import compare_digest
+import hashlib
+import time
+from hmac import compare_digest, new as hmac_new
 from typing import Annotated
 
 from fastapi import Header, HTTPException, status
@@ -44,6 +46,8 @@ def get_request_actor(
     x_actor_user_id: Annotated[str | None, Header(alias="X-Actor-User-Id")] = None,
     x_actor_roles: Annotated[str | None, Header(alias="X-Actor-Roles")] = None,
     x_actor_scopes: Annotated[str | None, Header(alias="X-Actor-Scopes")] = None,
+    x_actor_timestamp: Annotated[str | None, Header(alias="X-Actor-Timestamp")] = None,
+    x_actor_signature: Annotated[str | None, Header(alias="X-Actor-Signature")] = None,
 ) -> RequestActor:
     settings = get_settings()
     if settings.is_production:
@@ -53,6 +57,11 @@ def get_request_actor(
             user_id=x_actor_user_id,
             roles_header=x_actor_roles,
             scopes_header=x_actor_scopes,
+            actor_signature_secret=settings.app_actor_signature_secret,
+            actor_signature_timestamp=x_actor_timestamp,
+            actor_signature=x_actor_signature,
+            actor_signature_max_age_seconds=settings.app_actor_signature_max_age_seconds,
+            tenant_id=settings.app_tenant_id,
         )
     roles = [role.strip() for role in (x_demo_role or "user").split(",") if role.strip()]
     scopes = DEFAULT_ADMIN_SCOPES if "admin" in roles else DEFAULT_USER_SCOPES
@@ -66,6 +75,11 @@ def _get_production_actor(
     user_id: str | None,
     roles_header: str | None,
     scopes_header: str | None = None,
+    actor_signature_secret: str | None = None,
+    actor_signature_timestamp: str | None = None,
+    actor_signature: str | None = None,
+    actor_signature_max_age_seconds: int = 300,
+    tenant_id: str = "demo_tenant",
 ) -> RequestActor:
     if not expected_key or not provided_key or not compare_digest(provided_key, expected_key):
         raise HTTPException(
@@ -89,7 +103,92 @@ def _get_production_actor(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Production requests must include X-Actor-Scopes from the trusted gateway.",
         )
+    _verify_actor_signature(
+        secret=actor_signature_secret,
+        provided_signature=actor_signature,
+        timestamp=actor_signature_timestamp,
+        user_id=user_id,
+        roles_header=roles_header,
+        scopes_header=scopes_header,
+        tenant_id=tenant_id,
+        max_age_seconds=actor_signature_max_age_seconds,
+    )
     return RequestActor(user_id=user_id, roles=roles, scopes=scopes)
+
+
+def sign_actor_claims(
+    *,
+    secret: str,
+    tenant_id: str,
+    user_id: str,
+    roles_header: str | None,
+    scopes_header: str | None,
+    timestamp: str,
+) -> str:
+    canonical = "\n".join(
+        [
+            "v1",
+            tenant_id,
+            user_id,
+            _canonical_csv(roles_header or "user"),
+            _canonical_csv(scopes_header or ""),
+            timestamp,
+        ]
+    )
+    return hmac_new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _verify_actor_signature(
+    *,
+    secret: str | None,
+    provided_signature: str | None,
+    timestamp: str | None,
+    user_id: str,
+    roles_header: str | None,
+    scopes_header: str | None,
+    tenant_id: str,
+    max_age_seconds: int,
+) -> None:
+    if not secret:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production actor claims must be signed by the trusted gateway.",
+        )
+    if not provided_signature or not timestamp:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production requests must include X-Actor-Timestamp and X-Actor-Signature.",
+        )
+    try:
+        issued_at = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="X-Actor-Timestamp must be a Unix timestamp.",
+        ) from exc
+    if abs(time.time() - issued_at) > max_age_seconds:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production actor signature is expired.",
+        )
+    expected = sign_actor_claims(
+        secret=secret,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        roles_header=roles_header,
+        scopes_header=scopes_header,
+        timestamp=timestamp,
+    )
+    normalized = provided_signature.removeprefix("sha256=")
+    if not compare_digest(normalized, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production actor signature is invalid.",
+        )
+
+
+def _canonical_csv(value: str) -> str:
+    return ",".join(item.strip() for item in value.split(",") if item.strip())
 
 
 def require_same_user(request_user_id: str | None, actor: RequestActor) -> None:

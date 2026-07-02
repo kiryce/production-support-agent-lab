@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     app_knowledge_api_base_url: str | None = None
     app_knowledge_api_key: str | None = None
     app_internal_api_key: str | None = None
+    app_actor_signature_secret: str | None = None
+    app_actor_signature_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     app_http_timeout_ms: int = Field(default=5000, ge=500, le=60000)
     app_llm_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
     app_readiness_deep_checks: bool | None = None
@@ -51,6 +53,8 @@ class Settings(BaseSettings):
             missing.append("APP_KNOWLEDGE_API_KEY")
         if not self.app_internal_api_key:
             missing.append("APP_INTERNAL_API_KEY")
+        if not self.app_actor_signature_secret:
+            missing.append("APP_ACTOR_SIGNATURE_SECRET")
         if not self.app_database_url.startswith("sqlite:///"):
             missing.append("APP_DATABASE_URL must use sqlite:/// until another event store adapter is configured")
         if self._looks_like_placeholder(self.openai_api_key):
@@ -65,6 +69,10 @@ class Settings(BaseSettings):
             missing.append("APP_KNOWLEDGE_API_KEY must not be a placeholder")
         if self._looks_like_placeholder(self.app_internal_api_key):
             missing.append("APP_INTERNAL_API_KEY must not be a placeholder")
+        if self._looks_like_placeholder(self.app_actor_signature_secret):
+            missing.append("APP_ACTOR_SIGNATURE_SECRET must not be a placeholder")
+        if self.app_actor_signature_secret and len(self.app_actor_signature_secret) < 32:
+            missing.append("APP_ACTOR_SIGNATURE_SECRET must be at least 32 characters")
         if missing:
             joined = ", ".join(missing)
             raise RuntimeError(f"Production mode is not ready; missing required config: {joined}")

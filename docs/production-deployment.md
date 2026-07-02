@@ -16,6 +16,8 @@ APP_BUSINESS_API_KEY=...
 APP_KNOWLEDGE_API_BASE_URL=https://knowledge.example.com
 APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
+APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
+APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
 APP_HTTP_TIMEOUT_MS=5000
 APP_LLM_TIMEOUT_MS=15000
 APP_READINESS_DEEP_CHECKS=true
@@ -63,6 +65,8 @@ Idempotency-Key: <for write tools>
 
 `/health` is a readiness probe, not an actor-scoped tool call. It sends service authentication plus tenant/request/trace headers so infrastructure can verify dependency reachability without pretending to be an end user.
 
+The business-tool headers are downstream context headers. The public Agent API has a separate ingress contract below: the trusted gateway must sign the inbound actor claims before this service trusts them. If your business backend also wants to reject header tampering at its own edge, give it an equivalent JWT/HMAC contract there too.
+
 Production HTTP tools normalize upstream failures before the model sees them: `401 -> UNAUTHORIZED`, `403 -> FORBIDDEN`, `404 -> NOT_FOUND`, `409 -> CONFLICT`, `429 -> RATE_LIMITED`, `5xx -> UPSTREAM_ERROR`, timeout -> `TIMEOUT`, network failure -> `UPSTREAM_UNAVAILABLE`, invalid JSON -> `UPSTREAM_ERROR`.
 
 Your backend should still enforce tenant isolation and resource ownership. The Agent has route-level `allowed_tools`, `ToolBroker` enforces scopes, and the HTTP adapter performs basic defense-in-depth checks, but production authorization must live in the business service too. Path identifiers such as `user_id`, `order_id`, and `logistics_id` are schema-validated and encoded before being placed in upstream URLs; keep the same rule when adding tools.
@@ -76,9 +80,17 @@ X-Internal-Auth: <APP_INTERNAL_API_KEY>
 X-Actor-User-Id: <authenticated user id>
 X-Actor-Roles: user,admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
+X-Actor-Timestamp: <unix timestamp>
+X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
-`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed. `ToolBroker` enforces business tool scopes before every tool call, and your business API must still enforce tenant/resource ownership.
+`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed.
+
+`X-Actor-Signature` is an HMAC-SHA256 signature produced by the gateway with `APP_ACTOR_SIGNATURE_SECRET`. The canonical signed fields are: signature version `v1`, tenant id, user id, canonical comma-separated roles, canonical comma-separated scopes, and Unix timestamp. `X-Actor-Signature` may be the bare hex digest or `sha256=<digest>`. The service rejects missing signatures, invalid signatures, and timestamps outside `APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS` so that a downstream proxy or client cannot add `admin`, broaden scopes, or swap user ids after the gateway has authenticated the request.
+
+This is a deployable baseline for a trusted internal gateway. High-risk deployments should add gateway-side nonce or `jti` replay tracking for signed admin requests.
+
+This HMAC protects the Agent API ingress boundary. It is not a replacement for tenant/resource authorization inside the business service. `ToolBroker` enforces business tool scopes before every tool call, and your business API must still enforce tenant/resource ownership.
 
 Admin role is not a wildcard. Production admin endpoints also require explicit management scopes:
 
@@ -100,6 +112,8 @@ Example monitor operator:
 ```text
 X-Actor-Roles: admin
 X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read
+X-Actor-Timestamp: <unix timestamp>
+X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
 Example release engineer:
@@ -107,6 +121,8 @@ Example release engineer:
 ```text
 X-Actor-Roles: admin
 X-Actor-Scopes: eval:run,events:read
+X-Actor-Timestamp: <unix timestamp>
+X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
 
 Business admin scopes are separate from management API scopes. `crm:admin` can read another user's customer profile; `order:admin` can read/search another customer's orders. `roles=admin` alone does not grant either.
@@ -174,6 +190,7 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_KNOWLEDGE_API_BASE_URL`
 - `APP_KNOWLEDGE_API_KEY`
 - `APP_INTERNAL_API_KEY`
+- `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.
@@ -186,6 +203,8 @@ Do not prove production mode by checking only that the container starts. Verify:
 - Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
+- Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
+- Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
 - A production `/api/v1/chat/messages` request creates matching `X-Trace-Id` / `X-Request-Id` entries in your business backend logs.
 - The returned `trace_id` can query `/api/v1/admin/tools/audit?trace_id=...` with `audit:read`, and the records contain hashes/status/latency but no raw arguments, PII, tokens, or full upstream payloads.
 - The same `trace_id` can query `/api/v1/admin/incidents/runs/{trace_id}` and return the persisted run, monitor events, tool audit records, and optional memory replay after live process state is cleared.
