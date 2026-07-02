@@ -60,10 +60,18 @@ def _get_production_actor(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Production requests must include X-Actor-User-Id.",
         )
+    if user_id in {"user_demo", "user_guest"}:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production requests must not use local demo identities.",
+        )
     roles = [role.strip() for role in (roles_header or "user").split(",") if role.strip()]
     scopes = [scope.strip() for scope in (scopes_header or "").split(",") if scope.strip()]
     if not scopes:
-        scopes = DEFAULT_USER_SCOPES if "admin" in roles or "user" in roles else ["kb:read"]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Production requests must include X-Actor-Scopes from the trusted gateway.",
+        )
     return RequestActor(user_id=user_id, roles=roles, scopes=scopes)
 
 

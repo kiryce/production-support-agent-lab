@@ -62,6 +62,91 @@ async def test_idempotent_replay_returns_first_write_result():
 
 
 @pytest.mark.asyncio
+async def test_idempotency_key_conflict_rejects_changed_payload():
+    container = create_container()
+    ctx = ToolContext(
+        actor=Actor(
+            user_id="user_demo",
+            tenant_id="demo_tenant",
+            scopes=["ticket:write"],
+        ),
+        request_id="req_1",
+        trace_id="trace_1",
+        tenant_id="demo_tenant",
+        idempotency_key="same-key-different-payload",
+    )
+    first_payload = {
+        "customer_id": "cust_1001",
+        "title": "Need help",
+        "description": "Original payload.",
+    }
+    changed_payload = {
+        "customer_id": "cust_1001",
+        "title": "Need help again",
+        "description": "Changed payload.",
+    }
+
+    first = await container.tools.call("ticket.create", first_payload, ctx)
+    conflict = await container.tools.call("ticket.create", changed_payload, ctx)
+
+    assert first.status == ToolStatus.success
+    assert conflict.status == ToolStatus.failed
+    assert conflict.error_code == "IDEMPOTENCY_CONFLICT"
+    assert len(container.store.tickets) == 1
+
+
+@pytest.mark.asyncio
+async def test_idempotency_keys_are_scoped_by_actor_user():
+    container = create_container()
+    demo_ctx = ToolContext(
+        actor=Actor(
+            user_id="user_demo",
+            tenant_id="demo_tenant",
+            scopes=["ticket:write"],
+        ),
+        request_id="req_demo",
+        trace_id="trace_1",
+        tenant_id="demo_tenant",
+        idempotency_key="shared-operation-key",
+    )
+    guest_ctx = ToolContext(
+        actor=Actor(
+            user_id="user_guest",
+            tenant_id="demo_tenant",
+            scopes=["ticket:write"],
+        ),
+        request_id="req_guest",
+        trace_id="trace_2",
+        tenant_id="demo_tenant",
+        idempotency_key="shared-operation-key",
+    )
+
+    demo_ticket = await container.tools.call(
+        "ticket.create",
+        {
+            "customer_id": "cust_1001",
+            "title": "Demo user ticket",
+            "description": "Same idempotency key as guest.",
+        },
+        demo_ctx,
+    )
+    guest_ticket = await container.tools.call(
+        "ticket.create",
+        {
+            "customer_id": "cust_2001",
+            "title": "Guest user ticket",
+            "description": "Same idempotency key as demo user.",
+        },
+        guest_ctx,
+    )
+
+    assert demo_ticket.status == ToolStatus.success
+    assert guest_ticket.status == ToolStatus.success
+    assert demo_ticket.data["ticket_id"] != guest_ticket.data["ticket_id"]
+    assert len(container.store.tickets) == 2
+
+
+@pytest.mark.asyncio
 async def test_order_tool_enforces_customer_ownership():
     container = create_container()
     ctx = ToolContext(
@@ -99,6 +184,36 @@ async def test_shipping_tool_enforces_customer_ownership():
 
     assert result.status == ToolStatus.failed
     assert result.error_code == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_ticket_create_enforces_customer_ownership():
+    container = create_container()
+    ctx = ToolContext(
+        actor=Actor(
+            user_id="user_guest",
+            tenant_id="demo_tenant",
+            scopes=["ticket:write"],
+        ),
+        request_id="req_1",
+        trace_id="trace_1",
+        tenant_id="demo_tenant",
+        idempotency_key="guest-cross-customer-ticket",
+    )
+
+    result = await container.tools.call(
+        "ticket.create",
+        {
+            "customer_id": "cust_1001",
+            "title": "Cross-customer ticket",
+            "description": "Guest should not create tickets for another customer.",
+        },
+        ctx,
+    )
+
+    assert result.status == ToolStatus.failed
+    assert result.error_code == "FORBIDDEN"
+    assert container.store.tickets == {}
 
 
 @pytest.mark.asyncio

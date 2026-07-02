@@ -44,6 +44,8 @@ The adapter sends these headers on every request:
 Authorization: Bearer <APP_BUSINESS_API_KEY>
 X-Tenant-Id: <tenant>
 X-Actor-User-Id: <user>
+X-Actor-Roles: <roles>
+X-Actor-Scopes: <scopes>
 X-Request-Id: <request>
 X-Trace-Id: <agent run>
 Idempotency-Key: <for write tools>
@@ -62,11 +64,11 @@ X-Actor-Roles: user,admin
 X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 ```
 
-`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests. `X-Actor-Scopes` should be the gateway's minimum capability set for this actor; `ToolBroker` enforces these scopes before every tool call, and your business API must still enforce tenant/resource ownership.
+`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests, and local fixture identities such as `user_demo` and `user_guest` are rejected. `X-Actor-Scopes` is required and should be the gateway's minimum capability set for this actor; missing or empty scopes fail closed. `ToolBroker` enforces these scopes before every tool call, and your business API must still enforce tenant/resource ownership.
 
 ## MCP
 
-`MCPToolAdapter` can call tools with an explicit `user_id` and scopes. The bundled `support_agent_lab.mcp.server` is local-only until your MCP gateway passes authenticated actor/session data. Production mode refuses to start that bundled MCP server to avoid defaulting to `user_demo`.
+`MCPToolAdapter` defaults to gateway mode: calls must pass `tenant_id`, authenticated `user_id`, and explicit scopes. The bundled `support_agent_lab.mcp.server` is local-only and explicitly opts into demo defaults; production mode refuses to start it to avoid defaulting to `user_demo`. Production MCP gateways should also pass request/trace ids and explicit idempotency keys for write tools.
 
 ## Knowledge API contract
 

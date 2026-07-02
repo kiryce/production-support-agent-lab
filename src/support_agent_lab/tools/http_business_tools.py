@@ -95,6 +95,8 @@ class HTTPBusinessClient:
         headers = {
             "X-Tenant-Id": ctx.tenant_id,
             "X-Actor-User-Id": ctx.actor.user_id,
+            "X-Actor-Roles": ",".join(ctx.actor.roles),
+            "X-Actor-Scopes": ",".join(ctx.actor.scopes),
             "X-Request-Id": ctx.request_id,
             "X-Trace-Id": ctx.trace_id,
         }

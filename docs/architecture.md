@@ -38,7 +38,7 @@
 
 ## API 身份边界
 
-Local mode uses `X-Demo-User` and `X-Demo-Role` as a lightweight teaching actor. Production mode uses `X-Internal-Auth`, `X-Actor-User-Id`, and `X-Actor-Roles` from a trusted gateway.
+Local mode uses `X-Demo-User` and `X-Demo-Role` as a lightweight teaching actor. Production mode uses `X-Internal-Auth`, `X-Actor-User-Id`, `X-Actor-Roles`, and required `X-Actor-Scopes` from a trusted gateway.
 
 - API identity comes from trusted request context, not from a freely editable JSON body.
 - Tool calls still enforce resource ownership, because API checks are not enough by themselves.

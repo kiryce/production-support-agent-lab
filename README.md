@@ -91,9 +91,10 @@ docker compose up --build
 X-Internal-Auth: <APP_INTERNAL_API_KEY>
 X-Actor-User-Id: <authenticated user>
 X-Actor-Roles: user 或 admin
+X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 ```
 
-`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。
+`X-Demo-User` / `X-Demo-Role` 只在 local mode 生效。生产模式必须由网关注入真实用户和最小化 scopes；缺少 `X-Actor-Scopes` 会失败关闭。
 
 ### 本地学习模式
 
@@ -615,14 +616,14 @@ ticket.create
 kb.search
 ```
 
-安装可选 MCP SDK。本仓库内置的 MCP server 只用于 local mode 教学；生产模式需要你自己的 MCP gateway 注入 authenticated actor、tenant、scopes 和 session id。
+安装可选 MCP SDK。本仓库内置的 MCP server 只用于 local mode 教学；生产模式需要你自己的 MCP gateway 注入 authenticated actor、tenant、scopes、request/trace id 和写工具 idempotency key。
 
 ```bash
 pip install -e ".[mcp]"
 python -m support_agent_lab.mcp.server
 ```
 
-本项目默认用 dependency-light adapter 跑通核心概念，生产接入时可以把同一个 `ToolBroker` 注册到官方 MCP runtime。
+本项目默认用 dependency-light adapter 跑通核心概念，生产接入时可以把同一个 `ToolBroker` 注册到官方 MCP runtime。完整接入步骤、scope 矩阵、错误码和测试入口见 `docs/mcp-tools.md`。
 
 ## 常见问题排查
 

@@ -40,6 +40,8 @@ async def test_http_business_client_sends_gateway_context_headers():
     assert seen_headers["authorization"] == "Bearer business-token"
     assert seen_headers["x-tenant-id"] == "tenant_live"
     assert seen_headers["x-actor-user-id"] == "user_123"
+    assert seen_headers["x-actor-roles"] == "agent"
+    assert seen_headers["x-actor-scopes"] == "crm:read"
     assert seen_headers["x-request-id"] == "req_123"
     assert seen_headers["x-trace-id"] == "run_123"
     assert seen_headers["idempotency-key"] == "idem_123"

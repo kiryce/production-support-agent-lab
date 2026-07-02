@@ -133,7 +133,7 @@ class ToolBroker:
         try:
             self._authorize(tool, ctx)
             parsed = tool.input_model.model_validate(arguments)
-            if not tool.idempotent and self._is_write_tool(name):
+            if not tool.idempotent:
                 self._require_idempotency(ctx)
             cached = self._read_idempotency(tool, ctx, arg_hash)
             if cached:
@@ -244,9 +244,6 @@ class ToolBroker:
                 error_code=result.error_code,
             )
         )
-
-    def _is_write_tool(self, name: str) -> bool:
-        return any(part in name for part in ["create", "cancel", "update", "add", "upsert"])
 
     def _hash(self, arguments: dict[str, Any]) -> str:
         payload = json.dumps(arguments, ensure_ascii=False, sort_keys=True)

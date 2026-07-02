@@ -12,7 +12,12 @@ def build_adapter() -> MCPToolAdapter:
             "The bundled MCP server is local-only until MCP auth/session actor propagation is configured."
         )
     container = create_container()
-    return MCPToolAdapter(container.tools, tenant_id=container.orchestrator.tenant_id)
+    return MCPToolAdapter(
+        container.tools,
+        tenant_id=container.orchestrator.tenant_id,
+        allow_default_actor=True,
+        auto_idempotency_key=True,
+    )
 
 
 def main() -> None:

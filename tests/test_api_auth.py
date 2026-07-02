@@ -1,4 +1,5 @@
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
 from support_agent_lab.api.auth import _get_production_actor
 from support_agent_lab.api.main import app
@@ -6,8 +7,6 @@ from support_agent_lab.config import get_settings
 
 
 def test_production_actor_requires_trusted_gateway_key():
-    from fastapi import HTTPException
-
     try:
         _get_production_actor(
             expected_key="secret",
@@ -19,6 +18,53 @@ def test_production_actor_requires_trusted_gateway_key():
         assert exc.status_code == 401
     else:  # pragma: no cover
         raise AssertionError("production actor auth should fail")
+
+
+def test_production_actor_rejects_local_demo_identity():
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_demo",
+            roles_header="user",
+            scopes_header="crm:read",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "demo" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("production actor should reject demo identities")
+
+
+def test_production_actor_requires_gateway_scopes():
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "X-Actor-Scopes" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("production actor should require explicit scopes")
+
+
+def test_production_actor_rejects_empty_gateway_scopes():
+    try:
+        _get_production_actor(
+            expected_key="secret",
+            provided_key="secret",
+            user_id="user_prod",
+            roles_header="user",
+            scopes_header=" , ",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 401
+        assert "X-Actor-Scopes" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("production actor should reject empty scopes")
 
 
 def test_production_actor_uses_gateway_principal():
@@ -43,13 +89,14 @@ def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
         client = TestClient(app)
         headers = {
             "X-Internal-Auth": "secret",
-            "X-Actor-User-Id": "user_demo",
+            "X-Actor-User-Id": "user_prod",
             "X-Actor-Roles": "user",
+            "X-Actor-Scopes": "crm:read,order:read,shipping:read,kb:read",
         }
         session = client.post("/api/v1/chat/sessions", headers=headers, json={})
         assert session.status_code == 200
         body = session.json()
-        assert body["user_id"] == "user_demo"
+        assert body["user_id"] == "user_prod"
 
         message = client.post(
             "/api/v1/chat/messages",
@@ -60,7 +107,7 @@ def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
             },
         )
         assert message.status_code == 200
-        assert message.json()["message"]["user_id"] == "user_demo"
+        assert message.json()["message"]["user_id"] == "user_prod"
     finally:
         get_settings.cache_clear()
 
