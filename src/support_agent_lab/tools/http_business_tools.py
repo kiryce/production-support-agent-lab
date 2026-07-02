@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import httpx
 
+from support_agent_lab.models import new_id
 from support_agent_lab.tools.business_tools import (
     CreateTicketInput,
     CreateTicketOutput,
@@ -102,6 +103,32 @@ class HTTPBusinessClient:
         if ctx.idempotency_key:
             headers["Idempotency-Key"] = ctx.idempotency_key
         return headers
+
+    async def health_check(self, tenant_id: str) -> None:
+        request_id = new_id("ready_req")
+        headers = {
+            "X-Tenant-Id": tenant_id,
+            "X-Actor-User-Id": "readiness_probe",
+            "X-Request-Id": request_id,
+            "X-Trace-Id": request_id,
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers=headers,
+                transport=self.transport,
+            ) as client:
+                response = await client.get("/health")
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise ToolError(TIMEOUT, "Business API readiness check timed out", retryable=True) from exc
+        except httpx.HTTPStatusError as exc:
+            raise _tool_error_from_status(exc.response.status_code, "/health") from exc
+        except httpx.HTTPError as exc:
+            raise ToolError(UPSTREAM_UNAVAILABLE, "Business API readiness check failed", retryable=True) from exc
 
 
 def _tool_error_from_status(status_code: int, path: str) -> ToolError:

@@ -69,6 +69,19 @@ class HTTPKnowledgeIndex:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
 
+    async def health_check(self) -> None:
+        try:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                headers=self._headers(),
+                transport=self.transport,
+            ) as client:
+                response = await client.get("/health")
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError("Knowledge API readiness check failed") from exc
+
     def _empty_trace(self, query: str, reason: str) -> RetrievalTrace:
         return RetrievalTrace(
             query=query,

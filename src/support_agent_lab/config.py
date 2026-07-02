@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_internal_api_key: str | None = None
     app_http_timeout_ms: int = Field(default=5000, ge=500, le=60000)
     app_llm_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
+    app_readiness_deep_checks: bool | None = None
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

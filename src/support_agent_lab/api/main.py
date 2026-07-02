@@ -3,10 +3,12 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from support_agent_lab.api.auth import RequestActor, get_request_actor, require_admin, require_same_user
 from support_agent_lab.bootstrap import AppContainer, create_container
+from support_agent_lab.api.readiness import ReadinessResponse, check_readiness
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import AgentResponse, Message, MonitorEvent, new_id
@@ -53,6 +55,16 @@ def create_app() -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/v1/ready")
+    async def ready(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        deep: Annotated[bool | None, Query()] = None,
+    ) -> ReadinessResponse:
+        report = await check_readiness(deps, deep=deep)
+        if report.status != "ok":
+            return JSONResponse(status_code=503, content=report.model_dump(mode="json"))
+        return report
+
     @app.post("/api/v1/chat/sessions")
     def create_session(
         body: CreateSessionRequest,
@@ -75,6 +87,7 @@ def create_app() -> FastAPI:
             conversation_id=body.conversation_id,
             user_id=actor.user_id,
             text=body.content,
+            actor_scopes=actor.scopes,
         )
         return ChatMessageResponse(
             message=response.message,

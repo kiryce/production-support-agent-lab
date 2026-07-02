@@ -49,7 +49,13 @@ class SupportAgentOrchestrator:
         self.monitor = monitor
         self.runs: dict[str, AgentRunTrace] = {}
 
-    async def handle_message(self, conversation_id: str, user_id: str, text: str) -> AgentResponse:
+    async def handle_message(
+        self,
+        conversation_id: str,
+        user_id: str,
+        text: str,
+        actor_scopes: list[str] | None = None,
+    ) -> AgentResponse:
         trace = AgentRunTrace(tenant_id=self.tenant_id, conversation_id=conversation_id, user_id=user_id)
         self.runs[trace.id] = trace
         user_msg = Message(
@@ -118,7 +124,9 @@ class SupportAgentOrchestrator:
                 actor=Actor(
                     user_id=user_id,
                     tenant_id=self.tenant_id,
-                    scopes=[
+                    scopes=actor_scopes
+                    if actor_scopes is not None
+                    else [
                         "crm:read",
                         "order:read",
                         "shipping:read",

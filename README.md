@@ -172,7 +172,10 @@ docker compose up --build
 ```text
 http://127.0.0.1:8000/docs
 http://127.0.0.1:8000/api/v1/health
+http://127.0.0.1:8000/api/v1/ready
 ```
+
+`/health` 只表示进程活着；`/ready` 会检查配置、event store，并在生产深探测开启时检查 OpenAI、业务 API `/health` 和知识库 API `/health`。Docker `HEALTHCHECK` 使用 `/ready`。
 
 ## 术语表
 

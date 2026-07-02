@@ -18,6 +18,7 @@ APP_KNOWLEDGE_API_KEY=...
 APP_INTERNAL_API_KEY=...
 APP_HTTP_TIMEOUT_MS=5000
 APP_LLM_TIMEOUT_MS=15000
+APP_READINESS_DEEP_CHECKS=true
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
 ```
 
@@ -35,6 +36,7 @@ APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
 | `GET` | `/shipments/{logistics_id}` | Return shipment tracking status. |
 | `POST` | `/tickets` | Create support or handoff ticket. |
 | `GET` | `/knowledge/search?query=<text>&limit=<n>` | Search knowledge base snippets. |
+| `GET` | `/health` | Return 2xx when the business API can serve authenticated tool calls. |
 
 The adapter sends these headers on every request:
 
@@ -57,9 +59,10 @@ Production API requests must come through a trusted gateway. The gateway authent
 X-Internal-Auth: <APP_INTERNAL_API_KEY>
 X-Actor-User-Id: <authenticated user id>
 X-Actor-Roles: user,admin
+X-Actor-Scopes: crm:read,order:read,shipping:read,ticket:write,kb:read
 ```
 
-`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests.
+`X-Demo-User` and `X-Demo-Role` are local-only teaching headers. In production they do not authenticate requests. `X-Actor-Scopes` should be the gateway's minimum capability set for this actor; `ToolBroker` enforces these scopes before every tool call, and your business API must still enforce tenant/resource ownership.
 
 ## MCP
 
@@ -67,7 +70,7 @@ X-Actor-Roles: user,admin
 
 ## Knowledge API contract
 
-`HTTPKnowledgeIndex` expects `GET /knowledge/search` to return either:
+`HTTPKnowledgeIndex` expects `GET /health` to return 2xx for readiness and `GET /knowledge/search` to return either:
 
 ```json
 {
@@ -92,6 +95,24 @@ or a bare list with the same hit shape.
 Production uses `OpenAIResponsesProvider`, which calls the OpenAI Responses API through the official Python SDK. The provider receives the tool-grounded draft, trace context, citations, intent, and route, then produces the final support answer.
 
 Local deterministic output is allowed only when `APP_ENV` is not production. This keeps tests stable without allowing production traffic to silently use local fixtures.
+
+## Liveness and readiness
+
+The service exposes two health endpoints:
+
+| Endpoint | Purpose | Dependency checks |
+| --- | --- | --- |
+| `/api/v1/health` | Liveness: the FastAPI process is running. | None. |
+| `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
+
+In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable.
+
+You can force or skip deep checks per request:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/ready?deep=true"
+curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
+```
 
 ## Startup checks
 

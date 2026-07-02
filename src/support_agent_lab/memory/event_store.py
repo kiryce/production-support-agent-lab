@@ -137,6 +137,51 @@ class SQLiteEventStore:
             for row in rows
         ]
 
+    def health_check(self) -> None:
+        with self._connect() as conn:
+            quick_check = conn.execute("pragma quick_check").fetchone()
+            if not quick_check or quick_check[0] != "ok":
+                raise RuntimeError("SQLite quick_check failed")
+            row = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'events'"
+            ).fetchone()
+            if not row:
+                raise RuntimeError("events table is missing")
+            columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(events)").fetchall()
+            }
+            required = {
+                "id",
+                "tenant_id",
+                "conversation_id",
+                "user_id",
+                "event_type",
+                "payload_json",
+                "created_at",
+            }
+            missing = sorted(required - columns)
+            if missing:
+                raise RuntimeError(f"events table missing columns: {', '.join(missing)}")
+            conn.execute("begin immediate")
+            conn.execute(
+                """
+                insert into events (
+                  id, tenant_id, conversation_id, user_id, event_type, payload_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("ready"),
+                    "readiness",
+                    None,
+                    None,
+                    "readiness.probe",
+                    "{}",
+                    utc_now().isoformat(),
+                ),
+            )
+            conn.rollback()
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row

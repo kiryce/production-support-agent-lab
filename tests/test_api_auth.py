@@ -27,10 +27,12 @@ def test_production_actor_uses_gateway_principal():
         provided_key="secret",
         user_id="user_prod",
         roles_header="admin,user",
+        scopes_header="crm:read,kb:read",
     )
 
     assert actor.user_id == "user_prod"
     assert actor.is_admin
+    assert actor.scopes == ["crm:read", "kb:read"]
 
 
 def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):

@@ -31,6 +31,9 @@ class LLMProvider(Protocol):
     async def generate(self, request: LLMRequest) -> LLMResponse:
         ...
 
+    async def health_check(self) -> None:
+        ...
+
 
 class ProductionConfigError(RuntimeError):
     pass
@@ -70,6 +73,9 @@ class LocalDeterministicProvider:
             fallback_used=True,
         )
         return LLMResponse(content=request.fallback_content, trace=trace)
+
+    async def health_check(self) -> None:
+        return None
 
 
 @dataclass
@@ -114,6 +120,12 @@ class OpenAIResponsesProvider:
         )
         return LLMResponse(content=content, trace=trace)
 
+    async def health_check(self) -> None:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=self.api_key, timeout=self.timeout_ms / 1000)
+        await client.models.retrieve(self.model)
+
 
 @dataclass
 class LLMGateway:
@@ -122,6 +134,9 @@ class LLMGateway:
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         return await asyncio.wait_for(self.provider.generate(request), timeout=self.timeout_ms / 1000)
+
+    async def health_check(self) -> None:
+        return await asyncio.wait_for(self.provider.health_check(), timeout=self.timeout_ms / 1000)
 
 
 def create_default_llm_gateway() -> LLMGateway:

@@ -8,10 +8,13 @@ from pydantic import BaseModel
 
 from support_agent_lab.config import get_settings
 
+DEFAULT_USER_SCOPES = ["crm:read", "order:read", "shipping:read", "ticket:write", "kb:read"]
+
 
 class RequestActor(BaseModel):
     user_id: str
     roles: list[str]
+    scopes: list[str] = []
 
     @property
     def is_admin(self) -> bool:
@@ -24,6 +27,7 @@ def get_request_actor(
     x_internal_auth: Annotated[str | None, Header(alias="X-Internal-Auth")] = None,
     x_actor_user_id: Annotated[str | None, Header(alias="X-Actor-User-Id")] = None,
     x_actor_roles: Annotated[str | None, Header(alias="X-Actor-Roles")] = None,
+    x_actor_scopes: Annotated[str | None, Header(alias="X-Actor-Scopes")] = None,
 ) -> RequestActor:
     settings = get_settings()
     if settings.is_production:
@@ -32,9 +36,10 @@ def get_request_actor(
             provided_key=x_internal_auth,
             user_id=x_actor_user_id,
             roles_header=x_actor_roles,
+            scopes_header=x_actor_scopes,
         )
     roles = [role.strip() for role in (x_demo_role or "user").split(",") if role.strip()]
-    return RequestActor(user_id=x_demo_user or "user_demo", roles=roles)
+    return RequestActor(user_id=x_demo_user or "user_demo", roles=roles, scopes=DEFAULT_USER_SCOPES)
 
 
 def _get_production_actor(
@@ -43,6 +48,7 @@ def _get_production_actor(
     provided_key: str | None,
     user_id: str | None,
     roles_header: str | None,
+    scopes_header: str | None = None,
 ) -> RequestActor:
     if not expected_key or not provided_key or not compare_digest(provided_key, expected_key):
         raise HTTPException(
@@ -55,7 +61,10 @@ def _get_production_actor(
             detail="Production requests must include X-Actor-User-Id.",
         )
     roles = [role.strip() for role in (roles_header or "user").split(",") if role.strip()]
-    return RequestActor(user_id=user_id, roles=roles)
+    scopes = [scope.strip() for scope in (scopes_header or "").split(",") if scope.strip()]
+    if not scopes:
+        scopes = DEFAULT_USER_SCOPES if "admin" in roles or "user" in roles else ["kb:read"]
+    return RequestActor(user_id=user_id, roles=roles, scopes=scopes)
 
 
 def require_same_user(request_user_id: str | None, actor: RequestActor) -> None:

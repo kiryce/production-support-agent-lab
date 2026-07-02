@@ -82,3 +82,34 @@ async def test_guest_cannot_use_agent_to_read_another_customers_order():
     forbidden = [tool for tool in response.trace.tool_results if tool.error_code == "FORBIDDEN"]
     assert forbidden
     assert "YT99887766CN" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_actor_scopes_are_enforced_by_tool_broker():
+    container = create_container()
+
+    response = await container.orchestrator.handle_message(
+        conversation_id="conv_limited_scope",
+        user_id="user_demo",
+        text="Where is order A1002 shipping?",
+        actor_scopes=["crm:read", "kb:read"],
+    )
+
+    assert any(tool.name == "order.get" and tool.error_code == "FORBIDDEN" for tool in response.trace.tool_results)
+    assert "YT99887766CN" not in response.message.content
+
+
+@pytest.mark.asyncio
+async def test_empty_actor_scopes_do_not_fall_back_to_defaults():
+    container = create_container()
+
+    response = await container.orchestrator.handle_message(
+        conversation_id="conv_empty_scope",
+        user_id="user_demo",
+        text="Where is order A1002 shipping?",
+        actor_scopes=[],
+    )
+
+    assert any(tool.name == "crm.get_customer" and tool.error_code == "FORBIDDEN" for tool in response.trace.tool_results)
+    assert any(tool.name == "order.get" and tool.error_code == "FORBIDDEN" for tool in response.trace.tool_results)
+    assert "YT99887766CN" not in response.message.content

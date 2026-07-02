@@ -114,3 +114,11 @@ def test_memory_replay_rejects_mismatched_message_payload():
 
     with pytest.raises(ValueError, match="conversation_id"):
         replay_conversation_memory([event])
+
+
+def test_event_store_health_check_verifies_write_without_persisting_probe(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+
+    event_store.health_check()
+
+    assert event_store.list_events(event_type="readiness.probe") == []

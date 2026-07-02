@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from support_agent_lab.agent.orchestrator import SupportAgentOrchestrator
-from support_agent_lab.config import get_settings
+from support_agent_lab.config import Settings, get_settings
 from support_agent_lab.data.fixtures import DemoStore
 from support_agent_lab.llm.gateway import LLMGateway, create_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore
@@ -17,7 +17,9 @@ from support_agent_lab.tools.registry import ToolBroker
 
 @dataclass
 class AppContainer:
+    settings: Settings
     store: DemoStore | None
+    business_client: HTTPBusinessClient | None
     memory: ConversationMemory
     knowledge: KnowledgeIndex | HTTPKnowledgeIndex
     monitor: OnlineMonitorAgent
@@ -48,6 +50,7 @@ def create_container() -> AppContainer:
         idempotency_store = {}
     else:
         store = DemoStore.seeded()
+        business_client = None
         knowledge = KnowledgeIndex()
         registry = create_registry(store, knowledge)
         idempotency_store = store.idempotency
@@ -66,7 +69,9 @@ def create_container() -> AppContainer:
         monitor=monitor,
     )
     return AppContainer(
+        settings=settings,
         store=store,
+        business_client=business_client,
         memory=memory,
         knowledge=knowledge,
         monitor=monitor,
