@@ -10,8 +10,15 @@ from support_agent_lab.tools.errors import FORBIDDEN, NOT_FOUND, ToolError
 from support_agent_lab.tools.registry import ToolContext, ToolDefinition, ToolRegistry
 
 
+USER_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$"
+CUSTOMER_ID_PATTERN = r"^(SELF|[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})$"
+ORDER_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
+LOGISTICS_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+STATUS_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$"
+
+
 class GetCustomerInput(BaseModel):
-    user_id: str
+    user_id: str = Field(pattern=USER_ID_PATTERN)
 
 
 class CustomerOutput(BaseModel):
@@ -24,12 +31,12 @@ class CustomerOutput(BaseModel):
 
 
 class SearchOrdersInput(BaseModel):
-    customer_id: str
-    status: str | None = None
+    customer_id: str = Field(pattern=CUSTOMER_ID_PATTERN)
+    status: str | None = Field(default=None, pattern=STATUS_PATTERN)
 
 
 class GetOrderInput(BaseModel):
-    order_id: str
+    order_id: str = Field(pattern=ORDER_ID_PATTERN)
 
 
 class OrderOutput(BaseModel):
@@ -49,7 +56,7 @@ class SearchOrdersOutput(BaseModel):
 
 
 class TrackShipmentInput(BaseModel):
-    logistics_id: str
+    logistics_id: str = Field(pattern=LOGISTICS_ID_PATTERN)
 
 
 class TrackShipmentOutput(BaseModel):
@@ -60,7 +67,7 @@ class TrackShipmentOutput(BaseModel):
 
 
 class CreateTicketInput(BaseModel):
-    customer_id: str
+    customer_id: str = Field(pattern=CUSTOMER_ID_PATTERN)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=5000)
     priority: str = "normal"

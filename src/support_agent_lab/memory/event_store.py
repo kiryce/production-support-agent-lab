@@ -26,6 +26,7 @@ class StoredEvent(BaseModel):
     tenant_id: str
     conversation_id: str | None = None
     user_id: str | None = None
+    run_id: str | None = None
     event_type: str
     payload: dict[str, Any]
     created_at: str
@@ -64,6 +65,7 @@ class SQLiteEventStore:
             tenant_id=trace.tenant_id,
             conversation_id=trace.conversation_id,
             user_id=trace.user_id,
+            run_id=trace.id,
             event_type="agent.run.completed",
             payload=trace.model_dump(mode="json"),
         )
@@ -73,6 +75,7 @@ class SQLiteEventStore:
             tenant_id=tenant_id,
             conversation_id=event.conversation_id,
             user_id=None,
+            run_id=event.run_id,
             event_type="monitor.reviewed",
             payload=event.model_dump(mode="json"),
         )
@@ -274,12 +277,14 @@ class SQLiteEventStore:
         payload: dict[str, Any],
         conversation_id: str | None = None,
         user_id: str | None = None,
+        run_id: str | None = None,
     ) -> StoredEvent:
         event = StoredEvent(
             id=new_id("evt"),
             tenant_id=tenant_id,
             conversation_id=conversation_id,
             user_id=user_id,
+            run_id=run_id,
             event_type=event_type,
             payload=payload,
             created_at=utc_now().isoformat(),
@@ -288,14 +293,15 @@ class SQLiteEventStore:
             conn.execute(
                 """
                 insert into events (
-                  id, tenant_id, conversation_id, user_id, event_type, payload_json, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?)
+                  id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.id,
                     event.tenant_id,
                     event.conversation_id,
                     event.user_id,
+                    event.run_id,
                     event.event_type,
                     json.dumps(event.payload, ensure_ascii=False, sort_keys=True),
                     event.created_at,
@@ -308,10 +314,11 @@ class SQLiteEventStore:
         *,
         tenant_id: str | None = None,
         conversation_id: str | None = None,
+        run_id: str | None = None,
         event_type: str | None = None,
         limit: int = 100,
     ) -> list[StoredEvent]:
-        sql = "select id, tenant_id, conversation_id, user_id, event_type, payload_json, created_at from events"
+        sql = "select id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at from events"
         clauses: list[str] = []
         params: list[Any] = []
         if tenant_id:
@@ -320,6 +327,9 @@ class SQLiteEventStore:
         if conversation_id:
             clauses.append("conversation_id = ?")
             params.append(conversation_id)
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(run_id)
         if event_type:
             clauses.append("event_type = ?")
             params.append(event_type)
@@ -335,6 +345,7 @@ class SQLiteEventStore:
                 tenant_id=row["tenant_id"],
                 conversation_id=row["conversation_id"],
                 user_id=row["user_id"],
+                run_id=row["run_id"],
                 event_type=row["event_type"],
                 payload=json.loads(row["payload_json"]),
                 created_at=row["created_at"],
@@ -342,16 +353,52 @@ class SQLiteEventStore:
             for row in rows
         ]
 
+    def get_agent_run_trace(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str | None = None,
+        limit: int = 1000,
+    ) -> AgentRunTrace | None:
+        sql = "select payload_json from events where event_type = ? and run_id = ?"
+        params: list[Any] = ["agent.run.completed", run_id]
+        if tenant_id:
+            sql += " and tenant_id = ?"
+            params.append(tenant_id)
+        sql += " order by created_at desc, rowid desc limit 1"
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        if row:
+            payload = json.loads(row["payload_json"])
+            return AgentRunTrace.model_validate(payload)
+
+        fallback_sql = "select payload_json from events where event_type = ?"
+        fallback_params: list[Any] = ["agent.run.completed"]
+        if tenant_id:
+            fallback_sql += " and tenant_id = ?"
+            fallback_params.append(tenant_id)
+        fallback_sql += " order by created_at desc, rowid desc limit ?"
+        fallback_params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(fallback_sql, fallback_params).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            if payload.get("id") == run_id:
+                return AgentRunTrace.model_validate(payload)
+        return None
+
     def list_monitor_events(
         self,
         *,
         tenant_id: str | None = None,
         conversation_id: str | None = None,
+        run_id: str | None = None,
         limit: int = 500,
     ) -> list[MonitorEvent]:
         events = self.list_events(
             tenant_id=tenant_id,
             conversation_id=conversation_id,
+            run_id=run_id,
             event_type="monitor.reviewed",
             limit=limit,
         )
@@ -396,6 +443,7 @@ class SQLiteEventStore:
                 "tenant_id",
                 "conversation_id",
                 "user_id",
+                "run_id",
                 "event_type",
                 "payload_json",
                 "created_at",
@@ -417,12 +465,13 @@ class SQLiteEventStore:
             conn.execute(
                 """
                 insert into events (
-                  id, tenant_id, conversation_id, user_id, event_type, payload_json, created_at
-                ) values (?, ?, ?, ?, ?, ?, ?)
+                  id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     new_id("ready"),
                     "readiness",
+                    None,
                     None,
                     None,
                     "readiness.probe",
@@ -457,14 +506,23 @@ class SQLiteEventStore:
                   tenant_id text not null,
                   conversation_id text,
                   user_id text,
+                  run_id text,
                   event_type text not null,
                   payload_json text not null,
                   created_at text not null
                 )
                 """
             )
+            event_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(events)").fetchall()
+            }
+            if "run_id" not in event_columns:
+                conn.execute("alter table events add column run_id text")
             conn.execute("create index if not exists idx_events_conversation on events(conversation_id)")
             conn.execute("create index if not exists idx_events_tenant_conversation on events(tenant_id, conversation_id)")
+            conn.execute("create index if not exists idx_events_run_id on events(run_id)")
+            conn.execute("create index if not exists idx_events_tenant_run on events(tenant_id, run_id)")
             conn.execute("create index if not exists idx_events_type on events(event_type)")
             conn.execute(
                 """

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import quote
+
 import httpx
 
 from support_agent_lab.models import new_id
@@ -239,7 +241,7 @@ def create_http_registry(client: HTTPBusinessClient) -> ToolRegistry:
 async def _get_customer(input_: GetCustomerInput, ctx: ToolContext, client: HTTPBusinessClient) -> CustomerOutput:
     if input_.user_id != ctx.actor.user_id and "crm:admin" not in ctx.actor.scopes:
         raise ToolError(FORBIDDEN, "Cannot read another user's customer profile")
-    payload = await client.get(f"/customers/{input_.user_id}", ctx=ctx)
+    payload = await client.get(f"/customers/{_path_segment(input_.user_id)}", ctx=ctx)
     return CustomerOutput.model_validate(payload)
 
 
@@ -264,7 +266,7 @@ async def _search_orders(input_: SearchOrdersInput, ctx: ToolContext, client: HT
 
 
 async def _get_order(input_: GetOrderInput, ctx: ToolContext, client: HTTPBusinessClient) -> OrderOutput:
-    payload = await client.get(f"/orders/{input_.order_id}", ctx=ctx)
+    payload = await client.get(f"/orders/{_path_segment(input_.order_id)}", ctx=ctx)
     order = OrderOutput.model_validate(payload)
     await _ensure_order_owned(order.customer_id, ctx, client)
     return order
@@ -275,7 +277,7 @@ async def _track_shipment(
     ctx: ToolContext,
     client: HTTPBusinessClient,
 ) -> TrackShipmentOutput:
-    payload = await client.get(f"/shipments/{input_.logistics_id}", ctx=ctx)
+    payload = await client.get(f"/shipments/{_path_segment(input_.logistics_id)}", ctx=ctx)
     if isinstance(payload, dict) and payload.get("customer_id"):
         await _ensure_order_owned(str(payload["customer_id"]), ctx, client)
     return TrackShipmentOutput.model_validate(payload)
@@ -337,3 +339,7 @@ async def _ensure_order_owned(
     actor_customer = await _actor_customer(ctx, client)
     if customer_id != actor_customer.customer_id:
         raise ToolError(FORBIDDEN, "Order resource does not belong to actor")
+
+
+def _path_segment(value: str) -> str:
+    return quote(value, safe="")

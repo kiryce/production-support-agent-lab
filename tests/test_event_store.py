@@ -43,6 +43,9 @@ async def test_orchestrator_writes_append_only_events(tmp_path):
     )
 
     events = event_store.list_events(conversation_id="conv_events")
+    run_events = event_store.list_events(run_id=response.trace.id)
+    stored_trace = event_store.get_agent_run_trace(response.trace.id, tenant_id="demo_tenant")
+    stored_monitor_events = event_store.list_monitor_events(run_id=response.trace.id)
     event_types = [event.event_type for event in events]
     assert event_types == [
         "message.user",
@@ -53,9 +56,16 @@ async def test_orchestrator_writes_append_only_events(tmp_path):
     run_event = [event for event in events if event.event_type == "agent.run.completed"][0]
     monitor_event = [event for event in events if event.event_type == "monitor.reviewed"][0]
     assert run_event.payload["id"] == response.trace.id
+    assert run_event.run_id == response.trace.id
+    assert monitor_event.run_id == response.trace.id
     assert run_event.payload["tool_results"]
     assert run_event.payload["llm_calls"]
     assert monitor_event.tenant_id == "demo_tenant"
+    assert {event.id for event in run_events} == {run_event.id, monitor_event.id}
+    assert {event.event_type for event in run_events} == {"agent.run.completed", "monitor.reviewed"}
+    assert stored_trace is not None
+    assert stored_trace.id == response.trace.id
+    assert [event.run_id for event in stored_monitor_events] == [response.trace.id]
 
 
 @pytest.mark.asyncio

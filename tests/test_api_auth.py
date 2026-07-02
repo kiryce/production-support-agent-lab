@@ -274,6 +274,107 @@ def test_production_admin_tool_audit_requires_explicit_audit_scope(tmp_path, mon
     assert {record["tool_name"] for record in allowed.json()} >= {"order.get", "shipping.track"}
 
 
+def test_admin_can_read_incident_bundle_from_event_store_after_live_state_is_cleared(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+        app_container.orchestrator.runs.clear()
+        app_container.monitor.events.clear()
+        app_container.memory.states.clear()
+
+        forbidden = client.get(f"/api/v1/admin/incidents/runs/{trace_id}")
+        allowed = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}",
+            headers={"X-Demo-Role": "admin"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["run_source"] == "event_store"
+    assert body["run"]["id"] == trace_id
+    assert [event["run_id"] for event in body["monitor_events"]] == [trace_id]
+    assert {record["tool_name"] for record in body["tool_audit_records"]} >= {"order.get", "shipping.track"}
+    assert body["memory_replay"]["state"]["facts"]["last_order_id"] == "A1002"
+    assert body["memory_replay"]["replayed_run_count"] == 1
+
+
+def test_production_incident_bundle_requires_investigation_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        message = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        trace_id = message["trace_id"]
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        get_settings.cache_clear()
+        base_headers = {
+            "X-Internal-Auth": "secret",
+            "X-Actor-User-Id": "incident_responder",
+            "X-Actor-Roles": "admin",
+        }
+        missing_audit = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}",
+            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,memory:replay"},
+        )
+        without_memory = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}",
+            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,audit:read"},
+            params={"include_memory": False},
+        )
+        missing_memory = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}",
+            headers={**base_headers, "X-Actor-Scopes": "events:read,monitor:read,audit:read"},
+        )
+        allowed = client.get(
+            f"/api/v1/admin/incidents/runs/{trace_id}",
+            headers={
+                **base_headers,
+                "X-Actor-Scopes": "events:read,monitor:read,audit:read,memory:replay",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert without_memory.status_code == 200
+    assert without_memory.json()["memory_replay"] is None
+    assert missing_memory.status_code == 403
+    assert missing_memory.json()["detail"] == "Missing required scope: memory:replay"
+    assert allowed.status_code == 200
+    assert allowed.json()["memory_replay"]["conversation_id"] == session["conversation_id"]
+
+
 def test_production_gateway_identity_can_omit_body_user_id(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")

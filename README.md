@@ -322,6 +322,13 @@ curl "http://127.0.0.1:8000/api/v1/admin/tools/audit?trace_id=run_abc123&tool_na
 
 这个接口返回 `trace_id`、`request_id`、`tool_name`、`status`、`error_code`、`latency_ms`、`actor_user_id`、`argument_hash`、`idempotency_key_hash`、`replayed` 和 `created_at`。它不返回 raw arguments、PII、token 或完整上游 payload。
 
+查看单次线上事件的调查包。它会把 run trace、monitor event、tool audit 和可选 memory replay 放在一个响应里，适合从告警直接进入复盘：
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/admin/incidents/runs/run_abc123?include_memory=true" \
+  -H "X-Demo-Role: admin"
+```
+
 查看 monitor agent 对线上表现的聚合：
 
 ```bash
@@ -439,6 +446,19 @@ flowchart LR
 
 ## 按部就班学习路线
 
+先记住这张地图：不要从 prompt 开始猜问题，先从 trace 定位是哪一层坏了，再把真实失败沉淀成 eval。
+
+| 主题 | 先看 trace/API | 代码入口 | Playbook | 回归入口 |
+| --- | --- | --- | --- | --- |
+| 意图识别 | `trace.intent`、`missing_slots` | `src/support_agent_lab/agent/intent.py` | `docs/intent-playbook.md` | `examples/evals/routing_regression.json` |
+| 多 agent routing | `trace.route.target`、`allowed_tools` | `src/support_agent_lab/agent/router.py` | `docs/routing-playbook.md` | `examples/evals/routing_regression.json` |
+| MCP/工具治理 | `trace.tool_results`、`/api/v1/admin/tools/audit` | `src/support_agent_lab/tools/registry.py`、`src/support_agent_lab/mcp/adapter.py` | `docs/mcp-tools.md`、`docs/tool-failure-playbook.md` | `tests/test_tools.py`、`tests/test_mcp_adapter.py` |
+| 多轮记忆 | `state.facts`、`/api/v1/admin/conversations/{id}/memory/replay` | `src/support_agent_lab/memory/store.py`、`src/support_agent_lab/memory/replay.py` | `docs/memory-playbook.md` | `examples/evals/memory_multiturn_regression.json` |
+| RAG/citation | `trace.retrieval`、`response.citations` | `src/support_agent_lab/memory/store.py` | `docs/retrieval-playbook.md` | `examples/evals/retrieval_challenge.json` |
+| 端到端 eval | `observed_*`、`failures` | `src/support_agent_lab/evals/runner.py` | `docs/evaluation-monitoring.md` | `examples/evals/*.json` |
+| online monitor | `/api/v1/admin/monitor/summary`、`sample_run_ids` | `src/support_agent_lab/monitoring/monitor.py` | `docs/evaluation-monitoring.md` | `examples/evals/monitor_regression.json` |
+| 事故复盘 | `/api/v1/admin/incidents/runs/{run_id}` | `src/support_agent_lab/api/main.py` | `docs/trace-walkthrough.md` | 把真实样本加入最贴近的 regression |
+
 ### 第 1 步：确认基线
 
 运行：
@@ -467,7 +487,7 @@ python scripts/run_retrieval_eval.py
 
 ### 第 2 步：读一次退款 trace
 
-跑退款问题，然后打开 `/api/v1/agent/runs/{trace_id}`。
+跑退款问题，然后打开 `/api/v1/agent/runs/{trace_id}`。完整走读见 `docs/trace-walkthrough.md`。
 
 观察字段：
 
@@ -480,8 +500,8 @@ python scripts/run_retrieval_eval.py
 
 对应代码：
 
-- `models.py`
-- `agent/orchestrator.py`
+- `src/support_agent_lab/models.py`
+- `src/support_agent_lab/agent/orchestrator.py`
 
 ### 第 2.5 步：区分 thread state 和 event log
 
@@ -505,13 +525,13 @@ python scripts/run_eval.py examples/evals/memory_multiturn_regression.json
 
 ### 第 3 步：理解意图识别
 
-读 `agent/intent.py` 和 `docs/intent-playbook.md`。先看 `primary / confidence / entities / missing_slots / sentiment`，再看它们如何影响 `router.py`。
+读 `src/support_agent_lab/agent/intent.py` 和 `docs/intent-playbook.md`。先看 `primary / confidence / entities / missing_slots / sentiment`，再看它们如何影响 `src/support_agent_lab/agent/router.py`。
 
 小练习：给“我要修改发票抬头”加一个 eval case，确认它路由到 `billing`。
 
 ### 第 4 步：理解 routing
 
-读 `agent/router.py` 和 `docs/routing-playbook.md`。
+读 `src/support_agent_lab/agent/router.py` 和 `docs/routing-playbook.md`。
 
 运行：
 
@@ -523,13 +543,21 @@ python scripts/run_eval.py examples/evals/routing_regression.json
 
 ### 第 5 步：理解工具治理
 
-读 `tools/registry.py` 和 `tools/business_tools.py`。
+读 `src/support_agent_lab/tools/registry.py`、`src/support_agent_lab/tools/business_tools.py`、`src/support_agent_lab/mcp/adapter.py` 和 `docs/mcp-tools.md`。这一步要连起来看：`ToolDefinition -> ToolBroker -> MCPToolAdapter -> audit -> failure injection`。
+
+重点测试入口：
+
+```bash
+pytest tests/test_tools.py::test_write_tool_requires_idempotency_key
+pytest tests/test_mcp_adapter.py::test_mcp_gateway_mode_does_not_auto_create_idempotency_key
+pytest tests/test_http_business_tools.py::test_http_registry_rejects_unsafe_path_parameters_before_upstream_call
+```
 
 小练习：新增 `order.cancel`，但要求必须二次确认，不允许 Agent 自动取消。
 
 ### 第 6 步：理解 RAG 与 citation
 
-读 `memory/store.py` 和 `docs/retrieval-playbook.md`。
+读 `src/support_agent_lab/memory/store.py` 和 `docs/retrieval-playbook.md`。
 
 运行：
 
@@ -541,15 +569,15 @@ python scripts/run_retrieval_eval.py
 
 ### 第 7 步：理解 eval
 
-读 `evals/runner.py` 和 `examples/evals/golden_core.json`。
+读 `src/support_agent_lab/evals/runner.py`、`examples/evals/golden_core.json` 和 `docs/evaluation-monitoring.md` 的 eval 字段说明。
 
-小练习：新增一个 `tool_failure` case，让 `order.get` 查不到订单时必须澄清或转人工。
+小练习：先故意新增一个会失败的 `tool_failure` case，让 `order.get` 查不到订单时必须澄清或转人工。跑 eval，观察 `observed_intent / observed_tools / observed_error_codes / failures`，再判断该修 intent、routing、retrieval 还是 tool。
 
 然后读 `examples/evals/tool_failure_regression.json` 和 `docs/tool-failure-playbook.md`。这组 case 专门防止 Agent 在工具报错后编造订单、物流或客户信息。
 
 ### 第 8 步：理解 monitor agent
 
-读 `monitoring/monitor.py`、`evals/monitor_runner.py` 和 `examples/evals/monitor_regression.json`。
+读 `src/support_agent_lab/monitoring/monitor.py`、`src/support_agent_lab/evals/monitor_runner.py` 和 `examples/evals/monitor_regression.json`。
 
 运行：
 
@@ -566,11 +594,12 @@ python scripts/run_monitor_eval.py
 1. 用 `/api/v1/admin/monitor/summary?source=event_store` 找到 `alerts[].key` 和 `sample_run_ids`。
 2. 用 `sample_run_ids` 查 `/api/v1/agent/runs/{run_id}`，确认 intent、route、tools、retrieval、policy 哪一步出问题。
 3. 如果 `trace.tool_results` 有失败、超时、幂等 replay 或异常延迟，继续查 `/api/v1/admin/tools/audit?trace_id={run_id}`。
-4. 用 audit 记录确认实际 broker 调用、actor/request、错误码、幂等 hash、是否 replay。
-5. 用 `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` 追加 ack/assign/note。
-6. 用 `/api/v1/admin/monitor/alerts/{alert_key}/triage` 查看处置历史。
-7. 把真实样本加入 `security_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`routing_regression.json` 或 `monitor_regression.json`。
-8. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
+4. 也可以直接查 `/api/v1/admin/incidents/runs/{run_id}`，一次拿到 trace、monitor、audit 和 memory replay。
+5. 用 audit 记录确认实际 broker 调用、actor/request、错误码、幂等 hash、是否 replay。
+6. 用 `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` 追加 ack/assign/note。
+7. 用 `/api/v1/admin/monitor/alerts/{alert_key}/triage` 查看处置历史。
+8. 把真实样本加入 `security_regression.json`、`tool_failure_regression.json`、`retrieval_challenge.json`、`routing_regression.json` 或 `monitor_regression.json`。
+9. 修复后跑相关 eval 和全量 `pytest`，再把状态改成 `resolved`。
 
 这里的设计故意是 append-only：`monitor.reviewed` 是不可改写的事实，`monitor.alert.triaged` 是后续运营动作。ack 只是“有人接手”，resolve 才表示“有修复、有验证、有回归样本”。
 

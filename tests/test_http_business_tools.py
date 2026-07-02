@@ -196,6 +196,55 @@ async def test_http_registry_rejects_cross_user_customer_lookup_before_upstream_
 
 
 @pytest.mark.asyncio
+async def test_http_registry_rejects_unsafe_path_parameters_before_upstream_call():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={})
+
+    broker = _http_broker(handler)
+
+    result = await broker.call(
+        "order.get",
+        {"order_id": "../admin"},
+        _ctx(scopes=["order:read"]),
+    )
+
+    assert result.status == ToolStatus.failed
+    assert result.error_code == "VALIDATION_ERROR"
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_http_registry_encodes_allowed_path_segments():
+    seen_paths = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.raw_path.decode())
+        return httpx.Response(
+            200,
+            json={
+                "customer_id": "C123",
+                "name": "Lin",
+                "tier": "gold",
+                "verified": True,
+            },
+        )
+
+    broker = _http_broker(handler)
+
+    result = await broker.call(
+        "crm.get_customer",
+        {"user_id": "lin@example.com"},
+        _ctx(scopes=["crm:read", "crm:admin"]),
+    )
+
+    assert result.status == ToolStatus.success
+    assert seen_paths == ["/customers/lin%40example.com"]
+
+
+@pytest.mark.asyncio
 async def test_http_registry_rejects_order_payload_for_other_customer():
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/orders/A1001":

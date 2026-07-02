@@ -20,6 +20,7 @@ from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import (
     AgentResponse,
+    AgentRunTrace,
     Message,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
@@ -56,6 +57,14 @@ class TriageMonitorAlertRequest(BaseModel):
     status: MonitorAlertStatus | None = None
     assignee_user_id: str | None = Field(default=None, max_length=128)
     note: str = Field(default="", max_length=1000)
+
+
+class IncidentRunBundle(BaseModel):
+    run: AgentRunTrace
+    run_source: str
+    monitor_events: list[MonitorEvent]
+    tool_audit_records: list[ToolAuditRecord]
+    memory_replay: MemoryReplayResult | None = None
 
 
 container = create_container()
@@ -214,6 +223,73 @@ def create_app() -> FastAPI:
         if conversation_id:
             return [event for event in deps.monitor.events if event.conversation_id == conversation_id][:limit]
         return deps.monitor.events[:limit]
+
+    @app.get("/api/v1/admin/incidents/runs/{run_id}")
+    def incident_run_bundle(
+        run_id: str,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        include_memory: Annotated[bool, Query()] = True,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> IncidentRunBundle:
+        require_admin(actor)
+        require_scope(actor, "events:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        if include_memory:
+            require_scope(actor, "memory:replay")
+
+        run_source = "live"
+        run = deps.orchestrator.runs.get(run_id)
+        if run is None and deps.event_store:
+            run = deps.event_store.get_agent_run_trace(
+                run_id,
+                tenant_id=deps.settings.app_tenant_id,
+                limit=limit,
+            )
+            run_source = "event_store" if run else run_source
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        monitor_source = (
+            deps.event_store.list_monitor_events(
+                tenant_id=deps.settings.app_tenant_id,
+                run_id=run_id,
+                limit=limit,
+            )
+            if deps.event_store
+            else deps.monitor.events[:limit]
+        )
+        monitor_events = [event for event in monitor_source if event.run_id == run_id]
+        tool_audit_records = (
+            deps.event_store.list_tool_audit_records(
+                tenant_id=deps.settings.app_tenant_id,
+                trace_id=run_id,
+                limit=limit,
+            )
+            if deps.event_store
+            else []
+        )
+        memory_replay = None
+        if include_memory and deps.event_store:
+            events = deps.event_store.list_events(
+                tenant_id=deps.settings.app_tenant_id,
+                conversation_id=run.conversation_id,
+                limit=limit,
+            )
+            if events:
+                try:
+                    memory_replay = replay_conversation_memory(events)
+                except ValueError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return IncidentRunBundle(
+            run=run,
+            run_source=run_source,
+            monitor_events=monitor_events,
+            tool_audit_records=tool_audit_records,
+            memory_replay=memory_replay,
+        )
 
     @app.get("/api/v1/admin/monitor/summary")
     def monitor_summary(
