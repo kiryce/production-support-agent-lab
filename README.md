@@ -3,6 +3,18 @@
 [![CI](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/KingRainIce/production-support-agent-lab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+## Frontend Console
+
+This repo includes a production-shaped Next.js console in `frontend/`.
+It is not a mock dashboard: the UI calls server-side BFF routes, and those
+routes call the real FastAPI Agent API for monitor alerts, run traces,
+citations, tool audit, memory replay, and triage writes.
+
+Start with `docs/frontend-console.md` after the backend quick start. In local
+learning mode, the `Run Scenario` button creates real local events through
+`/chat/sessions` and `/chat/messages`; in production auth mode, that button is
+disabled so the console only observes real support traffic or staging data.
+
 一个给 Agent 初学者和小白学习 Agent 工程的生产化客服 Agent 项目。
 
 它不是 benchmark 复刻，也不是一个大 prompt 聊天玩具。这个仓库把开放域客服 Agent 拆成可读、可跑、可评测、可观测的工程模块：意图识别、多 Agent routing、MCP 风格工具层、多轮记忆、RAG、端到端 eval、在线 monitor agent、工具失败恢复和生产化扩展路径。

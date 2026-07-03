@@ -7,3 +7,23 @@ services:
       - ./data:/app/data
     ports:
       - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - app
+    environment:
+      AGENT_API_BASE_URL: http://app:8000
+      FRONTEND_CONNECTION_LABEL: Production API
+      FRONTEND_AUTH_MODE: ${FRONTEND_AUTH_MODE:-production}
+      FRONTEND_ACTOR_USER_ID: ${FRONTEND_ACTOR_USER_ID:-console_operator}
+      FRONTEND_ACTOR_ROLES: ${FRONTEND_ACTOR_ROLES:-admin}
+      FRONTEND_ACTOR_SCOPES: ${FRONTEND_ACTOR_SCOPES:-crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,audit:read,events:read,eval:run,memory:replay,monitor:read,monitor:write}
+      FRONTEND_REQUEST_SIGNATURE_REQUIRED: ${FRONTEND_REQUEST_SIGNATURE_REQUIRED:-true}
+      APP_ENV: ${APP_ENV:-production}
+      APP_TENANT_ID: ${APP_TENANT_ID}
+      APP_INTERNAL_API_KEY: ${APP_INTERNAL_API_KEY}
+      APP_ACTOR_SIGNATURE_SECRET: ${APP_ACTOR_SIGNATURE_SECRET}
+    ports:
+      - "3000:3000"
