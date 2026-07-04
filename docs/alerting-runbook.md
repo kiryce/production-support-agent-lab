@@ -144,7 +144,9 @@ Meaning: due alert delivery rows have not been dispatched for 15 minutes.
 
 First response:
 
-- Run `POST /api/v1/admin/monitor/alert-deliveries/dispatch?source=event_store` from a trusted operator context.
+- Open the console `Delivery` tab and click `Dispatch now`, or run
+  `POST /api/v1/admin/monitor/alert-deliveries/dispatch?source=event_store`
+  from a trusted operator context.
 - Check webhook URL, signing secret, timeout, and backoff settings.
 - Look for expired in-progress leases if a dispatcher crashed.
 

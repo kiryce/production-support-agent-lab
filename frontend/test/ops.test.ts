@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildAlertDispatchResultStats,
   buildIncidentBrief,
   buildKnowledgeSearchStats,
   buildMonitorAlertDeliveryStats,
@@ -16,6 +17,7 @@ import {
   latestEvalGateRecord
 } from "../src/shared/ops";
 import type {
+  AlertDispatchReport,
   AlertDeliveryRecord,
   ConsoleSnapshot,
   EvalGateRecord,
@@ -775,7 +777,71 @@ describe("ops workbench helpers", () => {
     expect(deliveryStatusTone(dead.status)).toBe("danger");
     expect(deliveryStatusTone(closed.status)).toBe("neutral");
   });
+
+  it("summarizes alert delivery dispatch reports", () => {
+    expect(buildAlertDispatchResultStats(null)).toBeNull();
+    expect(
+      buildAlertDispatchResultStats(
+        dispatchReport({
+          webhook_enabled: false,
+          skipped_count: 2
+        })
+      )
+    ).toMatchObject({
+      tone: "neutral",
+      title: "Webhook disabled",
+      skippedCount: 2
+    });
+    expect(
+      buildAlertDispatchResultStats(
+        dispatchReport({
+          enqueued_count: 2,
+          existing_count: 1,
+          claimed_count: 3,
+          attempted_count: 3,
+          sent_count: 2,
+          failed_count: 1,
+          dead_count: 0
+        })
+      )
+    ).toMatchObject({
+      tone: "danger",
+      title: "2/3 sent",
+      attemptedCount: 3,
+      failedCount: 1
+    });
+    expect(
+      buildAlertDispatchResultStats(
+        dispatchReport({
+          enqueued_count: 1,
+          claimed_count: 1,
+          attempted_count: 1,
+          sent_count: 1
+        })
+      )
+    ).toMatchObject({
+      tone: "success",
+      title: "1/1 sent",
+      sentCount: 1
+    });
+  });
 });
+
+function dispatchReport(overrides: Partial<AlertDispatchReport> = {}): AlertDispatchReport {
+  return {
+    webhook_enabled: true,
+    enqueued_count: 0,
+    existing_count: 0,
+    skipped_count: 0,
+    claimed_count: 0,
+    attempted_count: 0,
+    sent_count: 0,
+    failed_count: 0,
+    dead_count: 0,
+    deliveries: [],
+    ...overrides
+  };
+}
 
 function deliveryRecord(overrides: Partial<AlertDeliveryRecord>): AlertDeliveryRecord {
   return {

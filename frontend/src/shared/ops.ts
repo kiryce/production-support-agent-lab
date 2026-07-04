@@ -1,5 +1,6 @@
 import type {
   AgentRunSearchResponse,
+  AlertDispatchReport,
   ConsoleSnapshot,
   EvalGateRecord,
   EvalReport,
@@ -116,6 +117,20 @@ export type MonitorAlertDeliveryStats = {
   closedCount: number;
   oldestPendingAt: string | null;
   nextAttemptAt: string | null;
+};
+
+export type AlertDispatchResultStats = {
+  tone: Tone;
+  title: string;
+  detail: string;
+  enqueuedCount: number;
+  existingCount: number;
+  skippedCount: number;
+  claimedCount: number;
+  attemptedCount: number;
+  sentCount: number;
+  failedCount: number;
+  deadCount: number;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -454,6 +469,68 @@ export function deliveryStatusTone(status: AlertDeliveryRecord["status"]): Tone 
     return "neutral";
   }
   return "success";
+}
+
+export function buildAlertDispatchResultStats(
+  report: AlertDispatchReport | null
+): AlertDispatchResultStats | null {
+  if (!report) {
+    return null;
+  }
+  const detail = [
+    `${report.enqueued_count} enqueued`,
+    `${report.existing_count} existing`,
+    `${report.skipped_count} skipped`,
+    `${report.claimed_count} claimed`
+  ].join(", ");
+  const base = {
+    enqueuedCount: report.enqueued_count,
+    existingCount: report.existing_count,
+    skippedCount: report.skipped_count,
+    claimedCount: report.claimed_count,
+    attemptedCount: report.attempted_count,
+    sentCount: report.sent_count,
+    failedCount: report.failed_count,
+    deadCount: report.dead_count
+  };
+  if (!report.webhook_enabled) {
+    return {
+      ...base,
+      tone: "neutral",
+      title: "Webhook disabled",
+      detail: `${report.skipped_count} active alert(s) skipped because no webhook URL is configured.`
+    };
+  }
+  if (report.failed_count || report.dead_count) {
+    return {
+      ...base,
+      tone: "danger",
+      title: `${report.sent_count}/${report.attempted_count} sent`,
+      detail: `${detail}; ${report.failed_count} failed and ${report.dead_count} dead-lettered.`
+    };
+  }
+  if (report.attempted_count) {
+    return {
+      ...base,
+      tone: "success",
+      title: `${report.sent_count}/${report.attempted_count} sent`,
+      detail: `${detail}; delivery dispatch completed.`
+    };
+  }
+  if (report.enqueued_count || report.existing_count || report.claimed_count) {
+    return {
+      ...base,
+      tone: "warn",
+      title: "No delivery attempt",
+      detail: `${detail}; no due row was available to send yet.`
+    };
+  }
+  return {
+    ...base,
+    tone: "success",
+    title: "No due deliveries",
+    detail: "No active P0/P1 delivery rows were due."
+  };
 }
 
 export function latestEvalGateRecord(records: EvalGateRecord[]): EvalGateRecord | null {

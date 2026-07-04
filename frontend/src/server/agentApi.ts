@@ -18,6 +18,7 @@ const ADMIN_SCOPES = [
   "ticket:write",
   "kb:read",
   "admin:read",
+  "admin:write",
   "audit:read",
   "eval:read",
   "events:read",

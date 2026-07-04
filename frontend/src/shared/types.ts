@@ -490,6 +490,19 @@ export type AlertDeliveryRecord = {
   updated_at: string;
 };
 
+export type AlertDispatchReport = {
+  webhook_enabled: boolean;
+  enqueued_count: number;
+  existing_count: number;
+  skipped_count: number;
+  claimed_count: number;
+  attempted_count: number;
+  sent_count: number;
+  failed_count: number;
+  dead_count: number;
+  deliveries: AlertDeliveryRecord[];
+};
+
 export type StoredEvent = {
   id: string;
   tenant_id: string;

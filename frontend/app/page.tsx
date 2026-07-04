@@ -34,6 +34,7 @@ import {
   X
 } from "lucide-react";
 import {
+  buildAlertDispatchResultStats,
   buildIncidentBrief,
   canCloseAlertDelivery,
   canReplayAlertDelivery,
@@ -71,6 +72,7 @@ import type {
   AgentRunSearchItem,
   AgentRunSearchResponse,
   AgentRunTrace,
+  AlertDispatchReport,
   AlertDeliveryRecord,
   AlertDeliveryStatus,
   ConsoleSnapshot,
@@ -220,6 +222,8 @@ export default function Home() {
   const [alertDeliveriesLoading, setAlertDeliveriesLoading] = useState(false);
   const [alertDeliveriesError, setAlertDeliveriesError] = useState<string | null>(null);
   const [alertDeliveryActionBusy, setAlertDeliveryActionBusy] = useState<string | null>(null);
+  const [alertDeliveryDispatchReport, setAlertDeliveryDispatchReport] =
+    useState<AlertDispatchReport | null>(null);
   const [monitorFilters, setMonitorFilters] = useState<MonitorDrilldownFilters>(
     DEFAULT_MONITOR_DRILLDOWN_FILTERS
   );
@@ -634,6 +638,39 @@ export default function Home() {
     } catch (nextError) {
       setAlertDeliveriesError(
         nextError instanceof Error ? nextError.message : "Alert delivery action failed"
+      );
+    } finally {
+      setAlertDeliveryActionBusy(null);
+    }
+  }
+
+  async function submitAlertDeliveryDispatch() {
+    setAlertDeliveryActionBusy("dispatch");
+    setAlertDeliveriesError(null);
+    setAlertDeliveryDispatchReport(null);
+    try {
+      const response = await fetch("/api/console/monitor/alert-deliveries/dispatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          source: "event_store",
+          monitorLimit: 500,
+          dispatchLimit: 25
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Alert delivery dispatch failed");
+      }
+      setAlertDeliveryDispatchReport(data as AlertDispatchReport);
+      await Promise.all([
+        loadAlertDeliveries(deliveryStatusFilter),
+        loadSnapshot({ runId: selectedRunId, alertKey: selectedAlertKey })
+      ]);
+    } catch (nextError) {
+      setAlertDeliveriesError(
+        nextError instanceof Error ? nextError.message : "Alert delivery dispatch failed"
       );
     } finally {
       setAlertDeliveryActionBusy(null);
@@ -1204,8 +1241,10 @@ export default function Home() {
               deliveryLoading={alertDeliveriesLoading}
               deliveryError={alertDeliveriesError}
               deliveryActionBusy={alertDeliveryActionBusy}
+              deliveryDispatchReport={alertDeliveryDispatchReport}
               onDeliveryStatus={changeDeliveryStatusFilter}
               onRefreshDeliveries={() => void loadAlertDeliveries(deliveryStatusFilter)}
+              onDispatchDeliveries={() => void submitAlertDeliveryDispatch()}
               onDeliveryAction={(record, action) => void submitAlertDeliveryAction(record, action)}
             />
           )}
@@ -1491,8 +1530,10 @@ function MonitorWorkbenchPanel({
   deliveryLoading,
   deliveryError,
   deliveryActionBusy,
+  deliveryDispatchReport,
   onDeliveryStatus,
   onRefreshDeliveries,
+  onDispatchDeliveries,
   onDeliveryAction
 }: {
   view: AlertWorkbenchView;
@@ -1542,8 +1583,10 @@ function MonitorWorkbenchPanel({
   deliveryLoading: boolean;
   deliveryError: string | null;
   deliveryActionBusy: string | null;
+  deliveryDispatchReport: AlertDispatchReport | null;
   onDeliveryStatus: (status: AlertDeliveryStatusFilter) => void;
   onRefreshDeliveries: () => void;
+  onDispatchDeliveries: () => void;
   onDeliveryAction: (record: AlertDeliveryRecord, action: "replay" | "close") => void;
 }) {
   return (
@@ -1733,8 +1776,10 @@ function MonitorWorkbenchPanel({
           loading={deliveryLoading}
           error={deliveryError}
           actionBusy={deliveryActionBusy}
+          dispatchReport={deliveryDispatchReport}
           onStatus={onDeliveryStatus}
           onRefresh={onRefreshDeliveries}
+          onDispatch={onDispatchDeliveries}
           onAction={onDeliveryAction}
         />
       )}
@@ -1813,8 +1858,10 @@ function AlertDeliveryLedger({
   loading,
   error,
   actionBusy,
+  dispatchReport,
   onStatus,
   onRefresh,
+  onDispatch,
   onAction
 }: {
   rows: AlertDeliveryRecord[];
@@ -1822,10 +1869,14 @@ function AlertDeliveryLedger({
   loading: boolean;
   error: string | null;
   actionBusy: string | null;
+  dispatchReport: AlertDispatchReport | null;
   onStatus: (status: AlertDeliveryStatusFilter) => void;
   onRefresh: () => void;
+  onDispatch: () => void;
   onAction: (record: AlertDeliveryRecord, action: "replay" | "close") => void;
 }) {
+  const dispatchStats = buildAlertDispatchResultStats(dispatchReport);
+  const dispatchBusy = actionBusy === "dispatch";
   return (
     <div className="delivery-ledger">
       <div className="queue-controls delivery-controls" aria-label="Alert delivery controls">
@@ -1845,13 +1896,44 @@ function AlertDeliveryLedger({
             <option value="all">All</option>
           </select>
         </label>
-        <button className="secondary-button compact-action" type="button" onClick={onRefresh} disabled={loading}>
-          {loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-          Refresh
-        </button>
+        <div className="delivery-control-actions">
+          <button
+            className="secondary-button compact-action"
+            type="button"
+            onClick={onDispatch}
+            disabled={loading || Boolean(actionBusy)}
+            title="Dispatch due alert deliveries"
+          >
+            {dispatchBusy ? <Loader2 className="spin" size={15} /> : <Rocket size={15} />}
+            Dispatch now
+          </button>
+          <button
+            className="secondary-button compact-action"
+            type="button"
+            onClick={onRefresh}
+            disabled={loading || Boolean(actionBusy)}
+          >
+            {loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error ? <div className="inline-error">{error}</div> : null}
+      {dispatchStats ? (
+        <div className={`delivery-dispatch-result state-${dispatchStats.tone}`}>
+          <div className="delivery-dispatch-copy">
+            <strong>{dispatchStats.title}</strong>
+            <span>{dispatchStats.detail}</span>
+          </div>
+          <div className="delivery-dispatch-metrics">
+            <Metric label="Attempted" value={String(dispatchStats.attemptedCount)} />
+            <Metric label="Sent" value={String(dispatchStats.sentCount)} />
+            <Metric label="Failed" value={String(dispatchStats.failedCount)} />
+            <Metric label="Dead" value={String(dispatchStats.deadCount)} />
+          </div>
+        </div>
+      ) : null}
       {loading && rows.length === 0 ? <LoadingBlock /> : null}
       {!loading && rows.length === 0 ? (
         <PanelEmpty title="No delivery rows" detail="No alert deliveries match this filter." />

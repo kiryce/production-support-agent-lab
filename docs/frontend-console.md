@@ -56,10 +56,12 @@ real local FastAPI endpoints:
    persisted tool calls and SLA/failure aggregates.
 8. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
    a retrieval diagnostic query.
-9. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
+9. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
+   tab runs `Dispatch now` against the durable alert outbox.
+10. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
    from queue triage to event-level investigation by alert key, intent, risk,
    failure type, grounding, policy status, and human-review state.
-10. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
+11. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
    selected monitor event into a copyable eval-case draft.
 
 ## Production Run
@@ -115,9 +117,11 @@ machine.
   action.
 - Delivery ledger from `GET /api/v1/admin/monitor/alert-deliveries`. The
   `Delivery` workbench tab filters outbox rows by status and lets an operator
-  replay/requeue or close `dead` rows through the BFF. The browser still calls
-  only `/api/console/*`; production signing and request nonces stay inside the
-  server-side `agentFetch` proxy.
+  run `Dispatch now`, replay/requeue dead rows, or close `dead` rows through
+  the BFF. `Dispatch now` calls the real backend outbox dispatcher, then
+  refreshes the ledger and alert delivery health strip. The browser still
+  calls only `/api/console/*`; production signing and request nonces stay
+  inside the server-side `agentFetch` proxy.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can
@@ -177,7 +181,8 @@ memory, safety, monitoring, and incident response.
    resolve it until the new sample is checked.
 3. Read `Alert Delivery` before assuming the on-call path is covered. `Webhook off`
    means proactive delivery is intentionally disabled; `Dispatch failed` means
-   inspect `/api/v1/admin/monitor/alert-deliveries` before resolving P0/P1 work.
+   open the `Delivery` tab, click `Dispatch now`, and inspect failed/dead rows
+   before resolving P0/P1 work.
 4. Switch the `Alerts` workbench to `Drilldown` when you need to inspect the
    actual monitor events behind an alert, compare failure buckets, or open a
    sampled run from the event list.
