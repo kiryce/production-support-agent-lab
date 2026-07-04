@@ -51,17 +51,23 @@ class HTTPKnowledgeIndex:
             hits = [self._parse_hit(item) for item in raw_hits[:limit]]
         except (KeyError, TypeError, ValueError):
             return self._empty_trace(query, "knowledge_bad_payload")
-        return RetrievalTrace(
-            query=query,
-            rewritten_queries=[query],
-            selected_sources=[hit.source_uri for hit in hits],
-            candidates_by_stage={"http": len(raw_hits), "selected": len(hits)},
-            selected_context=hits,
-            dropped_candidates=[
+        dropped_candidates = self._safe_strings(payload, "dropped_candidates", fallback=[])
+        if not dropped_candidates:
+            dropped_candidates = [
                 str(item.get("chunk_id") or item.get("id") or index)
                 for index, item in enumerate(raw_hits[limit:], start=limit)
                 if isinstance(item, dict)
-            ],
+            ]
+        return RetrievalTrace(
+            query=query,
+            rewritten_queries=self._safe_strings(payload, "rewritten_queries", fallback=[query]),
+            selected_sources=[hit.source_uri for hit in hits],
+            candidates_by_stage=self._safe_stage_counts(
+                payload,
+                fallback={"http": len(raw_hits), "selected": len(hits)},
+            ),
+            selected_context=hits,
+            dropped_candidates=dropped_candidates,
         )
 
     def _headers(self) -> dict[str, str]:
@@ -102,3 +108,24 @@ class HTTPKnowledgeIndex:
             source_uri=str(item.get("source_uri") or item.get("url") or ""),
             metadata=dict(item.get("metadata") or {}),
         )
+
+    def _safe_strings(self, payload: object, key: str, *, fallback: list[str]) -> list[str]:
+        if not isinstance(payload, dict):
+            return fallback
+        value = payload.get(key)
+        if not isinstance(value, list):
+            return fallback
+        safe = [str(item) for item in value if isinstance(item, str) and item]
+        return safe or fallback
+
+    def _safe_stage_counts(self, payload: object, *, fallback: dict[str, int]) -> dict[str, int]:
+        if not isinstance(payload, dict):
+            return fallback
+        value = payload.get("candidates_by_stage")
+        if not isinstance(value, dict):
+            return fallback
+        safe: dict[str, int] = {}
+        for key, count in value.items():
+            if isinstance(key, str) and type(count) is int and count >= 0:
+                safe[key] = count
+        return safe or fallback

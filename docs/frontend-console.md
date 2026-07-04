@@ -53,6 +53,8 @@ real local FastAPI endpoints:
 6. `GET /api/v1/admin/tools/audit` and
    `GET /api/v1/admin/tools/audit/summary` when the `Tools` workbench searches
    persisted tool calls and SLA/failure aggregates.
+7. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
+   a retrieval diagnostic query.
 
 ## Production Run
 
@@ -63,7 +65,7 @@ AGENT_API_BASE_URL=http://app:8000
 FRONTEND_AUTH_MODE=production
 FRONTEND_ACTOR_USER_ID=console_operator
 FRONTEND_ACTOR_ROLES=admin
-FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,audit:read,events:read,eval:run,memory:replay,monitor:read,monitor:write
+FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,audit:read,events:read,eval:run,knowledge:diagnose,memory:replay,monitor:read,monitor:write
 FRONTEND_REQUEST_SIGNATURE_REQUIRED=true
 APP_TENANT_ID=your_tenant
 APP_INTERNAL_API_KEY=your_internal_gateway_secret
@@ -91,6 +93,10 @@ The backend listens on `8000`; the console listens on `3000`.
   trace, request, actor, status, error code, replay state, and time window; the
   SLA stats come from the backend summary endpoint, not from only the visible
   page of rows.
+- Knowledge workbench backed by the same knowledge adapter the agent uses. It
+  sends operator queries through the BFF, returns snippets instead of full
+  document bodies, and exposes rewrite queries, stage counts, selected sources,
+  dropped candidates, and top-score signals for recall debugging.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
@@ -118,11 +124,13 @@ memory, safety, monitoring, and incident response.
    conversations, routes, or tool error codes.
 3. Switch to `Tools` when the problem is a timeout, upstream error, replay, or
    suspected idempotency issue; open any audit row to hydrate its full run.
-4. Use alert search to find a run, owner, alert reason, or event id.
-5. Assign the alert before investigation so ownership is explicit.
-6. Open `Brief` first for the operator summary and recommended next actions.
-7. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+4. Switch to `Knowledge` when the answer has weak citations, missing grounding,
+   or a suspected recall/rerank/query-rewrite issue.
+5. Use alert search to find a run, owner, alert reason, or event id.
+6. Assign the alert before investigation so ownership is explicit.
+7. Open `Brief` first for the operator summary and recommended next actions.
+8. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-8. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+9. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes.
-9. Resolve only after the triage note explains customer impact and mitigation.
+10. Resolve only after the triage note explains customer impact and mitigation.

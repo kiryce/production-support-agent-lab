@@ -125,6 +125,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/tools` | `admin:read` |
 | `GET /api/v1/admin/tools/audit` | `audit:read` |
 | `GET /api/v1/admin/tools/audit/summary` | `audit:read` |
+| `POST /api/v1/admin/knowledge/search` | `knowledge:diagnose` |
 | `GET /api/v1/admin/runs` | `events:read` |
 | `GET /api/v1/admin/incidents/runs/{run_id}` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true` |
 | `/api/v1/admin/monitor/summary` | `monitor:read` |
@@ -150,7 +151,7 @@ Example incident investigator:
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: events:read,monitor:read,audit:read,memory:replay
+X-Actor-Scopes: events:read,monitor:read,audit:read,knowledge:diagnose,memory:replay
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 ```
@@ -184,6 +185,29 @@ The bundled `/api/v1/admin/evals/golden` endpoint runs lab cases from `examples/
 ```
 
 or a bare list with the same hit shape.
+
+For operator diagnostics, the Agent API exposes
+`POST /api/v1/admin/knowledge/search`. That endpoint calls the configured
+knowledge adapter but returns a deliberately smaller DTO: query rewrites,
+selected sources, candidate stage counts, dropped candidate ids, and selected
+snippets. It does not return raw hit `content` or `metadata`, so console users
+can debug retrieval without exposing complete policy documents or accidental
+upstream payload fields.
+
+If your knowledge service already has retrieval telemetry, include these
+optional top-level fields in the `/knowledge/search` response:
+
+```json
+{
+  "rewritten_queries": ["shipping delay policy", "late delivery support"],
+  "candidates_by_stage": {"bm25": 20, "vector": 12, "reranked": 5, "selected": 3},
+  "dropped_candidates": ["shipping_policy_v1:0", "faq_late_delivery:2"]
+}
+```
+
+When those fields are absent or malformed, the adapter falls back to safe counts
+derived from the returned hits, so the agent can still answer and the console
+can still show a trace.
 
 ## LLM provider
 

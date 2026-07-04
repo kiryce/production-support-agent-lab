@@ -539,6 +539,10 @@ textarea:disabled {
   gap: 8px;
 }
 
+.compact-action {
+  min-height: 36px;
+}
+
 .field-label.compact {
   margin-bottom: 0;
 }
@@ -607,6 +611,73 @@ textarea:disabled {
   grid-column: 1 / -1;
   color: var(--muted);
   font-size: 11px;
+}
+
+.knowledge-diagnostics {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.knowledge-diagnostics section {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  padding: 9px;
+}
+
+.knowledge-diagnostics section > strong {
+  display: block;
+  margin-bottom: 7px;
+  color: #243832;
+  font-size: 12px;
+}
+
+.knowledge-query-list,
+.knowledge-stage-list {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-query-list button,
+.knowledge-stage-list span {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8faf9;
+  padding: 7px;
+  color: #34443e;
+  font-size: 11px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-stage-list span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.knowledge-hit-card {
+  min-height: 156px;
+  border-left-color: var(--blue);
+}
+
+.knowledge-hit-card .badge {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.knowledge-hit-card p {
+  margin: 0;
+  color: #34443e;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-hit-card .run-result-top span,
+.knowledge-hit-card .run-result-meta span {
+  overflow-wrap: anywhere;
 }
 
 .inline-error {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import datetime
 from typing import Annotated
 
@@ -34,6 +35,7 @@ from support_agent_lab.models import (
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
     MonitorEvent,
+    RetrievalTrace,
     new_id,
 )
 from support_agent_lab.monitoring.monitor import MonitorSummary, summarize_monitor_events
@@ -77,11 +79,67 @@ class IncidentRunBundle(BaseModel):
     memory_replay: MemoryReplayResult | None = None
 
 
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    limit: int = Field(default=4, ge=1, le=20)
+    snippet_chars: int = Field(default=500, ge=80, le=1200)
+
+
+class KnowledgeSearchHit(BaseModel):
+    document_id: str
+    chunk_id: str
+    title: str
+    score: float
+    source_uri: str
+    content_snippet: str
+
+
+class KnowledgeSearchResponse(BaseModel):
+    query: str
+    rewritten_queries: list[str]
+    selected_sources: list[str]
+    candidates_by_stage: dict[str, int]
+    dropped_candidates: list[str]
+    selected_context: list[KnowledgeSearchHit]
+
+
 container = create_container()
 
 
 def get_container() -> AppContainer:
     return container
+
+
+def _knowledge_search_response(
+    trace: RetrievalTrace,
+    *,
+    snippet_chars: int,
+) -> KnowledgeSearchResponse:
+    return KnowledgeSearchResponse(
+        query=trace.query,
+        rewritten_queries=trace.rewritten_queries,
+        selected_sources=trace.selected_sources,
+        candidates_by_stage=trace.candidates_by_stage,
+        dropped_candidates=trace.dropped_candidates,
+        selected_context=[
+            KnowledgeSearchHit(
+                document_id=hit.document_id,
+                chunk_id=hit.chunk_id,
+                title=hit.title,
+                score=hit.score,
+                source_uri=hit.source_uri,
+                content_snippet=_snippet(hit.content, snippet_chars),
+            )
+            for hit in trace.selected_context
+        ],
+    )
+
+
+def _snippet(value: str, max_chars: int) -> str:
+    compact = " ".join(value.split())
+    if len(compact) <= max_chars:
+        return compact
+    return f"{compact[: max_chars - 3]}..."
 
 
 def create_app() -> FastAPI:
@@ -272,6 +330,18 @@ def create_app() -> FastAPI:
             created_after=created_after.isoformat() if created_after else None,
             created_before=created_before.isoformat() if created_before else None,
         )
+
+    @app.post("/api/v1/admin/knowledge/search")
+    async def search_knowledge(
+        body: KnowledgeSearchRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> KnowledgeSearchResponse:
+        require_admin(actor)
+        require_scope(actor, "knowledge:diagnose")
+        search_result = deps.knowledge.search(body.query, limit=body.limit)
+        trace = await search_result if inspect.isawaitable(search_result) else search_result
+        return _knowledge_search_response(trace, snippet_chars=body.snippet_chars)
 
     @app.get("/api/v1/admin/monitor/events")
     def monitor_events(

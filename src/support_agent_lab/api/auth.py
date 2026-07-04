@@ -23,6 +23,7 @@ DEFAULT_ADMIN_SCOPES = [
     "audit:read",
     "events:read",
     "eval:run",
+    "knowledge:diagnose",
     "memory:replay",
     "monitor:read",
     "monitor:write",

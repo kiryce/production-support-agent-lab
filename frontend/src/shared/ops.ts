@@ -2,6 +2,7 @@ import type {
   AgentRunSearchResponse,
   ConsoleSnapshot,
   EvalReport,
+  KnowledgeSearchResponse,
   MonitorAlert,
   ToolAuditSummary
 } from "./types";
@@ -61,6 +62,15 @@ export type ToolAuditStats = {
   averageLatencyMs: number | null;
   worstToolName: string;
   topErrorCode: string;
+};
+
+export type KnowledgeSearchStats = {
+  selectedChunks: number;
+  sourceCount: number;
+  candidateCount: number;
+  droppedCandidates: number;
+  topScore: number | null;
+  topSource: string;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -218,6 +228,19 @@ export function buildToolAuditStats(summary: ToolAuditSummary | null): ToolAudit
     averageLatencyMs: summary?.average_latency_ms ?? null,
     worstToolName: worstTool?.tool_name ?? "none",
     topErrorCode: summary?.top_error_codes[0]?.error_code ?? "none"
+  };
+}
+
+export function buildKnowledgeSearchStats(trace: KnowledgeSearchResponse | null): KnowledgeSearchStats {
+  const stageCounts = Object.values(trace?.candidates_by_stage ?? {});
+  const topHit = trace?.selected_context[0] ?? null;
+  return {
+    selectedChunks: trace?.selected_context.length ?? 0,
+    sourceCount: new Set(trace?.selected_sources ?? []).size,
+    candidateCount: stageCounts.length ? Math.max(...stageCounts) : 0,
+    droppedCandidates: trace?.dropped_candidates.length ?? 0,
+    topScore: typeof topHit?.score === "number" ? topHit.score : null,
+    topSource: topHit?.source_uri ?? "none"
   };
 }
 

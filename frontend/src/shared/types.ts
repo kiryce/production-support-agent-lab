@@ -58,6 +58,24 @@ export type RetrievalTrace = {
   dropped_candidates: string[];
 };
 
+export type KnowledgeSearchHit = {
+  document_id: string;
+  chunk_id: string;
+  title: string;
+  score: number;
+  source_uri: string;
+  content_snippet: string;
+};
+
+export type KnowledgeSearchResponse = {
+  query: string;
+  rewritten_queries: string[];
+  selected_sources: string[];
+  candidates_by_stage: Record<string, number>;
+  selected_context: KnowledgeSearchHit[];
+  dropped_candidates: string[];
+};
+
 export type ToolResult = {
   id: string;
   name: string;

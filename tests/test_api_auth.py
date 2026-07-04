@@ -8,7 +8,7 @@ from support_agent_lab.api.auth import get_request_actor, _get_production_actor
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
-from support_agent_lab.models import IntentType, MonitorEvent, RiskLevel
+from support_agent_lab.models import IntentType, MonitorEvent, RetrievalHit, RetrievalTrace, RiskLevel
 from support_agent_lab.security.actor_signature import build_signed_request_headers, sign_actor_claims
 
 
@@ -95,6 +95,36 @@ def _signed_request_headers(
     if body:
         headers["Content-Type"] = "application/json"
     return headers
+
+
+class _RecordingKnowledge:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, int]] = []
+
+    def search(self, query: str, limit: int = 4) -> RetrievalTrace:
+        self.calls.append((query, limit))
+        return RetrievalTrace(
+            query=query,
+            rewritten_queries=[query, f"{query} policy"],
+            selected_sources=["kb://return_policy_v2"],
+            candidates_by_stage={"bm25": 9, "vector": 6, "reranked": 2, "selected": 1},
+            selected_context=[
+                RetrievalHit(
+                    document_id="return_policy_v2",
+                    chunk_id="return_policy_v2:3",
+                    title="Return policy",
+                    content=(
+                        "Visible policy sentence. "
+                        + ("Damaged products can be returned after inspection. " * 20)
+                        + "SECRET_TOKEN_SHOULD_NOT_LEAK"
+                    ),
+                    score=0.93,
+                    source_uri="kb://return_policy_v2",
+                    metadata={"internal_note": "SECRET_METADATA_SHOULD_NOT_LEAK"},
+                )
+            ],
+            dropped_candidates=["return_policy_v1:0"],
+        )
 
 
 def test_production_actor_requires_trusted_gateway_key():
@@ -622,6 +652,117 @@ def test_admin_can_read_tool_audit_summary_without_raw_arguments(tmp_path, monke
     assert "idempotency_key_hash" not in serialized
     assert "arguments" not in serialized
     assert "data" not in serialized
+
+
+def test_admin_can_search_knowledge_diagnostics_without_raw_content(monkeypatch):
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.knowledge = _RecordingKnowledge()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        forbidden = client.post(
+            "/api/v1/admin/knowledge/search",
+            json={"query": "return broken headphones", "limit": 2, "snippet_chars": 120},
+        )
+        allowed = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "return broken headphones", "limit": 2, "snippet_chars": 120},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    assert app_container.knowledge.calls == [("return broken headphones", 2)]
+    body = allowed.json()
+    assert body["query"] == "return broken headphones"
+    assert body["rewritten_queries"] == ["return broken headphones", "return broken headphones policy"]
+    assert body["candidates_by_stage"]["reranked"] == 2
+    assert body["dropped_candidates"] == ["return_policy_v1:0"]
+    hit = body["selected_context"][0]
+    assert set(hit) == {"document_id", "chunk_id", "title", "score", "source_uri", "content_snippet"}
+    assert len(hit["content_snippet"]) <= 120
+    assert hit["content_snippet"].endswith("...")
+    serialized = str(body)
+    assert "content" not in hit
+    assert "metadata" not in hit
+    assert "SECRET_TOKEN_SHOULD_NOT_LEAK" not in serialized
+    assert "SECRET_METADATA_SHOULD_NOT_LEAK" not in serialized
+
+
+def test_admin_knowledge_search_validates_request_shape(monkeypatch):
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.knowledge = _RecordingKnowledge()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        empty_query = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "", "limit": 2},
+        )
+        invalid_limit = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "invoice", "limit": 0},
+        )
+        invalid_snippet = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers={"X-Demo-Role": "admin"},
+            json={"query": "invoice", "snippet_chars": 20},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert empty_query.status_code == 422
+    assert invalid_limit.status_code == 422
+    assert invalid_snippet.status_code == 422
+    assert app_container.knowledge.calls == []
+
+
+def test_production_admin_knowledge_search_requires_explicit_diagnostics_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app_container.knowledge = _RecordingKnowledge()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_REQUIRE_PRODUCTION", "false")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_scope = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers=_production_headers(scopes="kb:read"),
+            json={"query": "invoice", "limit": 1},
+        )
+        metadata_scope_only = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers=_production_headers(scopes="admin:read"),
+            json={"query": "invoice", "limit": 1},
+        )
+        allowed = client.post(
+            "/api/v1/admin/knowledge/search",
+            headers=_production_headers(scopes="knowledge:diagnose"),
+            json={"query": "invoice", "limit": 1},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_scope.status_code == 403
+    assert missing_scope.json()["detail"] == "Missing required scope: knowledge:diagnose"
+    assert metadata_scope_only.status_code == 403
+    assert metadata_scope_only.json()["detail"] == "Missing required scope: knowledge:diagnose"
+    assert allowed.status_code == 200
+    assert app_container.knowledge.calls == [("invoice", 1)]
 
 
 def test_production_admin_tool_audit_requires_explicit_audit_scope(tmp_path, monkeypatch):

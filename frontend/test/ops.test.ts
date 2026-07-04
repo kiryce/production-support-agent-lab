@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   buildIncidentBrief,
+  buildKnowledgeSearchStats,
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
   filterAndSortAlerts
 } from "../src/shared/ops";
-import type { ConsoleSnapshot, MonitorAlert } from "../src/shared/types";
+import type { ConsoleSnapshot, KnowledgeSearchResponse, MonitorAlert } from "../src/shared/types";
 
 function alert(overrides: Partial<MonitorAlert>): MonitorAlert {
   return {
@@ -255,5 +256,53 @@ describe("ops workbench helpers", () => {
     expect(stats.averageLatencyMs).toBeNull();
     expect(stats.worstToolName).toBe("none");
     expect(stats.topErrorCode).toBe("none");
+  });
+
+  it("summarizes knowledge retrieval diagnostics", () => {
+    const trace: KnowledgeSearchResponse = {
+      query: "broken headphones return",
+      rewritten_queries: ["broken headphones return", "damaged item refund"],
+      selected_sources: ["kb://returns", "kb://returns", "kb://shipping"],
+      candidates_by_stage: { bm25: 14, vector: 9, reranked: 4, selected: 2 },
+      dropped_candidates: ["returns:old", "shipping:slow"],
+      selected_context: [
+        {
+          document_id: "returns",
+          chunk_id: "returns:2",
+          title: "Returns",
+          score: 0.92,
+          source_uri: "kb://returns",
+          content_snippet: "Damaged goods can be returned within 30 days."
+        },
+        {
+          document_id: "shipping",
+          chunk_id: "shipping:1",
+          title: "Shipping",
+          score: 0.74,
+          source_uri: "kb://shipping",
+          content_snippet: "Keep packaging when filing a damage claim."
+        }
+      ]
+    };
+
+    const stats = buildKnowledgeSearchStats(trace);
+
+    expect(stats.selectedChunks).toBe(2);
+    expect(stats.sourceCount).toBe(2);
+    expect(stats.candidateCount).toBe(14);
+    expect(stats.droppedCandidates).toBe(2);
+    expect(stats.topScore).toBe(0.92);
+    expect(stats.topSource).toBe("kb://returns");
+  });
+
+  it("returns stable empty knowledge retrieval stats", () => {
+    const stats = buildKnowledgeSearchStats(null);
+
+    expect(stats.selectedChunks).toBe(0);
+    expect(stats.sourceCount).toBe(0);
+    expect(stats.candidateCount).toBe(0);
+    expect(stats.droppedCandidates).toBe(0);
+    expect(stats.topScore).toBeNull();
+    expect(stats.topSource).toBe("none");
   });
 });

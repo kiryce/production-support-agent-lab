@@ -13,6 +13,7 @@ The console should help an on-call operator or Agent beginner answer:
 - Which intent, route, tools, retrieval hits, policy findings, and monitor event caused an alert?
 - Did a tool fail because of auth, schema, timeout, upstream 5xx, replay, or missing retrieval?
 - Is a tool failure isolated, or is it an SLA/error-rate pattern across the audit log?
+- Did retrieval fail because of query rewrite, candidate recall, reranking, source selection, or dropped candidates?
 - Which regression file should receive the real failure sample?
 - Has someone acknowledged, investigated, or resolved a monitor alert?
 
@@ -25,6 +26,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Incident bundle | `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true` | One response with run, monitor events, tool audit, and optional memory replay. |
 | Tool audit | `GET /api/v1/admin/tools/audit?trace_id=...` | Durable tool facts without raw arguments or PII. |
 | Tool audit summary | `GET /api/v1/admin/tools/audit/summary?...` | Tool-level failure/SLA aggregate without raw arguments or hashes. |
+| Knowledge diagnostics | `POST /api/v1/admin/knowledge/search` | Runs the real knowledge adapter and returns safe snippets plus rewrite/stage/drop telemetry. |
 | Monitor summary | `GET /api/v1/admin/monitor/summary?source=event_store` | Aggregates live quality by risk, intent, failure type, grounded rate, and alerts. |
 | Monitor events | `GET /api/v1/admin/monitor/events?source=event_store` | Raw structured monitor events for sampling and replay. |
 | Alert triage | `GET/POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | Append-only ack/investigate/resolve workflow. |
@@ -39,6 +41,10 @@ Recent local browser QA screenshots, saved outside the committed repo:
 - `work/design-qa/console-tools-mobile-390x844.png`
 - `work/design-qa/console-tools-mobile-viewport-390x844.png`
 - `work/design-qa/console-tools-mobile-workspace-390x844.png`
+- `work/design-qa/console-knowledge-desktop-1487x1058.png`
+- `work/design-qa/console-knowledge-mobile-390x844.png`
+- `work/design-qa/console-knowledge-mobile-workspace-390x844.png`
+- `work/design-qa/console-knowledge-mobile-hits-390x844.png`
 
 Checks performed:
 
@@ -49,3 +55,8 @@ Checks performed:
   IDs stay within their containers.
 - Selecting an audit card hydrates the shared trace/evidence workflow by
   `trace_id`.
+- `Knowledge` rail becomes the active workspace and keeps the shared evidence
+  area on citations.
+- Desktop and mobile Knowledge workbench states render real adapter results:
+  query rewrite, candidate stage counts, selected snippets, long source URIs,
+  and score badges without page-level horizontal overflow.

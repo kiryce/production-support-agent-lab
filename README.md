@@ -8,15 +8,21 @@
 This repo includes a production-shaped Next.js console in `frontend/`.
 It is not a mock dashboard: the UI calls server-side BFF routes, and those
 routes call the real FastAPI Agent API for monitor alerts, run traces,
-citations, tool audit, memory replay, and triage writes.
+citations, knowledge diagnostics, tool audit, memory replay, and triage writes.
 It now includes queue search/sort/status filtering, operator assignment,
 persisted run search, a Tools workbench for durable audit/SLA investigation,
-copyable incident briefs, readiness preflight, and a staging eval gate.
+safe RAG recall diagnostics, copyable incident briefs, readiness preflight,
+and a staging eval gate.
 
 Start with `docs/frontend-console.md` after the backend quick start. In local
 learning mode, the `Run Scenario` button creates real local events through
 `/chat/sessions` and `/chat/messages`; in production auth mode, that button is
 disabled so the console only observes real support traffic or staging data.
+
+The `Knowledge` workbench calls `POST /api/v1/admin/knowledge/search` through
+the BFF. It uses the real configured knowledge adapter, returns safe snippets
+instead of raw document bodies, and shows rewrite queries, stage counts,
+selected sources, and dropped candidates for RAG recall debugging.
 
 一个给 Agent 初学者和小白学习 Agent 工程的生产化客服 Agent 项目。
 
@@ -222,7 +228,7 @@ Admin endpoints 还需要管理面 scopes。示例：
 
 ```text
 X-Actor-Roles: admin
-X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,memory:replay,admin:read
+X-Actor-Scopes: monitor:read,monitor:write,events:read,audit:read,knowledge:diagnose,memory:replay,admin:read
 X-Actor-Timestamp: <unix timestamp>
 X-Actor-Signature: sha256=<HMAC over tenant/user/roles/scopes/timestamp>
 X-Request-Nonce: <unique request nonce>

@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import {
   buildIncidentBrief,
+  buildKnowledgeSearchStats,
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
@@ -41,6 +42,7 @@ import {
   type AlertSort,
   type AlertStatusFilter,
   type IncidentBrief,
+  type KnowledgeSearchStats,
   type OpsMetrics,
   type RunSearchStats,
   type ToolAuditStats
@@ -53,10 +55,12 @@ import type {
   EvalReport,
   IncidentRunBundle,
   JsonValue,
+  KnowledgeSearchResponse,
   MonitorAlert,
   MonitorEvent,
   PolicyFinding,
   RetrievalHit,
+  RetrievalTrace,
   StoredEvent,
   ToolAuditRecord,
   ToolAuditSearchResponse,
@@ -87,7 +91,7 @@ type TimelineStepId =
   | "monitor";
 
 type EvidenceTab = "brief" | "citations" | "tool-audit" | "memory" | "triage";
-type WorkspaceMode = "alerts" | "runs" | "tools";
+type WorkspaceMode = "alerts" | "runs" | "tools" | "knowledge";
 
 type LoadInput = {
   runId?: string | null;
@@ -148,6 +152,11 @@ export default function Home() {
   const [toolAuditResults, setToolAuditResults] = useState<ToolAuditSearchResponse | null>(null);
   const [toolAuditLoading, setToolAuditLoading] = useState(false);
   const [toolAuditError, setToolAuditError] = useState<string | null>(null);
+  const [knowledgeQuery, setKnowledgeQuery] = useState("");
+  const [knowledgeLimit, setKnowledgeLimit] = useState("4");
+  const [knowledgeTrace, setKnowledgeTrace] = useState<KnowledgeSearchResponse | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("active");
   const [queueQuery, setQueueQuery] = useState("");
@@ -236,6 +245,11 @@ export default function Home() {
   const toolAuditStats = useMemo<ToolAuditStats>(
     () => buildToolAuditStats(toolAuditResults?.summary ?? null),
     [toolAuditResults]
+  );
+
+  const knowledgeStats = useMemo<KnowledgeSearchStats>(
+    () => buildKnowledgeSearchStats(knowledgeTrace),
+    [knowledgeTrace]
   );
 
   useEffect(() => {
@@ -362,6 +376,51 @@ export default function Home() {
   function submitToolAuditSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void searchToolAudit();
+  }
+
+  async function searchKnowledge(nextQuery = knowledgeQuery, nextLimit = knowledgeLimit) {
+    const trimmed = nextQuery.trim();
+    if (!trimmed) {
+      setKnowledgeError("Enter a query before searching knowledge.");
+      return;
+    }
+    setKnowledgeLoading(true);
+    setKnowledgeError(null);
+    try {
+      const response = await fetch("/api/console/knowledge/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          query: trimmed,
+          limit: Number(nextLimit),
+          snippet_chars: 500
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Knowledge search failed");
+      }
+      setKnowledgeQuery(trimmed);
+      setKnowledgeLimit(nextLimit);
+      setKnowledgeTrace(data as KnowledgeSearchResponse);
+    } catch (nextError) {
+      setKnowledgeError(nextError instanceof Error ? nextError.message : "Knowledge search failed");
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }
+
+  function submitKnowledgeSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void searchKnowledge();
+  }
+
+  function loadCurrentRunRetrieval(trace: RetrievalTrace) {
+    setKnowledgeTrace(toKnowledgeSearchResponse(trace));
+    setKnowledgeQuery(trace.query);
+    setKnowledgeLimit(String(Math.max(1, Math.min(20, trace.selected_context.length || 4))));
+    setEvidenceTab("citations");
   }
 
   function openRunFromWorkbench(item: AgentRunSearchItem) {
@@ -512,6 +571,14 @@ export default function Home() {
               void searchToolAudit();
             }
           }
+          if (target === "knowledge") {
+            setWorkspaceMode("knowledge");
+            setEvidenceTab("citations");
+            const currentRetrieval = snapshot?.incident?.run.retrieval ?? null;
+            if (!knowledgeTrace && currentRetrieval) {
+              loadCurrentRunRetrieval(currentRetrieval);
+            }
+          }
           if (target === "memory") {
             setEvidenceTab("memory");
           }
@@ -621,7 +688,7 @@ export default function Home() {
           />
           <ContextItem
             label="Scopes"
-            value="monitor, audit, memory"
+            value="monitor, audit, knowledge"
             detail="BFF signed server-side"
             icon={ShieldCheck}
           />
@@ -683,7 +750,22 @@ export default function Home() {
         <OpsOverview metrics={opsMetrics} snapshot={snapshot} evalReport={evalReport} />
 
         <section className="workspace">
-          {workspaceMode === "tools" ? (
+          {workspaceMode === "knowledge" ? (
+            <KnowledgeWorkbenchPanel
+              trace={knowledgeTrace}
+              stats={knowledgeStats}
+              loading={knowledgeLoading}
+              error={knowledgeError}
+              query={knowledgeQuery}
+              limit={knowledgeLimit}
+              currentRetrieval={run?.retrieval ?? null}
+              onQuery={setKnowledgeQuery}
+              onLimit={setKnowledgeLimit}
+              onSubmit={submitKnowledgeSearch}
+              onSearch={searchKnowledge}
+              onUseCurrent={loadCurrentRunRetrieval}
+            />
+          ) : workspaceMode === "tools" ? (
             <ToolAuditWorkbenchPanel
               results={toolAuditResults}
               stats={toolAuditStats}
@@ -1304,6 +1386,158 @@ function RunWorkbenchPanel({
           </div>
         </div>
       ) : null}
+    </aside>
+  );
+}
+
+function KnowledgeWorkbenchPanel({
+  trace,
+  stats,
+  loading,
+  error,
+  query,
+  limit,
+  currentRetrieval,
+  onQuery,
+  onLimit,
+  onSubmit,
+  onSearch,
+  onUseCurrent
+}: {
+  trace: KnowledgeSearchResponse | null;
+  stats: KnowledgeSearchStats;
+  loading: boolean;
+  error: string | null;
+  query: string;
+  limit: string;
+  currentRetrieval: RetrievalTrace | null;
+  onQuery: (value: string) => void;
+  onLimit: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onSearch: (query?: string, limit?: string) => void | Promise<void>;
+  onUseCurrent: (trace: RetrievalTrace) => void;
+}) {
+  const hits = trace?.selected_context ?? [];
+  const stages = Object.entries(trace?.candidates_by_stage ?? {});
+  return (
+    <aside className="alerts-panel run-workbench knowledge-workbench">
+      <div className="panel-heading">
+        <div>
+          <span>Knowledge Search</span>
+          <strong>{stats.selectedChunks} selected chunks</strong>
+        </div>
+      </div>
+
+      <form className="run-search-form" onSubmit={onSubmit}>
+        <label className="search-control">
+          <BookOpen size={14} />
+          <input
+            value={query}
+            onChange={(event) => onQuery(event.target.value)}
+            placeholder="Search policy, shipping, invoice"
+            aria-label="Search knowledge base"
+          />
+        </label>
+        <div className="run-filter-grid">
+          <label className="filter-control">
+            <SlidersHorizontal size={14} />
+            <select value={limit} onChange={(event) => onLimit(event.target.value)} aria-label="Knowledge search limit">
+              <option value="4">4 chunks</option>
+              <option value="8">8 chunks</option>
+              <option value="12">12 chunks</option>
+              <option value="20">20 chunks</option>
+            </select>
+          </label>
+          <button className="primary-button compact-action" type="submit" disabled={loading || !query.trim()}>
+            {loading ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+            Search
+          </button>
+        </div>
+        {currentRetrieval ? (
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => onUseCurrent(currentRetrieval)}
+            disabled={loading}
+          >
+            <BookOpen size={16} />
+            Use run query
+          </button>
+        ) : null}
+      </form>
+
+      <div className="run-search-stats" aria-label="Knowledge retrieval stats">
+        <Metric label="Candidates" value={String(stats.candidateCount)} />
+        <Metric label="Sources" value={String(stats.sourceCount)} />
+        <Metric label="Dropped" value={String(stats.droppedCandidates)} />
+        <Metric label="Top score" value={stats.topScore === null ? "n/a" : stats.topScore.toFixed(2)} />
+      </div>
+
+      <div className={error ? "inline-error" : "sr-only"} role="status" aria-live="polite">
+        {error ?? `${hits.length} knowledge chunks loaded`}
+      </div>
+
+      {trace ? (
+        <div className="knowledge-diagnostics">
+          <section>
+            <strong>Rewrite</strong>
+            <div className="knowledge-query-list">
+              {trace.rewritten_queries.map((item) => (
+                <button
+                  type="button"
+                  key={item}
+                  onClick={() => void onSearch(item, limit)}
+                  title={`Search ${item}`}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </section>
+          <section>
+            <strong>Stages</strong>
+            <div className="knowledge-stage-list">
+              {stages.length ? (
+                stages.map(([name, count]) => (
+                  <span key={name}>
+                    <b>{name}</b>
+                    {count}
+                  </span>
+                ))
+              ) : (
+                <span>
+                  <b>none</b>
+                  0
+                </span>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      <div className="run-result-list">
+        {loading && !trace ? <LoadingBlock /> : null}
+        {!loading && trace && !hits.length ? (
+          <PanelEmpty title="No chunks returned" detail="Capture this query in the retrieval challenge before changing prompts." />
+        ) : null}
+        {!trace && !loading ? (
+          <PanelEmpty title="Search knowledge base" detail="Run a query or open a run with retrieval evidence." />
+        ) : null}
+        {hits.map((hit) => (
+          <article className="run-result-card knowledge-hit-card" key={hit.chunk_id}>
+            <div className="run-result-top">
+              <Badge tone={hit.score >= 1 ? "success" : "neutral"}>{hit.score.toFixed(2)}</Badge>
+              <span>{hit.source_uri || "no source"}</span>
+            </div>
+            <strong>{hit.title}</strong>
+            <p>{hit.content_snippet}</p>
+            <div className="run-result-meta">
+              <span>{hit.document_id}</span>
+              <span>{hit.chunk_id}</span>
+            </div>
+          </article>
+        ))}
+      </div>
     </aside>
   );
 }
@@ -2426,6 +2660,29 @@ function stringifyValue(value: JsonValue): string {
     return JSON.stringify(value);
   }
   return String(value);
+}
+
+function toKnowledgeSearchResponse(trace: RetrievalTrace): KnowledgeSearchResponse {
+  return {
+    query: trace.query,
+    rewritten_queries: trace.rewritten_queries,
+    selected_sources: trace.selected_sources,
+    candidates_by_stage: trace.candidates_by_stage,
+    dropped_candidates: trace.dropped_candidates,
+    selected_context: trace.selected_context.map((hit) => ({
+      document_id: hit.document_id,
+      chunk_id: hit.chunk_id,
+      title: hit.title,
+      score: hit.score,
+      source_uri: hit.source_uri,
+      content_snippet: snippet(hit.content, 500)
+    }))
+  };
+}
+
+function snippet(value: string, max: number) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  return compact.length > max ? `${compact.slice(0, max - 3)}...` : compact;
 }
 
 function truncate(value: string, max: number) {
