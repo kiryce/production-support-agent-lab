@@ -388,11 +388,13 @@ signatures and per-actor rate limits so normal scrapers can call it without
 minting nonces. Protect it with internal networking, mTLS, or gateway ACLs. The
 endpoint intentionally exports only aggregate, low-cardinality signals such as
 HTTP request counts by method/route family/status, rate-limit decision counts,
-monitor event counts, alert delivery outbox counts by status/severity, alert
-delivery health, grounded/policy/human-review rates, tool audit totals and
-latency summaries, adapter circuit state, LLM fallback counts, and rate-limit
-configuration. It does not include user ids, trace ids, alert keys, raw tool
-arguments, request bodies, retrieved snippets, or monitor summaries.
+monitor event counts, monitor triage health by status/severity, active/stale
+alert counts, MTTA/MTTR, alert delivery outbox counts by status/severity,
+alert delivery health, grounded/policy/human-review rates, tool audit totals
+and latency summaries, adapter circuit state, LLM fallback counts, and
+rate-limit configuration. It does not include user ids, assignees, trace ids,
+alert keys, triage notes, raw tool arguments, request bodies, retrieved
+snippets, or monitor summaries.
 
 ## Startup checks
 

@@ -230,6 +230,11 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/summary" \
 不包含用户原文、工具参数或 eval answer。
 控制台的 Delivery ledger 会读取同一个 outbox；值班人员只能对 `dead` row 执行
 replay/requeue 或 close，动作会保留在 append-only audit event 中。
+Prometheus `/metrics` 会读取同一套 monitor triage 投影，但只输出聚合指标：active
+alert、unassigned active、untriaged、new-after-triage、stale active、one-hot health
+status、按 status/severity 的 alert 数、MTTA/MTTR 和最近 triage 时间戳。它不会输出
+`alert_key`、assignee、operator、note、sample run id 或事件摘要；这些只留给受权限保护
+的控制台和 incident drilldown。
 Prometheus `/metrics` 也读取同一个 durable outbox，但只输出聚合指标：按
 `status`、`severity` 的 row 数、当前 due rows、记录过的 attempt 数、one-hot health
 status，以及最近 attempt/success/dead-letter 时间戳。它不会输出 `alert_key`、

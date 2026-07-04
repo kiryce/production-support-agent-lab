@@ -80,6 +80,7 @@ monitor.review
 - time to resolve
 - open alert count
 - repeated alert rate
+- monitor triage health: active P0/P1, unassigned active, new-after-triage, stale active, MTTA, and MTTR from `/metrics`
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, and last success/dead-letter timestamp from `/metrics`
 
 ## 发布策略

@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from fastapi.testclient import TestClient
 
 from support_agent_lab.api.main import app, get_container
@@ -11,13 +13,14 @@ from support_agent_lab.models import (
     AlertDeliveryStatus,
     IntentType,
     MonitorAlertStatus,
+    MonitorAlertTriageEvent,
     MonitorEvent,
     RiskLevel,
     ToolStatus,
     utc_now,
 )
 from support_agent_lab.monitoring.alert_dispatcher import build_alert_delivery_record, hash_alert_destination
-from support_agent_lab.monitoring.monitor import MonitorAlert, OnlineMonitorAgent
+from support_agent_lab.monitoring.monitor import MonitorAlert, OnlineMonitorAgent, monitor_alert_key
 from support_agent_lab.tools.registry import ToolAuditRecord, ToolBroker, ToolRegistry
 
 
@@ -184,6 +187,69 @@ def test_prometheus_metrics_exports_alert_delivery_outbox_health(tmp_path):
     assert "support_agent_alert_delivery_due_records 1" in body
     assert "support_agent_alert_delivery_attempts_recorded 2" in body
     assert 'support_agent_alert_delivery_health_status{status="failed"} 1' in body
+
+
+def test_prometheus_metrics_exports_monitor_triage_health_without_high_cardinality_labels(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    first_seen = utc_now() - timedelta(minutes=70)
+    first_event = MonitorEvent(
+        conversation_id="conv_triage_metrics_1",
+        run_id="run_triage_metrics_1",
+        timestamp=first_seen,
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.medium,
+        grounded=True,
+        policy_compliant=True,
+        needs_human_review=True,
+        failure_types=["TIMEOUT"],
+        summary="shipping timeout with raw details",
+    )
+    second_event = first_event.model_copy(
+        update={
+            "id": "mon_triage_metrics_2",
+            "conversation_id": "conv_triage_metrics_2",
+            "run_id": "run_triage_metrics_2",
+            "timestamp": first_seen + timedelta(minutes=5),
+        }
+    )
+    alert_key = monitor_alert_key(first_event)
+    event_store.append_monitor_event(first_event, tenant_id="demo_tenant")
+    event_store.append_monitor_event(second_event, tenant_id="demo_tenant")
+    event_store.append_monitor_alert_triage(
+        MonitorAlertTriageEvent(
+            id="triage_metrics_ack",
+            alert_key=alert_key,
+            status=MonitorAlertStatus.acknowledged,
+            assignee_user_id="backend-oncall",
+            actor_user_id="admin_user",
+            note="ack before follow-up timeout",
+            created_at=first_seen + timedelta(minutes=1),
+        ),
+        tenant_id="demo_tenant",
+    )
+    container = _metrics_container(event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert alert_key not in body
+    assert "run_triage_metrics_1" not in body
+    assert "backend-oncall" not in body
+    assert "ack before follow-up timeout" not in body
+    assert "shipping timeout with raw details" not in body
+    assert "support_agent_monitor_triage_active_alerts 1" in body
+    assert "support_agent_monitor_triage_unassigned_active_alerts 0" in body
+    assert "support_agent_monitor_triage_untriaged_alerts 0" in body
+    assert "support_agent_monitor_triage_new_events_since_triage 1" in body
+    assert "support_agent_monitor_triage_stale_active_alerts 1" in body
+    assert "support_agent_monitor_triage_stale_threshold_seconds 3600" in body
+    assert "support_agent_monitor_triage_mtta_seconds 60" in body
+    assert 'support_agent_monitor_triage_health_status{status="degraded"} 1' in body
+    assert 'support_agent_monitor_triage_alerts_by_status{status="acknowledged"} 1' in body
+    assert 'support_agent_monitor_triage_alerts_by_severity{severity="P2"} 1' in body
+    assert 'support_agent_monitor_triage_active_alerts_by_severity{severity="P2"} 1' in body
+    assert "support_agent_monitor_triage_oldest_active_alert_age_seconds" in body
+    assert "support_agent_monitor_triage_latest_action_timestamp_seconds" in body
 
 
 def _metrics_container(

@@ -147,7 +147,7 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置和 event store；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
-`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、alert delivery outbox、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、alert key、工具参数或知识库正文。
+`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、工具参数或知识库正文。
 
 ### 4. 启动前端控制台
 
@@ -444,6 +444,8 @@ Eval 不只看最终回答，还检查：
 生产环境会拒绝 `/api/v1/admin/evals/golden` 和 `/api/v1/admin/evals/staging`，避免 lab fixtures 打到真实系统。请在 CI 或 staging sandbox 跑 eval。
 
 `/api/v1/admin/promotion/gate` 是只读发布前检查：它不会自动跑 eval 或改 triage，而是读取 readiness、monitor triage metrics、tool audit summary 和最新 staging aggregate eval gate，返回 `passed`、`warn` 或 `blocked` 以及每条 evidence。控制台会把这个状态放进 Overview 和 Production Preflight。
+
+`/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。这些适合 Prometheus alert rule；控制台仍然负责展示具体 alert、run、事件和处置备注。
 
 `/api/v1/admin/monitor/alert-deliveries/dispatch` 会从持久化 monitor events 派生 P0/P1 active alerts，写入 `alert_delivery_outbox`，再 claim 到期可发送的 delivery。失败会按指数 backoff 设置 `next_attempt_at`；超过 `APP_MONITOR_ALERT_MAX_ATTEMPTS` 后进入 dead-letter，不再自动重试。控制台 Delivery ledger 可以对 `dead` row 做 replay/requeue 或 close，动作会写入 append-only audit event。它不会把用户原文、工具参数或 eval answer 放进通知 payload，只发送 alert key、severity、reason、sample run/event ids 和时间窗口。`GET /api/v1/admin/monitor/alert-deliveries/summary` 给控制台展示 webhook 是 disabled、queued、failed 还是 ok，并返回 in-progress/dead-letter/closed 计数；`/metrics` 会把同一个 durable outbox 聚合成低基数指标，例如 `support_agent_alert_delivery_records{status="dead"}`、`support_agent_alert_delivery_records_by_severity{severity="P0"}` 和 `support_agent_alert_delivery_health_status{status="failed"}`。
 

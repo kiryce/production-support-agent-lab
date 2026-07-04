@@ -19,6 +19,12 @@ from support_agent_lab.models import (
     utc_now,
 )
 from support_agent_lab.monitoring.monitor import summarize_monitor_events
+from support_agent_lab.monitoring.triage import (
+    MONITOR_ALERT_SEVERITIES,
+    MONITOR_TRIAGE_HEALTH_STATUSES,
+    MonitorTriageMetricsResponse,
+    monitor_triage_metrics_response,
+)
 from support_agent_lab.tools.http_business_tools import HTTPBusinessClient
 from support_agent_lab.tools.registry import ToolAuditSummary, ToolAuditToolSummary
 
@@ -87,6 +93,17 @@ def render_prometheus_metrics(
         limit=limit,
     )
     monitor_summary = summarize_monitor_events(monitor_events, triage_events=triage_events)
+    triage_metrics = monitor_triage_metrics_response(
+        source=resolved_source,
+        events=monitor_events,
+        triage_events=triage_events,
+        conversation_id=None,
+        created_after=created_after,
+        created_before=None,
+        limit=limit,
+        order="desc",
+        stale_after=timedelta(minutes=60),
+    )
     tool_summary = _load_tool_audit_summary(deps, created_after=created_after)
 
     metrics = _MetricWriter()
@@ -128,6 +145,7 @@ def render_prometheus_metrics(
 
     _add_http_metrics(metrics, http_metrics)
     _add_alert_delivery_metrics(metrics, deps, now=now)
+    _add_monitor_triage_metrics(metrics, triage_metrics, now=now)
     _add_monitor_metrics(metrics, monitor_summary, monitor_events)
     _add_tool_metrics(metrics, tool_summary)
     _add_circuit_metrics(metrics, deps)
@@ -284,6 +302,114 @@ def _alert_delivery_health_status(*, webhook_enabled: bool, status_counts: dict[
     if queued_count:
         return "queued"
     return "ok"
+
+
+def _add_monitor_triage_metrics(
+    metrics: "_MetricWriter",
+    triage: MonitorTriageMetricsResponse,
+    *,
+    now: datetime,
+) -> None:
+    metrics.add(
+        "support_agent_monitor_triage_active_alerts",
+        triage.active_alert_count,
+        metric_type="gauge",
+        help_text="Active monitor alerts including open, acknowledged, and investigating statuses.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_unassigned_active_alerts",
+        triage.unassigned_active_alert_count,
+        metric_type="gauge",
+        help_text="Active monitor alerts without an assignee.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_untriaged_alerts",
+        triage.untriaged_alert_count,
+        metric_type="gauge",
+        help_text="Monitor alerts that have no triage event.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_new_events_since_triage",
+        triage.new_events_since_triage_count,
+        metric_type="gauge",
+        help_text="Monitor alerts with newer events after the latest triage action.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_stale_active_alerts",
+        triage.stale_active_alert_count,
+        metric_type="gauge",
+        help_text="Active monitor alerts older than the configured stale threshold.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_stale_threshold_seconds",
+        triage.stale_threshold_seconds,
+        metric_type="gauge",
+        help_text="Age threshold used to classify active monitor alerts as stale.",
+    )
+    metrics.add(
+        "support_agent_monitor_triage_alert_rate",
+        triage.alert_rate,
+        metric_type="gauge",
+        help_text="Share of monitor events that produced alert pressure in the scrape window.",
+    )
+    for status in MONITOR_TRIAGE_HEALTH_STATUSES:
+        metrics.add(
+            "support_agent_monitor_triage_health_status",
+            _bool(triage.health_status == status),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Current monitor triage health as a one-hot gauge.",
+        )
+    for status in [status.value for status in MonitorAlertStatus]:
+        metrics.add(
+            "support_agent_monitor_triage_alerts_by_status",
+            triage.by_status.get(status, 0),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Monitor alerts by triage status in the scrape window.",
+        )
+    for severity in MONITOR_ALERT_SEVERITIES:
+        labels = {"severity": severity}
+        metrics.add(
+            "support_agent_monitor_triage_alerts_by_severity",
+            triage.by_severity.get(severity, 0),
+            labels,
+            metric_type="gauge",
+            help_text="Monitor alerts by bounded severity in the scrape window.",
+        )
+        metrics.add(
+            "support_agent_monitor_triage_active_alerts_by_severity",
+            triage.active_by_severity.get(severity, 0),
+            labels,
+            metric_type="gauge",
+            help_text="Active monitor alerts by bounded severity in the scrape window.",
+        )
+    if triage.mtta_seconds is not None:
+        metrics.add(
+            "support_agent_monitor_triage_mtta_seconds",
+            triage.mtta_seconds,
+            metric_type="gauge",
+            help_text="Average seconds from alert first seen to first triage action.",
+        )
+    if triage.mttr_seconds is not None:
+        metrics.add(
+            "support_agent_monitor_triage_mttr_seconds",
+            triage.mttr_seconds,
+            metric_type="gauge",
+            help_text="Average seconds from alert first seen to resolved or silenced triage action.",
+        )
+    if triage.oldest_active_alert_at:
+        metrics.add(
+            "support_agent_monitor_triage_oldest_active_alert_age_seconds",
+            _age_seconds(triage.oldest_active_alert_at, now),
+            metric_type="gauge",
+            help_text="Age of the oldest active monitor alert.",
+        )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_monitor_triage_latest_action_timestamp_seconds",
+        triage.latest_triage_at,
+    )
 
 
 def _load_monitor_window(
