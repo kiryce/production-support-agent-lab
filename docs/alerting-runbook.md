@@ -18,8 +18,14 @@ scrape_configs:
   - job_name: support-agent-api
     metrics_path: /metrics
     static_configs:
-      - targets: ["support-agent-api:8000"]
+      - targets: ["app:8000"]
 ```
+
+For local or single-node deployment, run `docker compose --profile observability up --build`. Compose mounts `deploy/prometheus/prometheus.yml` and
+`deploy/prometheus/support-agent-alerts.yml` read-only, stores Prometheus data in
+the `prometheus-data` volume, binds Prometheus to `127.0.0.1:9090`, and leaves
+Prometheus lifecycle endpoints disabled. In Kubernetes or managed Prometheus,
+replace `app:8000` with the backend service DNS name.
 
 Keep `/metrics` behind internal networking, mTLS, or gateway ACLs. It intentionally skips request signatures and actor rate limits so Prometheus can scrape without minting nonces.
 

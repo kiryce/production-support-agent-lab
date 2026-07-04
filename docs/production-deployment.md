@@ -409,8 +409,14 @@ scrape_configs:
   - job_name: support-agent-api
     metrics_path: /metrics
     static_configs:
-      - targets: ["support-agent-api:8000"]
+      - targets: ["app:8000"]
 ```
+
+For a local or single-node deployment, `docker compose --profile observability up --build` starts Prometheus, mounts both files read-only, keeps its TSDB in the
+`prometheus-data` volume, and binds the UI to `127.0.0.1:9090`. The compose
+service keeps Prometheus lifecycle endpoints disabled. In Kubernetes or a
+managed Prometheus setup, replace `app:8000` with the service DNS name for the
+backend API and keep the Prometheus UI behind internal access controls.
 
 Every rule links to a runbook section and uses only low-cardinality labels such
 as status, severity, adapter, route family, method, and decision. Do not add

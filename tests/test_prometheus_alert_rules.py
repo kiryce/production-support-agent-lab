@@ -10,6 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 RULES_PATH = ROOT / "deploy" / "prometheus" / "support-agent-alerts.yml"
 PROMETHEUS_CONFIG_PATH = ROOT / "deploy" / "prometheus" / "prometheus.yml"
 RUNBOOK_PATH = ROOT / "docs" / "alerting-runbook.md"
+COMPOSE_PATH = ROOT / "docker-compose.yml"
+README_PATH = ROOT / "README.md"
+PRODUCTION_DEPLOYMENT_PATH = ROOT / "docs" / "production-deployment.md"
+FRONTEND_CONSOLE_PATH = ROOT / "docs" / "frontend-console.md"
 
 EXPECTED_ALERTS = {
     "SupportAgentDown",
@@ -124,6 +128,55 @@ def test_prometheus_config_loads_support_agent_rules_and_scrapes_metrics():
     assert scrape["job_name"] == "support-agent-api"
     assert scrape["metrics_path"] == "/metrics"
     assert scrape["static_configs"][0]["targets"] == ["app:8000"]
+
+
+def test_docker_compose_wires_optional_prometheus_observability_profile():
+    data = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
+
+    services = data["services"]
+    assert {"app", "frontend", "prometheus"} <= set(services)
+    assert "profiles" not in services["app"]
+    assert "profiles" not in services["frontend"]
+
+    prometheus = services["prometheus"]
+    assert prometheus["image"] == "prom/prometheus:v3.13.0"
+    assert prometheus["profiles"] == ["observability"]
+    assert prometheus["depends_on"] == ["app"]
+    assert prometheus["ports"] == ["127.0.0.1:9090:9090"]
+    assert "--config.file=/etc/prometheus/prometheus.yml" in prometheus["command"]
+    assert "--storage.tsdb.path=/prometheus" in prometheus["command"]
+    assert "--web.enable-lifecycle" not in prometheus["command"]
+    assert {
+        "./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
+        "./deploy/prometheus/support-agent-alerts.yml:/etc/prometheus/rules/support-agent-alerts.yml:ro",
+        "prometheus-data:/prometheus",
+    } <= set(prometheus["volumes"])
+    assert "prometheus-data" in data["volumes"]
+
+
+def test_prometheus_compose_docs_stay_consistent():
+    readme = README_PATH.read_text(encoding="utf-8")
+    runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
+    deployment = PRODUCTION_DEPLOYMENT_PATH.read_text(encoding="utf-8")
+    frontend = FRONTEND_CONSOLE_PATH.read_text(encoding="utf-8")
+
+    for text in (readme, runbook, deployment, frontend):
+        assert "docker compose --profile observability up --build" in text
+        assert "9090" in text
+
+    for text in (runbook, deployment, frontend):
+        assert "app:8000" in text
+
+    for text in (readme, deployment):
+        assert "deploy/prometheus/prometheus.yml" in text
+        assert "deploy/prometheus/support-agent-alerts.yml" in text
+        assert "docs/alerting-runbook.md" in text
+
+    assert "deploy/prometheus/support-agent-alerts.yml" in runbook
+
+    for text in (runbook, deployment):
+        assert "prometheus-data" in text
+        assert "read-only" in text
 
 
 def _anchor(value: str) -> str:

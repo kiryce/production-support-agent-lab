@@ -27,3 +27,22 @@ services:
       APP_ACTOR_SIGNATURE_SECRET: ${APP_ACTOR_SIGNATURE_SECRET}
     ports:
       - "3000:3000"
+
+  prometheus:
+    image: prom/prometheus:v3.13.0
+    profiles:
+      - observability
+    depends_on:
+      - app
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/prometheus/support-agent-alerts.yml:/etc/prometheus/rules/support-agent-alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+volumes:
+  prometheus-data:

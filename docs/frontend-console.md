@@ -87,7 +87,17 @@ With Docker Compose:
 docker compose up --build
 ```
 
-The backend listens on `8000`; the console listens on `3000`.
+The backend listens on `8000`; the console listens on `3000`. To start the
+optional Prometheus service for local production-style monitoring, run:
+
+```bash
+docker compose --profile observability up --build
+```
+
+Prometheus then listens on `9090` and scrapes the backend container at
+`app:8000`. The compose port is bound to `127.0.0.1:9090`, so expose it through
+a protected network path or SSH tunnel when you are not running on your own
+machine.
 
 ## What The Console Shows
 
