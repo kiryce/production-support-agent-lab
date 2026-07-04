@@ -78,6 +78,7 @@ import type {
   ConsoleSnapshot,
   EvalGateRecord,
   EvalReport,
+  EventStoreRetentionReport,
   IncidentRunBundle,
   JsonValue,
   KnowledgeSearchResponse,
@@ -88,6 +89,7 @@ import type {
   RegressionDraftResponse,
   RetrievalHit,
   RetrievalTrace,
+  SQLiteBackupReport,
   StoredEvent,
   ToolAuditRecord,
   ToolAuditSearchResponse,
@@ -211,6 +213,19 @@ export default function Home() {
   const [knowledgeTrace, setKnowledgeTrace] = useState<KnowledgeSearchResponse | null>(null);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [eventBackupLabel, setEventBackupLabel] = useState("manual");
+  const [eventBackupReport, setEventBackupReport] = useState<SQLiteBackupReport | null>(null);
+  const [eventOpsBusy, setEventOpsBusy] = useState<string | null>(null);
+  const [eventOpsError, setEventOpsError] = useState<string | null>(null);
+  const [eventRetentionReport, setEventRetentionReport] = useState<EventStoreRetentionReport | null>(null);
+  const [eventRetentionPreviewKey, setEventRetentionPreviewKey] = useState<string | null>(null);
+  const [eventRetentionDays, setEventRetentionDays] = useState("365");
+  const [toolAuditRetentionDays, setToolAuditRetentionDays] = useState("180");
+  const [idempotencyRetentionDays, setIdempotencyRetentionDays] = useState("30");
+  const [alertDeliveryRetentionDays, setAlertDeliveryRetentionDays] = useState("90");
+  const [retentionIncludeEvents, setRetentionIncludeEvents] = useState(false);
+  const [retentionVacuum, setRetentionVacuum] = useState(false);
+  const [retentionApplyConfirmed, setRetentionApplyConfirmed] = useState(false);
   const [severityFilter, setSeverityFilter] = useState(initialConsoleState.severity);
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(initialConsoleState.status);
   const [queueQuery, setQueueQuery] = useState(initialConsoleState.query);
@@ -384,6 +399,25 @@ export default function Home() {
   const monitorDrilldownStats = useMemo<MonitorDrilldownUiStats>(
     () => buildMonitorDrilldownStats(monitorDrilldown),
     [monitorDrilldown]
+  );
+  const eventRetentionRequestKey = useMemo(
+    () =>
+      buildEventRetentionRequestKey({
+        eventRetentionDays,
+        toolAuditRetentionDays,
+        idempotencyRetentionDays,
+        alertDeliveryRetentionDays,
+        includeEvents: retentionIncludeEvents,
+        vacuum: retentionVacuum
+      }),
+    [
+      alertDeliveryRetentionDays,
+      eventRetentionDays,
+      idempotencyRetentionDays,
+      retentionIncludeEvents,
+      retentionVacuum,
+      toolAuditRetentionDays
+    ]
   );
 
   useEffect(() => {
@@ -715,6 +749,71 @@ export default function Home() {
     void searchKnowledge();
   }
 
+  async function createEventStoreBackup() {
+    setEventOpsBusy("backup");
+    setEventOpsError(null);
+    try {
+      const response = await fetch("/api/console/event-store/backups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ label: eventBackupLabel })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Event-store backup failed");
+      }
+      setEventBackupReport(data as SQLiteBackupReport);
+      setRetentionApplyConfirmed(false);
+    } catch (nextError) {
+      setEventOpsError(nextError instanceof Error ? nextError.message : "Event-store backup failed");
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
+  async function runEventStoreRetention(dryRun: boolean) {
+    const hasVerifiedBackup = eventBackupReport?.verified === true;
+    const hasPreview =
+      eventRetentionReport?.dry_run === true && eventRetentionPreviewKey === eventRetentionRequestKey;
+    if (!dryRun && (!hasVerifiedBackup || !hasPreview || !retentionApplyConfirmed)) {
+      setEventOpsError("Create a verified backup, run preview, then confirm before applying retention.");
+      return;
+    }
+    setEventOpsBusy(dryRun ? "retention-preview" : "retention-apply");
+    setEventOpsError(null);
+    try {
+      const response = await fetch("/api/console/event-store/retention", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          dry_run: dryRun,
+          include_events: retentionIncludeEvents,
+          vacuum: retentionVacuum,
+          event_retention_days: Number(eventRetentionDays),
+          tool_audit_retention_days: Number(toolAuditRetentionDays),
+          idempotency_retention_days: Number(idempotencyRetentionDays),
+          alert_delivery_retention_days: Number(alertDeliveryRetentionDays)
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Event-store retention failed");
+      }
+      setEventRetentionReport(data as EventStoreRetentionReport);
+      setEventRetentionPreviewKey(dryRun ? eventRetentionRequestKey : null);
+      if (!dryRun) {
+        setRetentionApplyConfirmed(false);
+        await loadSnapshot({ runId: selectedRunId, alertKey: selectedAlertKey });
+      }
+    } catch (nextError) {
+      setEventOpsError(nextError instanceof Error ? nextError.message : "Event-store retention failed");
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
   function loadCurrentRunRetrieval(trace: RetrievalTrace) {
     setKnowledgeTrace(toKnowledgeSearchResponse(trace));
     setKnowledgeQuery(trace.query);
@@ -959,7 +1058,7 @@ export default function Home() {
             setSeverityFilter("all");
           }
           if (target === "settings") {
-            setRawOpen((value) => !value);
+            setWorkspaceMode("settings");
           }
         }}
       />
@@ -1136,6 +1235,32 @@ export default function Home() {
               onSubmit={submitKnowledgeSearch}
               onSearch={searchKnowledge}
               onUseCurrent={loadCurrentRunRetrieval}
+            />
+          ) : workspaceMode === "settings" ? (
+            <SettingsWorkbenchPanel
+              backupLabel={eventBackupLabel}
+              backupReport={eventBackupReport}
+              retentionReport={eventRetentionReport}
+              busy={eventOpsBusy}
+              error={eventOpsError}
+              eventRetentionDays={eventRetentionDays}
+              toolAuditRetentionDays={toolAuditRetentionDays}
+              idempotencyRetentionDays={idempotencyRetentionDays}
+              alertDeliveryRetentionDays={alertDeliveryRetentionDays}
+              includeEvents={retentionIncludeEvents}
+              vacuum={retentionVacuum}
+              applyConfirmed={retentionApplyConfirmed}
+              previewReady={eventRetentionPreviewKey === eventRetentionRequestKey}
+              onBackupLabel={setEventBackupLabel}
+              onEventRetentionDays={setEventRetentionDays}
+              onToolAuditRetentionDays={setToolAuditRetentionDays}
+              onIdempotencyRetentionDays={setIdempotencyRetentionDays}
+              onAlertDeliveryRetentionDays={setAlertDeliveryRetentionDays}
+              onIncludeEvents={setRetentionIncludeEvents}
+              onVacuum={setRetentionVacuum}
+              onApplyConfirmed={setRetentionApplyConfirmed}
+              onBackup={() => void createEventStoreBackup()}
+              onRetention={(dryRun) => void runEventStoreRetention(dryRun)}
             />
           ) : workspaceMode === "tools" ? (
             <ToolAuditWorkbenchPanel
@@ -1995,6 +2120,223 @@ function AlertDeliveryLedger({
             </article>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function SettingsWorkbenchPanel({
+  backupLabel,
+  backupReport,
+  retentionReport,
+  busy,
+  error,
+  eventRetentionDays,
+  toolAuditRetentionDays,
+  idempotencyRetentionDays,
+  alertDeliveryRetentionDays,
+  includeEvents,
+  vacuum,
+  applyConfirmed,
+  previewReady,
+  onBackupLabel,
+  onEventRetentionDays,
+  onToolAuditRetentionDays,
+  onIdempotencyRetentionDays,
+  onAlertDeliveryRetentionDays,
+  onIncludeEvents,
+  onVacuum,
+  onApplyConfirmed,
+  onBackup,
+  onRetention
+}: {
+  backupLabel: string;
+  backupReport: SQLiteBackupReport | null;
+  retentionReport: EventStoreRetentionReport | null;
+  busy: string | null;
+  error: string | null;
+  eventRetentionDays: string;
+  toolAuditRetentionDays: string;
+  idempotencyRetentionDays: string;
+  alertDeliveryRetentionDays: string;
+  includeEvents: boolean;
+  vacuum: boolean;
+  applyConfirmed: boolean;
+  previewReady: boolean;
+  onBackupLabel: (value: string) => void;
+  onEventRetentionDays: (value: string) => void;
+  onToolAuditRetentionDays: (value: string) => void;
+  onIdempotencyRetentionDays: (value: string) => void;
+  onAlertDeliveryRetentionDays: (value: string) => void;
+  onIncludeEvents: (value: boolean) => void;
+  onVacuum: (value: boolean) => void;
+  onApplyConfirmed: (value: boolean) => void;
+  onBackup: () => void;
+  onRetention: (dryRun: boolean) => void;
+}) {
+  const backupBusy = busy === "backup";
+  const previewBusy = busy === "retention-preview";
+  const applyBusy = busy === "retention-apply";
+  const canApply = backupReport?.verified === true && previewReady && applyConfirmed;
+  return (
+    <aside className="alerts-panel run-workbench settings-workbench">
+      <div className="panel-heading">
+        <div>
+          <span>Settings</span>
+          <strong>Event Store Operations</strong>
+        </div>
+      </div>
+
+      <section className="settings-section">
+        <div className="settings-section-head">
+          <strong>Backup</strong>
+          {backupReport ? (
+            <Badge tone={backupReport.verified ? "success" : "danger"}>
+              {backupReport.verified ? "verified" : "failed"}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="settings-action-row">
+          <label className="field-label compact">
+            Label
+            <input
+              value={backupLabel}
+              onChange={(event) => onBackupLabel(event.target.value)}
+              maxLength={80}
+              placeholder="release-2026-07-05"
+            />
+          </label>
+          <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={onBackup}>
+            {backupBusy ? <Loader2 className="spin" size={16} /> : <Database size={16} />}
+            Create backup
+          </button>
+        </div>
+        {backupReport ? (
+          <div className="event-op-result state-success">
+            <div className="event-op-copy">
+              <strong>{backupReport.backup_path}</strong>
+              <span>{backupReport.verification_detail}</span>
+            </div>
+            <div className="run-search-stats event-op-stats">
+              <Metric label="Size" value={formatBytes(backupReport.size_bytes)} />
+              <Metric label="Pages" value={String(backupReport.page_count)} />
+              <Metric label="Started" value={formatTime(backupReport.started_at)} />
+              <Metric label="Done" value={formatTime(backupReport.completed_at)} />
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="settings-section">
+        <div className="settings-section-head">
+          <strong>Retention</strong>
+          {retentionReport ? (
+            <Badge tone={retentionReport.dry_run ? "warn" : "success"}>
+              {retentionReport.dry_run ? "preview" : "applied"}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="tool-window-grid">
+          <label className="field-label compact">
+            Events
+            <input value={eventRetentionDays} onChange={(event) => onEventRetentionDays(event.target.value)} />
+          </label>
+          <label className="field-label compact">
+            Tool audit
+            <input value={toolAuditRetentionDays} onChange={(event) => onToolAuditRetentionDays(event.target.value)} />
+          </label>
+          <label className="field-label compact">
+            Idempotency
+            <input value={idempotencyRetentionDays} onChange={(event) => onIdempotencyRetentionDays(event.target.value)} />
+          </label>
+          <label className="field-label compact">
+            Alert outbox
+            <input value={alertDeliveryRetentionDays} onChange={(event) => onAlertDeliveryRetentionDays(event.target.value)} />
+          </label>
+        </div>
+        <div className="settings-check-grid">
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={includeEvents}
+              onChange={(event) => onIncludeEvents(event.target.checked)}
+            />
+            Include events
+          </label>
+          <label className="check-control">
+            <input type="checkbox" checked={vacuum} onChange={(event) => onVacuum(event.target.checked)} />
+            Vacuum
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={applyConfirmed}
+              onChange={(event) => onApplyConfirmed(event.target.checked)}
+            />
+            Backup reviewed
+          </label>
+        </div>
+        <div className="settings-command-row">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={Boolean(busy)}
+            onClick={() => onRetention(true)}
+          >
+            {previewBusy ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+            Preview retention
+          </button>
+          <button
+            className="primary-button danger-primary"
+            type="button"
+            disabled={Boolean(busy) || !canApply}
+            onClick={() => onRetention(false)}
+            title="Requires a verified backup, dry-run preview, and confirmation"
+          >
+            {applyBusy ? <Loader2 className="spin" size={16} /> : <ShieldCheck size={16} />}
+            Apply retention
+          </button>
+        </div>
+        {retentionReport ? <RetentionReportView report={retentionReport} /> : null}
+      </section>
+
+      <div className={error ? "inline-error" : "sr-only"} role="status" aria-live="polite">
+        {error ?? "Event-store operation status"}
+      </div>
+    </aside>
+  );
+}
+
+function RetentionReportView({ report }: { report: EventStoreRetentionReport }) {
+  return (
+    <div className={`event-op-result ${report.total_deleted ? "state-warn" : "state-success"}`}>
+      <div className="event-op-copy">
+        <strong>
+          {report.total_candidates} candidate{report.total_candidates === 1 ? "" : "s"}
+        </strong>
+        <span>
+          {report.dry_run
+            ? `${report.total_deleted} deleted in preview`
+            : `${report.total_deleted} deleted for ${report.tenant_id}`}
+        </span>
+      </div>
+      <div className="run-search-stats event-op-stats">
+        <Metric label="Candidates" value={String(report.total_candidates)} />
+        <Metric label="Deleted" value={String(report.total_deleted)} />
+        <Metric label="Events" value={report.include_events ? "included" : "kept"} />
+        <Metric label="Vacuum" value={report.vacuum_performed ? "done" : "no"} />
+      </div>
+      <div className="retention-table-list">
+        {report.tables.map((table) => (
+          <div className={table.deleted_count ? "retention-table-row has-delete" : "retention-table-row"} key={table.table_name}>
+            <strong>{table.table_name}</strong>
+            <Badge tone={table.deleted_count ? "warn" : "neutral"}>{table.action}</Badge>
+            <span>
+              {table.candidate_count} candidate{table.candidate_count === 1 ? "" : "s"} / {table.deleted_count} deleted
+            </span>
+            <small>{table.cutoff_at ? `Cutoff ${formatTime(table.cutoff_at)}` : table.reason || "No cutoff"}</small>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -3925,6 +4267,24 @@ function toKnowledgeSearchResponse(trace: RetrievalTrace): KnowledgeSearchRespon
   };
 }
 
+function buildEventRetentionRequestKey(input: {
+  eventRetentionDays: string;
+  toolAuditRetentionDays: string;
+  idempotencyRetentionDays: string;
+  alertDeliveryRetentionDays: string;
+  includeEvents: boolean;
+  vacuum: boolean;
+}) {
+  return [
+    input.eventRetentionDays,
+    input.toolAuditRetentionDays,
+    input.idempotencyRetentionDays,
+    input.alertDeliveryRetentionDays,
+    input.includeEvents ? "events" : "no-events",
+    input.vacuum ? "vacuum" : "no-vacuum"
+  ].join("|");
+}
+
 function snippet(value: string, max: number) {
   const compact = value.replace(/\s+/g, " ").trim();
   return compact.length > max ? `${compact.slice(0, max - 3)}...` : compact;
@@ -3936,6 +4296,24 @@ function truncate(value: string, max: number) {
 
 function formatRate(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function formatBytes(value: number) {
+  if (!Number.isFinite(value)) {
+    return "n/a";
+  }
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  const units = ["KB", "MB", "GB"];
+  let next = value / 1024;
+  for (const unit of units) {
+    if (next < 1024 || unit === units[units.length - 1]) {
+      return `${next.toFixed(next >= 10 ? 0 : 1)} ${unit}`;
+    }
+    next /= 1024;
+  }
+  return `${value} B`;
 }
 
 function evalGateTileLabel(report: EvalReport | null, gate: EvalGateRecord | null) {

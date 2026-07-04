@@ -503,6 +503,39 @@ export type AlertDispatchReport = {
   deliveries: AlertDeliveryRecord[];
 };
 
+export type SQLiteBackupReport = {
+  source_path: string;
+  backup_path: string;
+  size_bytes: number;
+  page_count: number;
+  started_at: string;
+  completed_at: string;
+  verified: boolean;
+  verification_detail: string;
+};
+
+export type RetentionTableReport = {
+  table_name: string;
+  cutoff_at: string | null;
+  candidate_count: number;
+  deleted_count: number;
+  action: string;
+  reason: string;
+};
+
+export type EventStoreRetentionReport = {
+  tenant_id: string;
+  dry_run: boolean;
+  include_events: boolean;
+  vacuum_requested: boolean;
+  vacuum_performed: boolean;
+  started_at: string;
+  completed_at: string;
+  tables: RetentionTableReport[];
+  total_candidates: number;
+  total_deleted: number;
+};
+
 export type StoredEvent = {
   id: string;
   tenant_id: string;

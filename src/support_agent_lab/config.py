@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     app_tool_audit_retention_days: int = Field(default=180, ge=30, le=3650)
     app_idempotency_retention_days: int = Field(default=30, ge=1, le=3650)
     app_alert_delivery_retention_days: int = Field(default=90, ge=7, le=3650)
+    app_event_store_backup_dir: str = "./data/backups"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -925,6 +925,141 @@ textarea:disabled {
   font-size: 11px;
 }
 
+.settings-workbench {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #fbfcfb;
+}
+
+.settings-section,
+.event-op-result {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.settings-section-head,
+.settings-action-row,
+.settings-command-row {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-section-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.settings-section-head strong {
+  color: #17231e;
+  font-size: 13px;
+}
+
+.settings-action-row,
+.settings-command-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.settings-action-row .primary-button,
+.settings-command-row .primary-button,
+.settings-command-row .secondary-button {
+  align-self: end;
+  min-width: 148px;
+}
+
+.settings-check-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.event-op-result {
+  border-left: 4px solid var(--green-700);
+  background: #f8faf9;
+}
+
+.event-op-result.state-warn {
+  border-left-color: var(--orange);
+}
+
+.event-op-result.state-danger {
+  border-left-color: var(--red);
+}
+
+.event-op-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.event-op-copy strong,
+.event-op-copy span {
+  overflow-wrap: anywhere;
+}
+
+.event-op-copy strong {
+  color: #17231e;
+  font-size: 12px;
+}
+
+.event-op-copy span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.event-op-stats {
+  margin-top: 0;
+}
+
+.retention-table-list {
+  display: grid;
+  gap: 7px;
+}
+
+.retention-table-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 7px;
+  background: white;
+  padding: 8px;
+}
+
+.retention-table-row.has-delete {
+  border-left-color: var(--orange);
+}
+
+.retention-table-row strong,
+.retention-table-row span,
+.retention-table-row small {
+  overflow-wrap: anywhere;
+}
+
+.retention-table-row strong {
+  color: #17231e;
+  font-size: 12px;
+}
+
+.retention-table-row span,
+.retention-table-row small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.danger-primary {
+  background: var(--red);
+}
+
 .monitor-drilldown-form .field-label input {
   font-size: 12px;
 }
@@ -2272,6 +2407,19 @@ textarea {
   .delivery-row-main,
   .delivery-row-side {
     grid-column: 1 / -1;
+  }
+
+  .settings-action-row,
+  .settings-command-row,
+  .settings-check-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-action-row .primary-button,
+  .settings-command-row .primary-button,
+  .settings-command-row .secondary-button {
+    width: 100%;
+    min-width: 0;
   }
 
   .alerts-panel,

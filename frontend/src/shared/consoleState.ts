@@ -1,6 +1,6 @@
 import type { AlertSort, AlertStatusFilter } from "./ops";
 
-export const WORKSPACE_MODES = ["alerts", "runs", "tools", "knowledge"] as const;
+export const WORKSPACE_MODES = ["alerts", "runs", "tools", "knowledge", "settings"] as const;
 export const EVIDENCE_TABS = ["brief", "citations", "tool-audit", "memory", "triage"] as const;
 export const ALERT_SEVERITIES = ["all", "P0", "P1", "P2", "P3"] as const;
 

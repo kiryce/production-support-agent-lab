@@ -57,6 +57,16 @@ describe("console URL state", () => {
     expect(parseConsoleState(serializeConsoleState(original))).toEqual(original);
   });
 
+  it("roundtrips the settings workspace", () => {
+    const original: ConsoleUrlState = {
+      ...DEFAULT_CONSOLE_URL_STATE,
+      workspace: "settings"
+    };
+
+    expect(serializeConsoleState(original)).toBe("workspace=settings");
+    expect(parseConsoleState("workspace=settings")).toEqual(original);
+  });
+
   it("falls back to safe defaults for invalid URL values", () => {
     const state = parseConsoleState(
       "?workspace=metrics&tab=raw&severity=P9&status=done&sort=random&new=0"

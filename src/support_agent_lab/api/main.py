@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 from datetime import datetime, timedelta
+from pathlib import Path
 from time import perf_counter
 from typing import Annotated, Any, Literal, get_args
 
@@ -32,7 +33,7 @@ from support_agent_lab.api.request_signature import (
 from support_agent_lab.api.rate_limit import InMemoryRateLimiter, rate_limit_key, should_rate_limit
 from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
-from support_agent_lab.memory.event_store import EventStoreRetentionReport, StoredEvent
+from support_agent_lab.memory.event_store import EventStoreRetentionReport, SQLiteBackupReport, StoredEvent
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import (
@@ -121,6 +122,12 @@ class EventStoreRetentionRequest(BaseModel):
     tool_audit_retention_days: int | None = Field(default=None, ge=30, le=3650)
     idempotency_retention_days: int | None = Field(default=None, ge=1, le=3650)
     alert_delivery_retention_days: int | None = Field(default=None, ge=7, le=3650)
+
+
+class EventStoreBackupRequest(BaseModel):
+    label: str = Field(default="", max_length=80)
+    overwrite: bool = False
+    verify: bool = True
 
 
 class IncidentRunBundle(BaseModel):
@@ -1503,6 +1510,10 @@ def _safe_eval_token(value: str) -> str:
     return token[:64]
 
 
+def _backup_label(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip()).strip(".-_")[:80]
+
+
 def _unique(values) -> list[Any]:
     result: list[Any] = []
     for value in values:
@@ -2494,6 +2505,35 @@ def create_app() -> FastAPI:
             event_type=event_type,
             limit=limit,
         )
+
+    @app.post("/api/v1/admin/event-store/backups")
+    def create_event_store_backup(
+        body: EventStoreBackupRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> SQLiteBackupReport:
+        require_admin(actor)
+        require_scope(actor, "admin:write")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        backup_dir = Path(deps.settings.app_event_store_backup_dir)
+        timestamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
+        label = _backup_label(body.label)
+        tenant_label = _backup_label(deps.settings.app_tenant_id) or "tenant"
+        suffix = f"-{label}" if label else ""
+        target_path = backup_dir / f"support-agent-lab-{tenant_label}-{timestamp}{suffix}.db"
+        try:
+            return deps.event_store.backup_to(
+                target_path,
+                overwrite=body.overwrite,
+                verify=body.verify,
+            )
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/v1/admin/event-store/retention")
     def apply_event_store_retention(

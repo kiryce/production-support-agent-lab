@@ -179,6 +179,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
+| `POST /api/v1/admin/event-store/backups` | `admin:write`, `audit:read`, `events:read`; backend chooses the configured backup directory. |
 | `POST /api/v1/admin/event-store/retention` | `admin:write`, `audit:read`, `events:read`; dry-run by default. |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read` |
 | `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
@@ -215,6 +216,11 @@ python scripts/event_store_ops.py \
 
 The backup command uses SQLite's online backup API, then runs `pragma
 quick_check` and verifies the required tables exist in the copied database.
+The same backup operation is exposed as
+`POST /api/v1/admin/event-store/backups`. The HTTP body accepts only a short
+label plus `overwrite` / `verify` flags; the backend writes under
+`APP_EVENT_STORE_BACKUP_DIR` so operators cannot choose arbitrary filesystem
+paths through the console.
 
 Preview retention first:
 
@@ -241,6 +247,9 @@ It does not delete pending, failed, in-progress, or dead alert deliveries, and
 it skips the append-only event log unless `--include-events` is explicitly set.
 The same operation is exposed as `POST /api/v1/admin/event-store/retention` for
 trusted operators with `admin:write`, `audit:read`, and `events:read`.
+The console `Settings` workbench calls both endpoints through its server-side
+BFF. Apply is gated by a verified backup, a dry-run preview, and an explicit
+operator confirmation.
 
 Monitor summary, events, and drilldown endpoints support `source=event_store`,
 `created_after`, `created_before`, and `order=desc|asc` for durable production

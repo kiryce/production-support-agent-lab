@@ -1,6 +1,7 @@
 import time
 import json
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
@@ -1698,6 +1699,39 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
     assert event_store.list_tool_audit_records(trace_id="trace_retention_api") == []
 
 
+def test_admin_can_create_event_store_backup_in_configured_directory(tmp_path, monkeypatch):
+    backup_dir = tmp_path / "configured_backups"
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_EVENT_STORE_BACKUP_DIR", str(backup_dir))
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        forbidden = client.post(
+            "/api/v1/admin/event-store/backups",
+            json={"label": "../../escape"},
+        )
+        allowed = client.post(
+            "/api/v1/admin/event-store/backups",
+            headers={"X-Demo-Role": "admin"},
+            json={"label": "../../release one"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert allowed.status_code == 200
+    body = allowed.json()
+    backup_path = Path(body["backup_path"]).resolve()
+    assert body["verified"] is True
+    assert backup_path.exists()
+    assert str(backup_path).startswith(str(backup_dir.resolve()))
+    assert ".." not in backup_path.name
+    assert "release-one" in backup_path.name
+
+
 def test_production_event_store_retention_requires_admin_write_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -1727,6 +1761,38 @@ def test_production_event_store_retention_requires_admin_write_scope(tmp_path, m
     assert missing_write.json()["detail"] == "Missing required scope: admin:write"
     assert allowed.status_code == 200
     assert allowed.json()["dry_run"] is True
+
+
+def test_production_event_store_backup_requires_admin_write_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_EVENT_STORE_BACKUP_DIR", str(tmp_path / "backups"))
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_write = client.post(
+            "/api/v1/admin/event-store/backups",
+            headers=_production_headers(scopes="audit:read,events:read"),
+            json={"label": "prod"},
+        )
+        allowed = client.post(
+            "/api/v1/admin/event-store/backups",
+            headers=_production_headers(scopes="admin:write,audit:read,events:read"),
+            json={"label": "prod"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: admin:write"
+    assert allowed.status_code == 200
+    assert allowed.json()["verified"] is True
 
 
 def test_admin_can_read_monitor_summary():
