@@ -5,7 +5,7 @@ description = "A production-shaped customer support agent lab for agent beginner
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-authors = [{ name = "KingRainIce" }]
+authors = [{ name = "kiri-ice" }]
 keywords = ["agent", "customer-support", "mcp", "rag", "evaluation", "monitoring", "fastapi"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -44,10 +44,10 @@ support-agent-sign-headers = "support_agent_lab.scripts.sign_actor_headers:main"
 support-agent-release-check = "support_agent_lab.scripts.release_check:main"
 
 [project.urls]
-Homepage = "https://github.com/KingRainIce/production-support-agent-lab"
-Repository = "https://github.com/KingRainIce/production-support-agent-lab"
-Issues = "https://github.com/KingRainIce/production-support-agent-lab/issues"
-Documentation = "https://github.com/KingRainIce/production-support-agent-lab#readme"
+Homepage = "https://github.com/kiri-ice/production-support-agent-lab"
+Repository = "https://github.com/kiri-ice/production-support-agent-lab"
+Issues = "https://github.com/kiri-ice/production-support-agent-lab/issues"
+Documentation = "https://github.com/kiri-ice/production-support-agent-lab#readme"
 
 [build-system]
 requires = ["setuptools>=70", "wheel"]

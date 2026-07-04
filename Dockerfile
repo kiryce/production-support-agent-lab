@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-LABEL org.opencontainers.image.source="https://github.com/KingRainIce/production-support-agent-lab"
+LABEL org.opencontainers.image.source="https://github.com/kiri-ice/production-support-agent-lab"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.description="Production-shaped customer support agent lab for agent beginners."
 
