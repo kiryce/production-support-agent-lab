@@ -2126,10 +2126,9 @@ def create_app() -> FastAPI:
         )
         memory_replay = None
         if include_memory and deps.event_store:
-            events = deps.event_store.list_events(
+            events = deps.event_store.list_conversation_memory_events(
                 tenant_id=deps.settings.app_tenant_id,
                 conversation_id=run.conversation_id,
-                limit=limit,
             )
             if events:
                 try:
@@ -2676,16 +2675,16 @@ def create_app() -> FastAPI:
         conversation_id: str,
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
-        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+        limit: Annotated[int, Query(ge=0, le=20000)] = 0,
     ) -> MemoryReplayResult:
         require_admin(actor)
         require_scope(actor, "memory:replay")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
-        events = deps.event_store.list_events(
+        events = deps.event_store.list_conversation_memory_events(
             tenant_id=deps.settings.app_tenant_id,
             conversation_id=conversation_id,
-            limit=limit,
+            limit=limit or None,
         )
         if not events:
             raise HTTPException(status_code=404, detail="Conversation events not found")

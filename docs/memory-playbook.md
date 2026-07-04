@@ -24,6 +24,12 @@ curl http://127.0.0.1:8000/api/v1/admin/conversations/conv_abc123/memory/replay 
   -H "X-Demo-Role: admin"
 ```
 
+By default the replay endpoint reads all replayable memory events for that
+conversation. `limit=0` means no truncation; passing a positive `limit`
+intentionally caps replayable events for debugging. Replayable memory events are
+`message.user`, `message.assistant`, and `agent.run.completed`; monitor events
+stay in the event log but do not consume the replay limit.
+
 返回字段：
 
 - `state.messages`：从 `message.*` 事件重建的消息窗口。

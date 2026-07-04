@@ -2231,7 +2231,7 @@ def test_admin_can_replay_conversation_memory_from_events():
     assert body["conversation_id"] == session["conversation_id"]
     assert body["replayed_message_count"] == 2
     assert body["replayed_run_count"] == 1
-    assert body["ignored_event_count"] == 1
+    assert body["ignored_event_count"] == 0
     assert body["state"]["facts"]["last_order_id"] == "A1002"
     assert body["state"]["last_intent"] == "order_status"
 

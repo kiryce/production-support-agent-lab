@@ -354,7 +354,12 @@ class SupportAgentOrchestrator:
                 self.event_store.append_monitor_event(monitor_event, tenant_id=self.tenant_id)
         return response
 
-    def hydrate_memory_from_events(self, conversation_id: str, user_id: str, limit: int = 1000) -> dict[str, Any]:
+    def hydrate_memory_from_events(
+        self,
+        conversation_id: str,
+        user_id: str,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
         if conversation_id in self.memory.states:
             state = self.memory.states[conversation_id]
             if state.tenant_id != self.tenant_id or state.user_id != user_id:
@@ -363,7 +368,7 @@ class SupportAgentOrchestrator:
         if not self.event_store:
             return {"hydrate_status": "no_event_store", "event_count": 0, "replayed_message_count": 0}
 
-        events = self.event_store.list_events(
+        events = self.event_store.list_conversation_memory_events(
             tenant_id=self.tenant_id,
             conversation_id=conversation_id,
             limit=limit,

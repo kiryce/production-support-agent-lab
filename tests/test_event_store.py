@@ -14,10 +14,12 @@ from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.models import (
     EvalGateRecord,
     IntentType,
+    Message,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
     MonitorEvent,
     RiskLevel,
+    Role,
     ToolStatus,
     utc_now,
 )
@@ -78,6 +80,16 @@ async def test_orchestrator_writes_append_only_events(tmp_path):
     assert run_event.payload["tool_results"]
     assert run_event.payload["llm_calls"]
     assert monitor_event.tenant_id == "demo_tenant"
+
+    replay_events = event_store.list_conversation_memory_events(
+        tenant_id="demo_tenant",
+        conversation_id="conv_events",
+    )
+    assert [event.event_type for event in replay_events] == [
+        "message.user",
+        "message.assistant",
+        "agent.run.completed",
+    ]
     assert {event.id for event in run_events} == {run_event.id, monitor_event.id}
     assert {event.event_type for event in run_events} == {"agent.run.completed", "monitor.reviewed"}
     assert stored_trace is not None
@@ -450,6 +462,37 @@ async def test_orchestrator_hydrates_memory_from_event_log_after_restart(tmp_pat
         tool.name == "order.get" and tool.data and tool.data["order_id"] == "A1002"
         for tool in response.trace.tool_results
     )
+
+
+def test_orchestrator_hydrates_long_history_from_latest_replay_events(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    for index in range(1001):
+        event_store.append_message(
+            Message(
+                tenant_id="demo_tenant",
+                conversation_id="conv_long_hydrate",
+                user_id="user_demo",
+                role=Role.user,
+                content=f"Historical note {index}: order A1001",
+            )
+        )
+    event_store.append_message(
+        Message(
+            tenant_id="demo_tenant",
+            conversation_id="conv_long_hydrate",
+            user_id="user_demo",
+            role=Role.user,
+            content="Actually, the current order is A1002.",
+        )
+    )
+
+    restarted_orchestrator = _build_orchestrator(event_store)
+    hydrate = restarted_orchestrator.hydrate_memory_from_events("conv_long_hydrate", "user_demo")
+    state = restarted_orchestrator.memory.states["conv_long_hydrate"]
+
+    assert hydrate["hydrate_status"] == "hydrated"
+    assert hydrate["replayed_message_count"] == 1002
+    assert state.facts["last_order_id"] == "A1002"
 
 
 @pytest.mark.asyncio

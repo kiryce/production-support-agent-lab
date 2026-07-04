@@ -46,6 +46,7 @@ ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
 ALERT_DELIVERY_REQUEUED_EVENT_TYPE = "monitor.alert.delivery.requeued"
 ALERT_DELIVERY_CLOSED_EVENT_TYPE = "monitor.alert.delivery.closed"
+MEMORY_REPLAY_EVENT_TYPES = ("message.user", "message.assistant", "agent.run.completed")
 
 
 class AlertDeliveryLockLostError(RuntimeError):
@@ -958,6 +959,42 @@ class SQLiteEventStore:
         direction = "desc" if order == "desc" else "asc"
         sql += f" order by created_at {direction}, rowid {direction} limit ?"
         params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            StoredEvent(
+                id=row["id"],
+                tenant_id=row["tenant_id"],
+                conversation_id=row["conversation_id"],
+                user_id=row["user_id"],
+                run_id=row["run_id"],
+                event_type=row["event_type"],
+                payload=json.loads(row["payload_json"]),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
+
+    def list_conversation_memory_events(
+        self,
+        *,
+        tenant_id: str,
+        conversation_id: str,
+        limit: int | None = None,
+    ) -> list[StoredEvent]:
+        placeholders = ", ".join("?" for _ in MEMORY_REPLAY_EVENT_TYPES)
+        sql = f"""
+            select id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
+            from events
+            where tenant_id = ?
+              and conversation_id = ?
+              and event_type in ({placeholders})
+            order by created_at asc, rowid asc
+        """
+        params: list[Any] = [tenant_id, conversation_id, *MEMORY_REPLAY_EVENT_TYPES]
+        if limit is not None:
+            sql += " limit ?"
+            params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [
