@@ -2266,7 +2266,7 @@ def create_app() -> FastAPI:
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
         alert_key: Annotated[str | None, Query(max_length=256)] = None,
-        status: Annotated[Literal["pending", "sent", "failed"] | None, Query()] = None,
+        status: Annotated[Literal["pending", "in_progress", "sent", "failed", "dead"] | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         order: Annotated[Literal["asc", "desc"], Query()] = "desc",
     ) -> list[AlertDeliveryRecord]:
@@ -2321,15 +2321,20 @@ def create_app() -> FastAPI:
             max_attempts=deps.settings.app_monitor_alert_max_attempts,
             limit=dispatch_limit,
             timeout_ms=deps.settings.app_monitor_alert_webhook_timeout_ms,
+            backoff_base_seconds=deps.settings.app_monitor_alert_backoff_base_seconds,
+            backoff_max_seconds=deps.settings.app_monitor_alert_backoff_max_seconds,
+            claim_lease_seconds=deps.settings.app_monitor_alert_claim_lease_seconds,
         )
         return AlertDispatchReport(
             webhook_enabled=True,
             enqueued_count=enqueue_report.enqueued_count,
             existing_count=enqueue_report.existing_count,
             skipped_count=enqueue_report.skipped_count,
+            claimed_count=dispatch_report.claimed_count,
             attempted_count=dispatch_report.attempted_count,
             sent_count=dispatch_report.sent_count,
             failed_count=dispatch_report.failed_count,
+            dead_count=dispatch_report.dead_count,
             deliveries=[*enqueue_report.deliveries, *dispatch_report.deliveries],
         )
 

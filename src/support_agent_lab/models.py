@@ -287,8 +287,10 @@ class MonitorAlertTriageEvent(BaseModel):
 
 class AlertDeliveryStatus(str, Enum):
     pending = "pending"
+    in_progress = "in_progress"
     sent = "sent"
     failed = "failed"
+    dead = "dead"
 
 
 class AlertDeliveryRecord(BaseModel):
@@ -307,8 +309,12 @@ class AlertDeliveryRecord(BaseModel):
     sample_run_ids: list[str] = Field(default_factory=list)
     payload_hash: str
     attempt_count: int = 0
+    next_attempt_at: datetime | None = None
     last_attempt_at: datetime | None = None
     delivered_at: datetime | None = None
+    dead_lettered_at: datetime | None = None
+    locked_until: datetime | None = None
+    locked_by: str | None = None
     response_status_code: int | None = None
     last_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

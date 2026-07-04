@@ -41,7 +41,7 @@
 
 - monitor alert queue、状态筛选、搜索、排序
 - triage health、MTTA、MTTR、stale alert、new-after-triage
-- alert delivery：读取 durable outbox，显示 webhook 是否禁用、排队或失败
+- alert delivery：读取 durable outbox，显示 webhook 是否禁用、排队、backoff、claimed、失败或 dead-letter
 - monitor drilldown 和 failure/intent/risk buckets
 - persisted run search
 - tool audit 和工具 SLA 统计
@@ -313,6 +313,9 @@ APP_MONITOR_ALERT_WEBHOOK_URL=https://hooks.example.com/agent-alerts
 APP_MONITOR_ALERT_WEBHOOK_SECRET=replace_with_real_webhook_secret_min_32_chars
 APP_MONITOR_ALERT_MIN_SEVERITY=P1
 APP_MONITOR_ALERT_MAX_ATTEMPTS=3
+APP_MONITOR_ALERT_BACKOFF_BASE_SECONDS=60
+APP_MONITOR_ALERT_BACKOFF_MAX_SECONDS=900
+APP_MONITOR_ALERT_CLAIM_LEASE_SECONDS=120
 ```
 
 生产模式需要真实业务 API：
@@ -424,7 +427,7 @@ Eval 不只看最终回答，还检查：
 
 `/api/v1/admin/promotion/gate` 是只读发布前检查：它不会自动跑 eval 或改 triage，而是读取 readiness、monitor triage metrics、tool audit summary 和最新 staging aggregate eval gate，返回 `passed`、`warn` 或 `blocked` 以及每条 evidence。控制台会把这个状态放进 Overview 和 Production Preflight。
 
-`/api/v1/admin/monitor/alert-deliveries/dispatch` 会从持久化 monitor events 派生 P0/P1 active alerts，写入 `alert_delivery_outbox`，再把 pending/failed delivery 发送到签名 webhook。它不会把用户原文、工具参数或 eval answer 放进通知 payload，只发送 alert key、severity、reason、sample run/event ids 和时间窗口。`GET /api/v1/admin/monitor/alert-deliveries/summary` 给控制台展示 webhook 是 disabled、queued、failed 还是 ok。
+`/api/v1/admin/monitor/alert-deliveries/dispatch` 会从持久化 monitor events 派生 P0/P1 active alerts，写入 `alert_delivery_outbox`，再 claim 到期可发送的 delivery。失败会按指数 backoff 设置 `next_attempt_at`；超过 `APP_MONITOR_ALERT_MAX_ATTEMPTS` 后进入 dead-letter，不再自动重试。它不会把用户原文、工具参数或 eval answer 放进通知 payload，只发送 alert key、severity、reason、sample run/event ids 和时间窗口。`GET /api/v1/admin/monitor/alert-deliveries/summary` 给控制台展示 webhook 是 disabled、queued、failed 还是 ok，并返回 in-progress/dead-letter 计数。
 
 ## 常用排障入口
 
@@ -437,7 +440,7 @@ Eval 不只看最终回答，还检查：
 | 没 citation | `response.citations` | 加 retrieval challenge 或调整 answerability |
 | 多轮记忆错 | `/api/v1/admin/conversations/{id}/memory/replay` | 看 event replay 是否重建出同样 facts |
 | 线上漂移 | `/api/v1/admin/monitor/summary?source=event_store` | 按 intent、risk、failure_type 聚合，再沉淀 regression |
-| P0/P1 没人响应 | `/api/v1/admin/monitor/alert-deliveries/summary` | 检查 webhook 配置、failed delivery 和 outbox 重试 |
+| P0/P1 没人响应 | `/api/v1/admin/monitor/alert-deliveries/summary` | 检查 webhook 配置、backoff、in-progress lease、failed/dead delivery 和 outbox 重试 |
 | 重复建单 | SQLite `tool_idempotency` 和 tool audit | 确认写工具必须带 idempotency key |
 | 越权/隐私风险 | `policy_findings`、monitor event、tool audit actor | 检查 scope、tenant、业务服务授权和脱敏 |
 

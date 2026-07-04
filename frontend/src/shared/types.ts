@@ -439,8 +439,11 @@ export type MonitorAlertDeliverySummary = {
   status: "ok" | "queued" | "degraded" | "failed" | "disabled" | "unknown";
   webhook_enabled: boolean;
   pending_count: number;
+  in_progress_count: number;
   failed_count: number;
+  dead_count: number;
   oldest_pending_at: string | null;
+  next_attempt_at: string | null;
   last_attempt_at: string | null;
   last_success_at: string | null;
   last_error: string | null;

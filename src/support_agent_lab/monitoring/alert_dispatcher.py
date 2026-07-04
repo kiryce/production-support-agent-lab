@@ -9,7 +9,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, Field
 
-from support_agent_lab.memory.event_store import SQLiteEventStore
+from support_agent_lab.memory.event_store import AlertDeliveryLockLostError, SQLiteEventStore
 from support_agent_lab.models import AlertDeliveryRecord, AlertDeliveryStatus, new_id, utc_now
 from support_agent_lab.monitoring.monitor import MonitorAlert
 
@@ -24,8 +24,11 @@ class AlertDeliverySummary(BaseModel):
     status: AlertDeliveryHealthStatus
     webhook_enabled: bool
     pending_count: int
+    in_progress_count: int = 0
     failed_count: int
+    dead_count: int = 0
     oldest_pending_at: datetime | None = None
+    next_attempt_at: datetime | None = None
     last_attempt_at: datetime | None = None
     last_success_at: datetime | None = None
     last_error: str | None = None
@@ -36,9 +39,11 @@ class AlertDispatchReport(BaseModel):
     enqueued_count: int = 0
     existing_count: int = 0
     skipped_count: int = 0
+    claimed_count: int = 0
     attempted_count: int = 0
     sent_count: int = 0
     failed_count: int = 0
+    dead_count: int = 0
     deliveries: list[AlertDeliveryRecord] = Field(default_factory=list)
 
 
@@ -81,18 +86,23 @@ def dispatch_alert_deliveries(
     max_attempts: int,
     limit: int,
     timeout_ms: int,
+    backoff_base_seconds: int = 60,
+    backoff_max_seconds: int = 900,
+    claim_lease_seconds: int = 120,
+    worker_id: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> AlertDispatchReport:
     if not webhook_url:
         return AlertDispatchReport(webhook_enabled=False)
-    candidates = event_store.list_alert_delivery_records(
+    worker_id = worker_id or new_id("dispatcher")
+    candidates = event_store.claim_alert_delivery_records(
         tenant_id=tenant_id,
-        statuses=[AlertDeliveryStatus.pending.value, AlertDeliveryStatus.failed.value],
-        max_attempts=max_attempts,
         limit=limit,
-        order="asc",
+        worker_id=worker_id,
+        lease_seconds=claim_lease_seconds,
+        max_attempts=max_attempts,
     )
-    report = AlertDispatchReport(webhook_enabled=True)
+    report = AlertDispatchReport(webhook_enabled=True, claimed_count=len(candidates))
     for record in candidates:
         status, response_status_code, last_error = post_alert_delivery_webhook(
             record=record,
@@ -101,15 +111,30 @@ def dispatch_alert_deliveries(
             timeout_ms=timeout_ms,
             transport=transport,
         )
-        updated = event_store.record_alert_delivery_attempt(
-            record.id,
-            status=status,
-            response_status_code=response_status_code,
-            last_error=last_error,
-        )
         report.attempted_count += 1
+        try:
+            updated = event_store.record_alert_delivery_attempt(
+                record.id,
+                status=status,
+                response_status_code=response_status_code,
+                last_error=last_error,
+                max_attempts=max_attempts,
+                backoff_seconds=delivery_backoff_seconds(
+                    attempt_count=record.attempt_count + 1,
+                    base_seconds=backoff_base_seconds,
+                    max_seconds=backoff_max_seconds,
+                )
+                if status == AlertDeliveryStatus.failed
+                else None,
+                worker_id=worker_id,
+            )
+        except AlertDeliveryLockLostError:
+            report.skipped_count += 1
+            continue
         if updated.status == AlertDeliveryStatus.sent:
             report.sent_count += 1
+        elif updated.status == AlertDeliveryStatus.dead:
+            report.dead_count += 1
         else:
             report.failed_count += 1
         report.deliveries.append(updated)
@@ -127,26 +152,35 @@ def summarize_alert_deliveries(
             status="disabled",
             webhook_enabled=False,
             pending_count=0,
+            in_progress_count=0,
             failed_count=0,
+            dead_count=0,
+            next_attempt_at=None,
         )
     pending = [record for record in records if record.status == AlertDeliveryStatus.pending]
+    in_progress = [record for record in records if record.status == AlertDeliveryStatus.in_progress]
     failed = [record for record in records if record.status == AlertDeliveryStatus.failed]
+    dead = [record for record in records if record.status == AlertDeliveryStatus.dead]
     last_attempts = [record.last_attempt_at for record in records if record.last_attempt_at]
+    next_attempts = [record.next_attempt_at for record in records if record.next_attempt_at]
     successes = [record.delivered_at for record in records if record.delivered_at]
     errors = [record.last_error for record in records if record.last_error]
     status: AlertDeliveryHealthStatus = "ok"
-    if failed:
+    if failed or dead:
         status = "failed"
-    elif len(pending) >= backlog_threshold:
+    elif len(pending) + len(in_progress) >= backlog_threshold:
         status = "degraded"
-    elif pending:
+    elif pending or in_progress:
         status = "queued"
     return AlertDeliverySummary(
         status=status,
         webhook_enabled=True,
         pending_count=len(pending),
+        in_progress_count=len(in_progress),
         failed_count=len(failed),
-        oldest_pending_at=min((record.created_at for record in pending), default=None),
+        dead_count=len(dead),
+        oldest_pending_at=min((record.created_at for record in [*pending, *in_progress]), default=None),
+        next_attempt_at=min(next_attempts) if next_attempts else None,
         last_attempt_at=max(last_attempts) if last_attempts else None,
         last_success_at=max(successes) if successes else None,
         last_error=errors[0] if errors else None,
@@ -303,6 +337,12 @@ def hash_alert_destination(webhook_url: str) -> str:
 
 def hash_json_payload(payload: dict[str, object]) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def delivery_backoff_seconds(*, attempt_count: int, base_seconds: int, max_seconds: int) -> int:
+    if attempt_count <= 1:
+        return min(base_seconds, max_seconds)
+    return min(base_seconds * (2 ** (attempt_count - 1)), max_seconds)
 
 
 def canonical_json_bytes(payload: dict[str, object]) -> bytes:

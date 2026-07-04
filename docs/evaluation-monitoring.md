@@ -222,10 +222,11 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/summary" \
 ```
 
 `dispatch` 会从持久化 `monitor.reviewed` 事件投影 active P0/P1 alert，写入
-`alert_delivery_outbox`，再发送 pending 或 failed delivery。唯一键包含
+`alert_delivery_outbox`，再 claim 到期可发送的 delivery。唯一键包含
 `tenant_id`、`alert_key`、`alert_last_seen_at` 和 webhook destination hash，因此同
 一批告警重复调度不会重复通知；同 key 新事件推进 `last_seen_at` 后会创建新的投递任务。
-webhook payload 只包含 alert key、severity、reason、sample run/event ids 和时间窗口，
+失败会按指数 backoff 写入 `next_attempt_at`；`in_progress` 表示某个 dispatcher 正持有
+短租约；超过最大尝试次数后进入 `dead`，不再自动重试。webhook payload 只包含 alert key、severity、reason、sample run/event ids 和时间窗口，
 不包含用户原文、工具参数或 eval answer。
 
 它会输出：

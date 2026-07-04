@@ -107,8 +107,11 @@ export type MonitorAlertDeliveryStats = {
   value: string;
   detail: string;
   pendingCount: number;
+  inProgressCount: number;
   failedCount: number;
+  deadCount: number;
   oldestPendingAt: string | null;
+  nextAttemptAt: string | null;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -336,10 +339,16 @@ export function buildMonitorAlertDeliveryStats(
       value: "unknown",
       detail: "Check admin scopes or Agent API.",
       pendingCount: 0,
+      inProgressCount: 0,
       failedCount: 0,
-      oldestPendingAt: null
+      deadCount: 0,
+      oldestPendingAt: null,
+      nextAttemptAt: null
     };
   }
+  const inProgressCount = summary.in_progress_count ?? 0;
+  const deadCount = summary.dead_count ?? 0;
+  const nextAttemptAt = summary.next_attempt_at ?? null;
   if (!summary.webhook_enabled || summary.status === "disabled") {
     return {
       status: "disabled",
@@ -348,20 +357,26 @@ export function buildMonitorAlertDeliveryStats(
       value: "disabled",
       detail: "Delivery disabled.",
       pendingCount: summary.pending_count,
+      inProgressCount,
       failedCount: summary.failed_count,
-      oldestPendingAt: summary.oldest_pending_at
+      deadCount,
+      oldestPendingAt: summary.oldest_pending_at,
+      nextAttemptAt
     };
   }
   if (summary.status === "failed") {
     return {
       status: "failed",
       tone: "danger",
-      badgeLabel: "Dispatch failed",
-      value: `${summary.failed_count} failed`,
-      detail: summary.last_error ?? "Open alert delivery records before resolving.",
+      badgeLabel: deadCount ? "Dead-letter" : "Dispatch failed",
+      value: deadCount ? `${deadCount} dead` : `${summary.failed_count} failed`,
+      detail: summary.last_error ?? (nextAttemptAt ? `Next retry ${ageLabelText(nextAttemptAt)}.` : "Open alert delivery records before resolving."),
       pendingCount: summary.pending_count,
+      inProgressCount,
       failedCount: summary.failed_count,
-      oldestPendingAt: summary.oldest_pending_at
+      deadCount,
+      oldestPendingAt: summary.oldest_pending_at,
+      nextAttemptAt
     };
   }
   if (summary.status === "degraded") {
@@ -372,8 +387,11 @@ export function buildMonitorAlertDeliveryStats(
       value: `${summary.pending_count} queued`,
       detail: `Oldest ${ageLabelText(summary.oldest_pending_at)}.`,
       pendingCount: summary.pending_count,
+      inProgressCount,
       failedCount: summary.failed_count,
-      oldestPendingAt: summary.oldest_pending_at
+      deadCount,
+      oldestPendingAt: summary.oldest_pending_at,
+      nextAttemptAt
     };
   }
   if (summary.status === "queued") {
@@ -381,11 +399,14 @@ export function buildMonitorAlertDeliveryStats(
       status: "queued",
       tone: "warn",
       badgeLabel: "Queued",
-      value: `${summary.pending_count} queued`,
-      detail: "Dispatcher has pending alert deliveries.",
+      value: `${summary.pending_count + inProgressCount} queued`,
+      detail: inProgressCount ? `${inProgressCount} claimed by dispatcher.` : "Dispatcher has pending alert deliveries.",
       pendingCount: summary.pending_count,
+      inProgressCount,
       failedCount: summary.failed_count,
-      oldestPendingAt: summary.oldest_pending_at
+      deadCount,
+      oldestPendingAt: summary.oldest_pending_at,
+      nextAttemptAt
     };
   }
   return {
@@ -395,8 +416,11 @@ export function buildMonitorAlertDeliveryStats(
     value: `${summary.pending_count} queued`,
     detail: summary.last_success_at ? `Last success ${ageLabelText(summary.last_success_at)}.` : "No pending deliveries.",
     pendingCount: summary.pending_count,
+    inProgressCount,
     failedCount: summary.failed_count,
-    oldestPendingAt: summary.oldest_pending_at
+    deadCount,
+    oldestPendingAt: summary.oldest_pending_at,
+    nextAttemptAt
   };
 }
 
@@ -480,8 +504,19 @@ function ageLabelText(value: string | null) {
     return "never";
   }
   const ageMs = Date.now() - Date.parse(value);
-  if (!Number.isFinite(ageMs) || ageMs < 0) {
+  if (!Number.isFinite(ageMs)) {
     return "just now";
+  }
+  if (ageMs < 0) {
+    const minutesUntil = Math.ceil(Math.abs(ageMs) / 60000);
+    if (minutesUntil < 60) {
+      return `in ${Math.max(1, minutesUntil)}m`;
+    }
+    const hoursUntil = Math.ceil(minutesUntil / 60);
+    if (hoursUntil < 48) {
+      return `in ${hoursUntil}h`;
+    }
+    return `in ${Math.ceil(hoursUntil / 24)}d`;
   }
   const minutes = Math.floor(ageMs / 60000);
   if (minutes < 1) {

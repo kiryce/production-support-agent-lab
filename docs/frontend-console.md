@@ -100,7 +100,9 @@ The backend listens on `8000`; the console listens on `3000`.
 - Alert delivery health from `GET /api/v1/admin/monitor/alert-deliveries/summary`.
   The strip shows whether proactive webhook delivery is disabled, queued,
   degraded, failed, or ok, using the durable delivery outbox rather than live
-  UI state.
+  UI state. `claimed` means a dispatcher currently holds a short lease; `dead`
+  means the delivery exceeded the configured max attempts and needs operator
+  action.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can

@@ -178,14 +178,18 @@ notes.
 `POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox
 dispatcher for proactive alert notification. It projects active P0/P1 alerts
 from persisted monitor events, inserts one durable outbox row per
-`tenant_id + alert_key + alert_last_seen_at + destination`, then sends pending
-or previously failed rows to `APP_MONITOR_ALERT_WEBHOOK_URL`. Delivery payloads
-are signed with `APP_MONITOR_ALERT_WEBHOOK_SECRET` and contain only alert key,
-severity, reason, sample run/event ids, and timing metadata. They do not include
-raw customer text, tool arguments, or eval answer text. Use
+`tenant_id + alert_key + alert_last_seen_at + destination`, then atomically
+claims eligible due rows before posting to `APP_MONITOR_ALERT_WEBHOOK_URL`.
+Claim leases prevent duplicate sends when two dispatchers run at the same time.
+Failures set `next_attempt_at` with exponential backoff; rows that reach
+`APP_MONITOR_ALERT_MAX_ATTEMPTS` move to `dead` and stop retrying until an
+operator intervenes. Delivery payloads are signed with
+`APP_MONITOR_ALERT_WEBHOOK_SECRET` and contain only alert key, severity, reason,
+sample run/event ids, and timing metadata. They do not include raw customer
+text, tool arguments, or eval answer text. Use
 `GET /api/v1/admin/monitor/alert-deliveries/summary` for the console/operator
 health strip and `GET /api/v1/admin/monitor/alert-deliveries` for the delivery
-ledger.
+ledger, including `pending`, `in_progress`, `failed`, `sent`, and `dead` rows.
 
 `POST /api/v1/admin/evals/regression-drafts` is production-allowed because it
 is read-only. It loads the persisted run, selected monitor event, and message
@@ -331,6 +335,9 @@ If proactive monitor alert delivery is enabled, startup also validates:
 - `APP_MONITOR_ALERT_WEBHOOK_ENABLED=true`
 - `APP_MONITOR_ALERT_WEBHOOK_URL` pointing at the on-call/webhook gateway
 - `APP_MONITOR_ALERT_WEBHOOK_SECRET` with at least 32 characters
+- `APP_MONITOR_ALERT_MAX_ATTEMPTS`, `APP_MONITOR_ALERT_BACKOFF_BASE_SECONDS`,
+  `APP_MONITOR_ALERT_BACKOFF_MAX_SECONDS`, and `APP_MONITOR_ALERT_CLAIM_LEASE_SECONDS`
+  sized for your on-call webhook's reliability and timeout behavior
 
 If any are missing, unsupported, or still look like placeholders such as `replace_with...`, `your_...`, or `example.com`, startup raises a `RuntimeError`. This is intentional.
 

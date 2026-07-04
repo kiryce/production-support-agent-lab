@@ -46,6 +46,10 @@ ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
 
 
+class AlertDeliveryLockLostError(RuntimeError):
+    """Raised when a dispatcher tries to complete a delivery it no longer owns."""
+
+
 def _rate(numerator: int, denominator: int) -> float:
     if denominator <= 0:
         return 0.0
@@ -144,9 +148,10 @@ class SQLiteEventStore:
                       id, tenant_id, alert_key, severity, channel, destination_hash, status,
                       alert_first_seen_at, alert_last_seen_at, alert_count, reason,
                       sample_event_ids_json, sample_run_ids_json, payload_hash,
-                      attempt_count, last_attempt_at, delivered_at, response_status_code,
+                      attempt_count, next_attempt_at, last_attempt_at, delivered_at,
+                      dead_lettered_at, locked_until, locked_by, response_status_code,
                       last_error, created_at, updated_at
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -164,8 +169,12 @@ class SQLiteEventStore:
                         json.dumps(record.sample_run_ids, ensure_ascii=False, sort_keys=True),
                         record.payload_hash,
                         record.attempt_count,
+                        record.next_attempt_at.isoformat() if record.next_attempt_at else None,
                         record.last_attempt_at.isoformat() if record.last_attempt_at else None,
                         record.delivered_at.isoformat() if record.delivered_at else None,
+                        record.dead_lettered_at.isoformat() if record.dead_lettered_at else None,
+                        record.locked_until.isoformat() if record.locked_until else None,
+                        record.locked_by,
                         record.response_status_code,
                         record.last_error,
                         record.created_at.isoformat(),
@@ -201,6 +210,64 @@ class SQLiteEventStore:
             )
         return persisted, created
 
+    def claim_alert_delivery_records(
+        self,
+        *,
+        tenant_id: str,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+        max_attempts: int,
+        due_at: datetime | None = None,
+    ) -> list[AlertDeliveryRecord]:
+        now = due_at or utc_now()
+        locked_until = now + timedelta(seconds=lease_seconds)
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            rows = conn.execute(
+                """
+                select *
+                from alert_delivery_outbox
+                where tenant_id = ?
+                  and attempt_count < ?
+                  and (
+                    status in ('pending', 'failed')
+                    or (status = 'in_progress' and locked_until is not null and locked_until <= ?)
+                  )
+                  and (next_attempt_at is null or next_attempt_at <= ?)
+                order by created_at asc, rowid asc
+                limit ?
+                """,
+                (tenant_id, max_attempts, now.isoformat(), now.isoformat(), limit),
+            ).fetchall()
+            delivery_ids = [row["id"] for row in rows]
+            if delivery_ids:
+                placeholders = ", ".join("?" for _ in delivery_ids)
+                conn.execute(
+                    f"""
+                    update alert_delivery_outbox
+                    set status = ?,
+                        locked_by = ?,
+                        locked_until = ?,
+                        updated_at = ?
+                    where id in ({placeholders})
+                    """,
+                    [
+                        AlertDeliveryStatus.in_progress.value,
+                        worker_id,
+                        locked_until.isoformat(),
+                        now.isoformat(),
+                        *delivery_ids,
+                    ],
+                )
+                claimed_rows = conn.execute(
+                    f"select * from alert_delivery_outbox where id in ({placeholders}) order by created_at asc, rowid asc",
+                    delivery_ids,
+                ).fetchall()
+            else:
+                claimed_rows = []
+        return [self._alert_delivery_from_row(row) for row in claimed_rows]
+
     def list_alert_delivery_records(
         self,
         *,
@@ -211,6 +278,7 @@ class SQLiteEventStore:
         created_after: str | None = None,
         created_before: str | None = None,
         max_attempts: int | None = None,
+        due_before: str | None = None,
         limit: int = 100,
         order: str = "desc",
     ) -> list[AlertDeliveryRecord]:
@@ -239,6 +307,9 @@ class SQLiteEventStore:
         if max_attempts is not None:
             clauses.append("attempt_count < ?")
             params.append(max_attempts)
+        if due_before:
+            clauses.append("(next_attempt_at is null or next_attempt_at <= ?)")
+            params.append(due_before)
         if clauses:
             sql += " where " + " and ".join(clauses)
         direction = "asc" if order == "asc" else "desc"
@@ -255,26 +326,57 @@ class SQLiteEventStore:
         status: AlertDeliveryStatus,
         response_status_code: int | None = None,
         last_error: str | None = None,
+        max_attempts: int | None = None,
+        backoff_seconds: int | None = None,
+        worker_id: str | None = None,
     ) -> AlertDeliveryRecord:
         now = utc_now()
         delivered_at = now if status == AlertDeliveryStatus.sent else None
         with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute(
+                "select attempt_count, locked_by, status from alert_delivery_outbox where id = ?",
+                (delivery_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Alert delivery not found: {delivery_id}")
+            if worker_id is not None and (
+                row["status"] != AlertDeliveryStatus.in_progress.value or row["locked_by"] != worker_id
+            ):
+                raise AlertDeliveryLockLostError(f"Alert delivery lock is not held by worker: {delivery_id}")
+            attempt_count = int(row["attempt_count"]) + 1
+            final_status = status
+            next_attempt_at = None
+            dead_lettered_at = None
+            if status == AlertDeliveryStatus.failed:
+                if max_attempts is not None and attempt_count >= max_attempts:
+                    final_status = AlertDeliveryStatus.dead
+                    dead_lettered_at = now
+                elif backoff_seconds is not None:
+                    next_attempt_at = now + timedelta(seconds=backoff_seconds)
             conn.execute(
                 """
                 update alert_delivery_outbox
                 set status = ?,
-                    attempt_count = attempt_count + 1,
+                    attempt_count = ?,
+                    next_attempt_at = ?,
                     last_attempt_at = ?,
                     delivered_at = coalesce(?, delivered_at),
+                    dead_lettered_at = coalesce(?, dead_lettered_at),
+                    locked_until = null,
+                    locked_by = null,
                     response_status_code = ?,
                     last_error = ?,
                     updated_at = ?
                 where id = ?
                 """,
                 (
-                    status.value,
+                    final_status.value,
+                    attempt_count,
+                    next_attempt_at.isoformat() if next_attempt_at else None,
                     now.isoformat(),
                     delivered_at.isoformat() if delivered_at else None,
+                    dead_lettered_at.isoformat() if dead_lettered_at else None,
                     response_status_code,
                     last_error,
                     now.isoformat(),
@@ -285,8 +387,6 @@ class SQLiteEventStore:
                 "select * from alert_delivery_outbox where id = ?",
                 (delivery_id,),
             ).fetchone()
-        if row is None:
-            raise KeyError(f"Alert delivery not found: {delivery_id}")
         record = self._alert_delivery_from_row(row)
         self.append(
             tenant_id=record.tenant_id,
@@ -1068,8 +1168,12 @@ class SQLiteEventStore:
             sample_run_ids=json.loads(row["sample_run_ids_json"] or "[]"),
             payload_hash=row["payload_hash"],
             attempt_count=int(row["attempt_count"]),
+            next_attempt_at=datetime.fromisoformat(row["next_attempt_at"]) if row["next_attempt_at"] else None,
             last_attempt_at=datetime.fromisoformat(row["last_attempt_at"]) if row["last_attempt_at"] else None,
             delivered_at=datetime.fromisoformat(row["delivered_at"]) if row["delivered_at"] else None,
+            dead_lettered_at=datetime.fromisoformat(row["dead_lettered_at"]) if row["dead_lettered_at"] else None,
+            locked_until=datetime.fromisoformat(row["locked_until"]) if row["locked_until"] else None,
+            locked_by=row["locked_by"],
             response_status_code=row["response_status_code"],
             last_error=row["last_error"],
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -1191,8 +1295,12 @@ class SQLiteEventStore:
                   sample_run_ids_json text not null,
                   payload_hash text not null,
                   attempt_count integer not null default 0,
+                  next_attempt_at text,
                   last_attempt_at text,
                   delivered_at text,
+                  dead_lettered_at text,
+                  locked_until text,
+                  locked_by text,
                   response_status_code integer,
                   last_error text,
                   created_at text not null,
@@ -1201,9 +1309,24 @@ class SQLiteEventStore:
                 )
                 """
             )
+            alert_delivery_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(alert_delivery_outbox)").fetchall()
+            }
+            alert_delivery_missing_columns = {
+                "next_attempt_at": "text",
+                "dead_lettered_at": "text",
+                "locked_until": "text",
+                "locked_by": "text",
+            }
+            for column_name, column_type in alert_delivery_missing_columns.items():
+                if column_name not in alert_delivery_columns:
+                    conn.execute(f"alter table alert_delivery_outbox add column {column_name} {column_type}")
             conn.execute("create index if not exists idx_alert_delivery_tenant on alert_delivery_outbox(tenant_id)")
             conn.execute("create index if not exists idx_alert_delivery_alert on alert_delivery_outbox(alert_key)")
             conn.execute("create index if not exists idx_alert_delivery_status on alert_delivery_outbox(status)")
+            conn.execute("create index if not exists idx_alert_delivery_due on alert_delivery_outbox(tenant_id, status, next_attempt_at)")
+            conn.execute("create index if not exists idx_alert_delivery_lock on alert_delivery_outbox(tenant_id, locked_until)")
             conn.execute(
                 "create index if not exists idx_alert_delivery_tenant_status_created on alert_delivery_outbox(tenant_id, status, created_at)"
             )

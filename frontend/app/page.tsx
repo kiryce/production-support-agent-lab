@@ -1655,6 +1655,12 @@ function TriageHealthStrip({
 }
 
 function AlertDeliveryStrip({ stats }: { stats: MonitorAlertDeliveryStats }) {
+  const timingLabel = stats.inProgressCount
+    ? `${stats.inProgressCount} claimed`
+    : stats.nextAttemptAt
+      ? `Next ${relativeTimeLabel(stats.nextAttemptAt)}`
+      : `Oldest ${ageLabel(stats.oldestPendingAt)}`;
+
   return (
     <section className={`alert-delivery-strip state-${stats.status}`} aria-label="Alert delivery health">
       <div className="triage-health-head">
@@ -1668,10 +1674,11 @@ function AlertDeliveryStrip({ stats }: { stats: MonitorAlertDeliveryStats }) {
         <Metric label="State" value={stats.value} />
         <Metric label="Pending" value={String(stats.pendingCount)} />
         <Metric label="Failed" value={String(stats.failedCount)} />
+        <Metric label="Dead" value={String(stats.deadCount)} />
       </div>
       <div className="triage-health-meta">
         <span>{stats.detail}</span>
-        <span>Oldest {ageLabel(stats.oldestPendingAt)}</span>
+        <span>{timingLabel}</span>
       </div>
     </section>
   );
@@ -3696,6 +3703,29 @@ function ageLabel(value: string | null | undefined) {
     return `${hours}h`;
   }
   return `${Math.floor(hours / 24)}d`;
+}
+
+function relativeTimeLabel(value: string | null | undefined) {
+  if (!value) {
+    return "n/a";
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return "n/a";
+  }
+  const diffMs = timestamp - Date.now();
+  if (diffMs <= 0) {
+    return ageLabel(value);
+  }
+  const minutes = Math.ceil(diffMs / 60000);
+  if (minutes < 60) {
+    return `in ${Math.max(1, minutes)}m`;
+  }
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 48) {
+    return `in ${hours}h`;
+  }
+  return `in ${Math.ceil(hours / 24)}d`;
 }
 
 function formatTime(value: string | null | undefined) {

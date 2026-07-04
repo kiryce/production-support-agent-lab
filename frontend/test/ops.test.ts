@@ -679,8 +679,11 @@ describe("ops workbench helpers", () => {
         status: "disabled",
         webhook_enabled: false,
         pending_count: 0,
+        in_progress_count: 0,
         failed_count: 0,
+        dead_count: 0,
         oldest_pending_at: null,
+        next_attempt_at: null,
         last_attempt_at: null,
         last_success_at: null,
         last_error: null
@@ -695,8 +698,11 @@ describe("ops workbench helpers", () => {
         status: "queued",
         webhook_enabled: true,
         pending_count: 2,
+        in_progress_count: 1,
         failed_count: 0,
+        dead_count: 0,
         oldest_pending_at: "2026-07-04T00:00:00.000Z",
+        next_attempt_at: null,
         last_attempt_at: null,
         last_success_at: null,
         last_error: null
@@ -704,15 +710,19 @@ describe("ops workbench helpers", () => {
     ).toMatchObject({
       status: "queued",
       tone: "warn",
-      value: "2 queued"
+      value: "3 queued",
+      detail: "1 claimed by dispatcher."
     });
     expect(
       buildMonitorAlertDeliveryStats({
         status: "failed",
         webhook_enabled: true,
         pending_count: 1,
+        in_progress_count: 0,
         failed_count: 3,
+        dead_count: 0,
         oldest_pending_at: "2026-07-04T00:00:00.000Z",
+        next_attempt_at: "2026-07-04T00:03:00.000Z",
         last_attempt_at: "2026-07-04T00:01:00.000Z",
         last_success_at: null,
         last_error: "HTTP_503"
@@ -722,6 +732,26 @@ describe("ops workbench helpers", () => {
       tone: "danger",
       value: "3 failed",
       detail: "HTTP_503"
+    });
+    expect(
+      buildMonitorAlertDeliveryStats({
+        status: "failed",
+        webhook_enabled: true,
+        pending_count: 0,
+        in_progress_count: 0,
+        failed_count: 0,
+        dead_count: 2,
+        oldest_pending_at: null,
+        next_attempt_at: null,
+        last_attempt_at: "2026-07-04T00:01:00.000Z",
+        last_success_at: null,
+        last_error: "HTTP_503"
+      })
+    ).toMatchObject({
+      tone: "danger",
+      badgeLabel: "Dead-letter",
+      value: "2 dead",
+      deadCount: 2
     });
   });
 });

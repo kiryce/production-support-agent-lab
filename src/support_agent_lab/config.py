@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     app_monitor_alert_webhook_timeout_ms: int = Field(default=3000, ge=500, le=30000)
     app_monitor_alert_min_severity: Literal["P0", "P1", "P2", "P3"] = "P1"
     app_monitor_alert_max_attempts: int = Field(default=3, ge=1, le=20)
+    app_monitor_alert_backoff_base_seconds: int = Field(default=60, ge=1, le=3600)
+    app_monitor_alert_backoff_max_seconds: int = Field(default=900, ge=1, le=86400)
+    app_monitor_alert_claim_lease_seconds: int = Field(default=120, ge=10, le=3600)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
