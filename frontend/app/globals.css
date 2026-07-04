@@ -630,7 +630,7 @@ textarea:disabled {
 
 .workbench-switch {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   margin-top: 12px;
   border: 1px solid var(--line);
@@ -647,6 +647,115 @@ textarea:disabled {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.delivery-ledger {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.delivery-controls {
+  margin-top: 0;
+}
+
+.delivery-list {
+  display: grid;
+  gap: 10px;
+}
+
+.delivery-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: white;
+  padding: 10px;
+}
+
+.delivery-row.state-dead,
+.delivery-row.state-failed {
+  border-left-color: var(--red);
+}
+
+.delivery-row.state-pending,
+.delivery-row.state-in_progress {
+  border-left-color: var(--orange);
+}
+
+.delivery-row.state-sent {
+  border-left-color: var(--green-700);
+}
+
+.delivery-row-main,
+.delivery-row-side,
+.delivery-row-title,
+.delivery-row-meta,
+.delivery-actions {
+  min-width: 0;
+}
+
+.delivery-row-main {
+  display: grid;
+  gap: 6px;
+}
+
+.delivery-row-title,
+.delivery-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.delivery-row-title strong,
+.delivery-row-main span,
+.delivery-row-main small,
+.delivery-row-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-row-title strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.delivery-row-main span,
+.delivery-row-main small,
+.delivery-row-meta span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.delivery-row-side {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.delivery-row-side .metric {
+  min-width: 0;
+}
+
+.delivery-actions {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.icon-command {
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 8px;
+}
+
+.danger-command {
+  color: var(--red);
 }
 
 .workbench-switch button.is-active {

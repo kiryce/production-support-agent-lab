@@ -103,6 +103,11 @@ The backend listens on `8000`; the console listens on `3000`.
   UI state. `claimed` means a dispatcher currently holds a short lease; `dead`
   means the delivery exceeded the configured max attempts and needs operator
   action.
+- Delivery ledger from `GET /api/v1/admin/monitor/alert-deliveries`. The
+  `Delivery` workbench tab filters outbox rows by status and lets an operator
+  replay/requeue or close `dead` rows through the BFF. The browser still calls
+  only `/api/console/*`; production signing and request nonces stay inside the
+  server-side `agentFetch` proxy.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can

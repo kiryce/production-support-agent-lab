@@ -442,11 +442,52 @@ export type MonitorAlertDeliverySummary = {
   in_progress_count: number;
   failed_count: number;
   dead_count: number;
+  closed_count: number;
   oldest_pending_at: string | null;
   next_attempt_at: string | null;
   last_attempt_at: string | null;
   last_success_at: string | null;
   last_error: string | null;
+};
+
+export type AlertDeliveryStatus =
+  | "pending"
+  | "in_progress"
+  | "sent"
+  | "failed"
+  | "dead"
+  | "closed";
+
+export type AlertDeliveryRecord = {
+  id: string;
+  tenant_id: string;
+  alert_key: string;
+  severity: "P0" | "P1" | "P2" | "P3";
+  channel: "webhook";
+  destination_hash: string;
+  status: AlertDeliveryStatus;
+  alert_first_seen_at: string;
+  alert_last_seen_at: string;
+  alert_count: number;
+  reason: string;
+  sample_event_ids: string[];
+  sample_run_ids: string[];
+  payload_hash: string;
+  attempt_count: number;
+  next_attempt_at: string | null;
+  last_attempt_at: string | null;
+  delivered_at: string | null;
+  dead_lettered_at: string | null;
+  locked_until: string | null;
+  locked_by: string | null;
+  operator_action: string | null;
+  operator_action_at: string | null;
+  operator_action_by: string | null;
+  operator_action_note: string | null;
+  response_status_code: number | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type StoredEvent = {

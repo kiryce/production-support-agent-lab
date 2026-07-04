@@ -6,8 +6,10 @@ import httpx
 import pytest
 
 from support_agent_lab.memory.event_store import (
+    ALERT_DELIVERY_CLOSED_EVENT_TYPE,
     ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE,
     ALERT_DELIVERY_ENQUEUED_EVENT_TYPE,
+    ALERT_DELIVERY_REQUEUED_EVENT_TYPE,
     AlertDeliveryLockLostError,
     SQLiteEventStore,
 )
@@ -165,7 +167,16 @@ def test_alert_delivery_outbox_migrates_existing_sqlite_tables(tmp_path):
     with sqlite3.connect(database_path) as conn:
         columns = {row[1] for row in conn.execute("pragma table_info(alert_delivery_outbox)").fetchall()}
 
-    assert {"next_attempt_at", "dead_lettered_at", "locked_until", "locked_by"} <= columns
+    assert {
+        "next_attempt_at",
+        "dead_lettered_at",
+        "locked_until",
+        "locked_by",
+        "operator_action",
+        "operator_action_at",
+        "operator_action_by",
+        "operator_action_note",
+    } <= columns
     event_store.health_check()
 
 
@@ -329,6 +340,89 @@ def test_alert_dispatcher_respects_backoff_and_dead_letters_after_max_attempts(t
     assert dead_claim == []
     assert summary.status == "failed"
     assert summary.dead_count == 1
+
+
+def test_alert_delivery_dead_letter_can_be_closed_or_requeued_by_operator(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    close_target, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
+            destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+        )
+    )
+    requeue_target, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:billing:HTTP_503"),
+            destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+        )
+    )
+    close_dead = event_store.record_alert_delivery_attempt(
+        close_target.id,
+        status=AlertDeliveryStatus.failed,
+        response_status_code=503,
+        last_error="HTTP_503",
+        max_attempts=1,
+        backoff_seconds=60,
+    )
+    requeue_dead = event_store.record_alert_delivery_attempt(
+        requeue_target.id,
+        status=AlertDeliveryStatus.failed,
+        response_status_code=500,
+        last_error="HTTP_500",
+        max_attempts=1,
+        backoff_seconds=60,
+    )
+    closed = event_store.close_alert_delivery(
+        close_dead.id,
+        tenant_id="demo_tenant",
+        actor_user_id="oncall",
+        note="Downstream incident already tracked.",
+    )
+    closed_summary = summarize_alert_deliveries(
+        event_store.list_alert_delivery_records(tenant_id="demo_tenant"),
+        webhook_enabled=True,
+    )
+    requeued = event_store.requeue_alert_delivery(
+        requeue_dead.id,
+        tenant_id="demo_tenant",
+        actor_user_id="oncall",
+        note="Webhook restored.",
+    )
+    claimed = event_store.claim_alert_delivery_records(
+        tenant_id="demo_tenant",
+        worker_id="dispatcher-a",
+        limit=10,
+        lease_seconds=30,
+        max_attempts=3,
+    )
+    action_events = event_store.list_events(
+        tenant_id="demo_tenant",
+        event_type=ALERT_DELIVERY_REQUEUED_EVENT_TYPE,
+    )
+    close_events = event_store.list_events(
+        tenant_id="demo_tenant",
+        event_type=ALERT_DELIVERY_CLOSED_EVENT_TYPE,
+    )
+
+    assert close_dead.status == AlertDeliveryStatus.dead
+    assert requeue_dead.status == AlertDeliveryStatus.dead
+    assert closed.status == AlertDeliveryStatus.closed
+    assert closed.operator_action == "closed"
+    assert closed.operator_action_by == "oncall"
+    assert closed.operator_action_note == "Downstream incident already tracked."
+    assert closed.last_error == "HTTP_503"
+    assert closed_summary.status == "failed"
+    assert closed_summary.dead_count == 1
+    assert closed_summary.closed_count == 1
+    assert requeued.status == AlertDeliveryStatus.pending
+    assert requeued.attempt_count == 0
+    assert requeued.dead_lettered_at is None
+    assert requeued.last_error is None
+    assert [record.id for record in claimed] == [requeue_dead.id]
+    assert action_events[0].payload["operator_action"] == "requeued"
+    assert close_events[0].payload["operator_action"] == "closed"
 
 
 def test_alert_delivery_webhook_sends_signed_sanitized_payload():

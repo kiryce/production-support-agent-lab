@@ -18,6 +18,7 @@ The console should help an on-call operator or Agent beginner answer:
   type, intent, risk level, grounding, policy status, or human-review pressure?
 - Which regression file should receive the real failure sample?
 - Has someone acknowledged, investigated, or resolved a monitor alert?
+- Did proactive alert delivery fail, and should a dead-letter row be replayed or closed?
 
 ## Backend API map
 
@@ -32,6 +33,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Monitor summary | `GET /api/v1/admin/monitor/summary?source=event_store` | Aggregates live quality by risk, intent, failure type, grounded rate, and alerts. |
 | Monitor events | `GET /api/v1/admin/monitor/events?source=event_store` | Raw structured monitor events for sampling and replay. |
 | Monitor drilldown | `GET /api/v1/admin/monitor/drilldown?source=event_store&alert_key=...` | Event-level alert investigation with failure, intent, and risk buckets. |
+| Alert delivery ledger | `GET /api/v1/admin/monitor/alert-deliveries`; `POST .../{delivery_id}/requeue`; `POST .../{delivery_id}/close` | Durable webhook outbox handling with operator replay/close for dead-letter rows. |
 | Alert triage | `GET/POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | Append-only ack/investigate/resolve workflow. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |
@@ -67,6 +69,8 @@ Checks performed:
   and score badges without page-level horizontal overflow.
 - Alerts workbench switches between `Queue` and `Drilldown` without adding a
   new rail item.
+- Alerts workbench includes a `Delivery` tab for durable outbox rows, with
+  replay/close actions only on dead-letter rows.
 - Desktop and mobile Monitor Drilldown states render real event-store results:
   active alert key, backend stats, failure buckets, monitor event cards, and
   no page-level horizontal overflow.

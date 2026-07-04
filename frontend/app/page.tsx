@@ -35,6 +35,8 @@ import {
 } from "lucide-react";
 import {
   buildIncidentBrief,
+  canCloseAlertDelivery,
+  canReplayAlertDelivery,
   buildKnowledgeSearchStats,
   buildMonitorAlertDeliveryStats,
   buildMonitorDrilldownStats,
@@ -42,6 +44,7 @@ import {
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
+  deliveryStatusTone,
   filterAndSortAlerts,
   formatEvalStatus,
   type AlertSort,
@@ -68,6 +71,8 @@ import type {
   AgentRunSearchItem,
   AgentRunSearchResponse,
   AgentRunTrace,
+  AlertDeliveryRecord,
+  AlertDeliveryStatus,
   ConsoleSnapshot,
   EvalGateRecord,
   EvalReport,
@@ -140,7 +145,8 @@ type ToolAuditSearchOverrides = Partial<{
   order: "asc" | "desc";
 }>;
 
-type AlertWorkbenchView = "queue" | "drilldown";
+type AlertWorkbenchView = "queue" | "drilldown" | "delivery";
+type AlertDeliveryStatusFilter = AlertDeliveryStatus | "all";
 
 type MonitorDrilldownFilters = {
   alertKey: string | null;
@@ -209,6 +215,11 @@ export default function Home() {
   const [queueSort, setQueueSort] = useState<AlertSort>(initialConsoleState.sort);
   const [onlyNewAlerts, setOnlyNewAlerts] = useState(initialConsoleState.onlyNew);
   const [alertWorkbenchView, setAlertWorkbenchView] = useState<AlertWorkbenchView>("queue");
+  const [deliveryStatusFilter, setDeliveryStatusFilter] = useState<AlertDeliveryStatusFilter>("dead");
+  const [alertDeliveries, setAlertDeliveries] = useState<AlertDeliveryRecord[]>([]);
+  const [alertDeliveriesLoading, setAlertDeliveriesLoading] = useState(false);
+  const [alertDeliveriesError, setAlertDeliveriesError] = useState<string | null>(null);
+  const [alertDeliveryActionBusy, setAlertDeliveryActionBusy] = useState<string | null>(null);
   const [monitorFilters, setMonitorFilters] = useState<MonitorDrilldownFilters>(
     DEFAULT_MONITOR_DRILLDOWN_FILTERS
   );
@@ -553,6 +564,80 @@ export default function Home() {
   function submitMonitorDrilldown(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     void searchMonitorDrilldown();
+  }
+
+  function showAlertWorkbenchView(view: AlertWorkbenchView) {
+    setAlertWorkbenchView(view);
+    if (view === "drilldown" && !monitorDrilldown && !monitorDrilldownLoading) {
+      void searchMonitorDrilldown({
+        alertKey: monitorFilters.alertKey ?? selectedAlertKey ?? activeAlert?.key ?? null
+      });
+    }
+    if (view === "delivery" && !alertDeliveriesLoading && alertDeliveries.length === 0) {
+      void loadAlertDeliveries(deliveryStatusFilter);
+    }
+  }
+
+  async function loadAlertDeliveries(nextStatus = deliveryStatusFilter) {
+    setAlertDeliveriesLoading(true);
+    setAlertDeliveriesError(null);
+    try {
+      const params = new URLSearchParams({
+        status: nextStatus,
+        limit: "50",
+        order: "desc"
+      });
+      const response = await fetch(`/api/console/monitor/alert-deliveries?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Alert delivery ledger failed");
+      }
+      setAlertDeliveries(data as AlertDeliveryRecord[]);
+    } catch (nextError) {
+      setAlertDeliveriesError(
+        nextError instanceof Error ? nextError.message : "Alert delivery ledger failed"
+      );
+    } finally {
+      setAlertDeliveriesLoading(false);
+    }
+  }
+
+  function changeDeliveryStatusFilter(nextStatus: AlertDeliveryStatusFilter) {
+    setDeliveryStatusFilter(nextStatus);
+    void loadAlertDeliveries(nextStatus);
+  }
+
+  async function submitAlertDeliveryAction(record: AlertDeliveryRecord, action: "replay" | "close") {
+    setAlertDeliveryActionBusy(`${action}:${record.id}`);
+    setAlertDeliveriesError(null);
+    try {
+      const response = await fetch("/api/console/monitor/alert-deliveries/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          deliveryId: record.id,
+          action,
+          note: `${action} from PSA Lab Console`
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Alert delivery action failed");
+      }
+      await Promise.all([
+        loadAlertDeliveries(deliveryStatusFilter),
+        loadSnapshot({ runId: selectedRunId, alertKey: selectedAlertKey })
+      ]);
+    } catch (nextError) {
+      setAlertDeliveriesError(
+        nextError instanceof Error ? nextError.message : "Alert delivery action failed"
+      );
+    } finally {
+      setAlertDeliveryActionBusy(null);
+    }
   }
 
   async function searchKnowledge(nextQuery = knowledgeQuery, nextLimit = knowledgeLimit) {
@@ -1076,14 +1161,7 @@ export default function Home() {
           ) : (
             <MonitorWorkbenchPanel
               view={alertWorkbenchView}
-              onView={(view) => {
-                setAlertWorkbenchView(view);
-                if (view === "drilldown" && !monitorDrilldown && !monitorDrilldownLoading) {
-                  void searchMonitorDrilldown({
-                    alertKey: monitorFilters.alertKey ?? selectedAlertKey ?? activeAlert?.key ?? null
-                  });
-                }
-              }}
+              onView={showAlertWorkbenchView}
               snapshot={snapshot}
               triageHealthStats={triageHealthStats}
               alertDeliveryStats={alertDeliveryStats}
@@ -1121,6 +1199,14 @@ export default function Home() {
               onOpenMonitorEvent={openMonitorEvent}
               onDraftRegression={createRegressionDraft}
               onCopyRegressionDraft={() => void copyRegressionDraft()}
+              deliveryRows={alertDeliveries}
+              deliveryStatus={deliveryStatusFilter}
+              deliveryLoading={alertDeliveriesLoading}
+              deliveryError={alertDeliveriesError}
+              deliveryActionBusy={alertDeliveryActionBusy}
+              onDeliveryStatus={changeDeliveryStatusFilter}
+              onRefreshDeliveries={() => void loadAlertDeliveries(deliveryStatusFilter)}
+              onDeliveryAction={(record, action) => void submitAlertDeliveryAction(record, action)}
             />
           )}
           <section className="run-panel">
@@ -1399,7 +1485,15 @@ function MonitorWorkbenchPanel({
   onSearchDrilldown,
   onOpenMonitorEvent,
   onDraftRegression,
-  onCopyRegressionDraft
+  onCopyRegressionDraft,
+  deliveryRows,
+  deliveryStatus,
+  deliveryLoading,
+  deliveryError,
+  deliveryActionBusy,
+  onDeliveryStatus,
+  onRefreshDeliveries,
+  onDeliveryAction
 }: {
   view: AlertWorkbenchView;
   onView: (view: AlertWorkbenchView) => void;
@@ -1443,6 +1537,14 @@ function MonitorWorkbenchPanel({
   onOpenMonitorEvent: (event: MonitorEvent) => void;
   onDraftRegression: (event: MonitorEvent) => void | Promise<void>;
   onCopyRegressionDraft: () => void | Promise<void>;
+  deliveryRows: AlertDeliveryRecord[];
+  deliveryStatus: AlertDeliveryStatusFilter;
+  deliveryLoading: boolean;
+  deliveryError: string | null;
+  deliveryActionBusy: string | null;
+  onDeliveryStatus: (status: AlertDeliveryStatusFilter) => void;
+  onRefreshDeliveries: () => void;
+  onDeliveryAction: (record: AlertDeliveryRecord, action: "replay" | "close") => void;
 }) {
   return (
     <aside className="alerts-panel monitor-workbench">
@@ -1478,6 +1580,15 @@ function MonitorWorkbenchPanel({
           onClick={() => onView("drilldown")}
         >
           Drilldown
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "delivery"}
+          className={view === "delivery" ? "is-active" : ""}
+          onClick={() => onView("delivery")}
+        >
+          Delivery
         </button>
       </div>
 
@@ -1595,7 +1706,7 @@ function MonitorWorkbenchPanel({
             </button>
           </div>
         </>
-      ) : (
+      ) : view === "drilldown" ? (
         <MonitorDrilldownPanel
           activeAlert={activeAlert}
           filters={filters}
@@ -1614,6 +1725,17 @@ function MonitorWorkbenchPanel({
           copiedRegressionDraft={copiedRegressionDraft}
           onDraftRegression={onDraftRegression}
           onCopyRegressionDraft={onCopyRegressionDraft}
+        />
+      ) : (
+        <AlertDeliveryLedger
+          rows={deliveryRows}
+          status={deliveryStatus}
+          loading={deliveryLoading}
+          error={deliveryError}
+          actionBusy={deliveryActionBusy}
+          onStatus={onDeliveryStatus}
+          onRefresh={onRefreshDeliveries}
+          onAction={onDeliveryAction}
         />
       )}
     </aside>
@@ -1675,12 +1797,124 @@ function AlertDeliveryStrip({ stats }: { stats: MonitorAlertDeliveryStats }) {
         <Metric label="Pending" value={String(stats.pendingCount)} />
         <Metric label="Failed" value={String(stats.failedCount)} />
         <Metric label="Dead" value={String(stats.deadCount)} />
+        <Metric label="Closed" value={String(stats.closedCount)} />
       </div>
       <div className="triage-health-meta">
         <span>{stats.detail}</span>
         <span>{timingLabel}</span>
       </div>
     </section>
+  );
+}
+
+function AlertDeliveryLedger({
+  rows,
+  status,
+  loading,
+  error,
+  actionBusy,
+  onStatus,
+  onRefresh,
+  onAction
+}: {
+  rows: AlertDeliveryRecord[];
+  status: AlertDeliveryStatusFilter;
+  loading: boolean;
+  error: string | null;
+  actionBusy: string | null;
+  onStatus: (status: AlertDeliveryStatusFilter) => void;
+  onRefresh: () => void;
+  onAction: (record: AlertDeliveryRecord, action: "replay" | "close") => void;
+}) {
+  return (
+    <div className="delivery-ledger">
+      <div className="queue-controls delivery-controls" aria-label="Alert delivery controls">
+        <label className="filter-control">
+          <Filter size={14} />
+          <select
+            value={status}
+            onChange={(event) => onStatus(event.target.value as AlertDeliveryStatusFilter)}
+            aria-label="Filter deliveries by status"
+          >
+            <option value="dead">Dead</option>
+            <option value="failed">Failed</option>
+            <option value="pending">Pending</option>
+            <option value="in_progress">Claimed</option>
+            <option value="sent">Sent</option>
+            <option value="closed">Closed</option>
+            <option value="all">All</option>
+          </select>
+        </label>
+        <button className="secondary-button compact-action" type="button" onClick={onRefresh} disabled={loading}>
+          {loading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+          Refresh
+        </button>
+      </div>
+
+      {error ? <div className="inline-error">{error}</div> : null}
+      {loading && rows.length === 0 ? <LoadingBlock /> : null}
+      {!loading && rows.length === 0 ? (
+        <PanelEmpty title="No delivery rows" detail="No alert deliveries match this filter." />
+      ) : null}
+
+      <div className="delivery-list">
+        {rows.map((record) => {
+          const replayBusy = actionBusy === `replay:${record.id}`;
+          const closeBusy = actionBusy === `close:${record.id}`;
+          const nextTiming = record.next_attempt_at
+            ? `Next ${relativeTimeLabel(record.next_attempt_at)}`
+            : record.last_attempt_at
+              ? `Last ${ageLabel(record.last_attempt_at)}`
+              : "No attempt";
+          return (
+            <article className={`delivery-row state-${record.status}`} key={record.id}>
+              <div className="delivery-row-main">
+                <div className="delivery-row-title">
+                  <Badge tone={deliveryStatusTone(record.status)}>{record.status}</Badge>
+                  <strong>{record.alert_key}</strong>
+                </div>
+                <span>{record.reason}</span>
+                <div className="delivery-row-meta">
+                  <span>{record.id}</span>
+                  <span>{record.sample_run_ids[0] ?? "no run"}</span>
+                  <span>{nextTiming}</span>
+                  <span>{record.operator_action_by ?? record.locked_by ?? "no operator"}</span>
+                </div>
+                {record.last_error || record.operator_action_note ? (
+                  <small>{record.last_error ?? record.operator_action_note}</small>
+                ) : null}
+              </div>
+              <div className="delivery-row-side">
+                <Metric label="Attempts" value={String(record.attempt_count)} />
+                <Metric label="Code" value={record.response_status_code ? String(record.response_status_code) : "n/a"} />
+                <div className="delivery-actions">
+                  <button
+                    className="secondary-button icon-command"
+                    type="button"
+                    onClick={() => onAction(record, "replay")}
+                    disabled={!canReplayAlertDelivery(record) || Boolean(actionBusy)}
+                    title="Replay delivery"
+                  >
+                    {replayBusy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                    Replay
+                  </button>
+                  <button
+                    className="secondary-button icon-command danger-command"
+                    type="button"
+                    onClick={() => onAction(record, "close")}
+                    disabled={!canCloseAlertDelivery(record) || Boolean(actionBusy)}
+                    title="Close dead-letter"
+                  >
+                    {closeBusy ? <Loader2 className="spin" size={15} /> : <X size={15} />}
+                    Close
+                  </button>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

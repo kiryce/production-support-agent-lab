@@ -100,6 +100,10 @@ class TriageMonitorAlertRequest(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class AlertDeliveryOperatorActionRequest(BaseModel):
+    note: str = Field(default="", max_length=1000)
+
+
 class IncidentRunBundle(BaseModel):
     run: AgentRunTrace
     run_source: str
@@ -2266,7 +2270,7 @@ def create_app() -> FastAPI:
         deps: Annotated[AppContainer, Depends(get_container)],
         actor: Annotated[RequestActor, Depends(get_request_actor)],
         alert_key: Annotated[str | None, Query(max_length=256)] = None,
-        status: Annotated[Literal["pending", "in_progress", "sent", "failed", "dead"] | None, Query()] = None,
+        status: Annotated[Literal["pending", "in_progress", "sent", "failed", "dead", "closed"] | None, Query()] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
         order: Annotated[Literal["asc", "desc"], Query()] = "desc",
     ) -> list[AlertDeliveryRecord]:
@@ -2281,6 +2285,52 @@ def create_app() -> FastAPI:
             limit=limit,
             order=order,
         )
+
+    @app.post("/api/v1/admin/monitor/alert-deliveries/{delivery_id}/requeue")
+    def requeue_monitor_alert_delivery(
+        delivery_id: str,
+        body: AlertDeliveryOperatorActionRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> AlertDeliveryRecord:
+        require_admin(actor)
+        require_scope(actor, "monitor:write")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        try:
+            return deps.event_store.requeue_alert_delivery(
+                delivery_id,
+                tenant_id=deps.settings.app_tenant_id,
+                actor_user_id=actor.user_id,
+                note=body.note.strip(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Alert delivery not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/v1/admin/monitor/alert-deliveries/{delivery_id}/close")
+    def close_monitor_alert_delivery(
+        delivery_id: str,
+        body: AlertDeliveryOperatorActionRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> AlertDeliveryRecord:
+        require_admin(actor)
+        require_scope(actor, "monitor:write")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        try:
+            return deps.event_store.close_alert_delivery(
+                delivery_id,
+                tenant_id=deps.settings.app_tenant_id,
+                actor_user_id=actor.user_id,
+                note=body.note.strip(),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Alert delivery not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/v1/admin/monitor/alert-deliveries/dispatch")
     def dispatch_monitor_alert_deliveries(

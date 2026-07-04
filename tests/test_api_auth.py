@@ -10,6 +10,7 @@ from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
 from support_agent_lab.config import get_settings
 from support_agent_lab.models import (
+    AlertDeliveryStatus,
     EvalCase,
     EvalCaseResult,
     EvalGateRecord,
@@ -26,7 +27,8 @@ from support_agent_lab.models import (
     ToolStatus,
     utc_now,
 )
-from support_agent_lab.monitoring.monitor import monitor_alert_key
+from support_agent_lab.monitoring.alert_dispatcher import build_alert_delivery_record, hash_alert_destination
+from support_agent_lab.monitoring.monitor import MonitorAlert, monitor_alert_key
 from support_agent_lab.security.actor_signature import build_signed_request_headers, sign_actor_claims
 from support_agent_lab.tools.registry import ToolAuditRecord
 
@@ -563,6 +565,93 @@ def test_production_alert_delivery_routes_require_monitor_scopes(tmp_path, monke
     assert write_allowed.status_code == 200
     assert write_allowed.json()["webhook_enabled"] is False
     assert write_allowed.json()["skipped_count"] == 1
+
+
+def test_production_admin_can_requeue_and_close_alert_deliveries(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+
+    def seed_dead_delivery(key: str):
+        now = utc_now()
+        record, _ = app_container.event_store.enqueue_alert_delivery(
+            build_alert_delivery_record(
+                tenant_id=app_container.settings.app_tenant_id,
+                alert=MonitorAlert(
+                    severity="P1",
+                    key=key,
+                    count=1,
+                    reason=f"{key} delivery failed",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    sample_event_ids=[f"mon_{key}"],
+                    sample_run_ids=[f"run_{key}"],
+                ),
+                destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+            )
+        )
+        return app_container.event_store.record_alert_delivery_attempt(
+            record.id,
+            status=AlertDeliveryStatus.failed,
+            response_status_code=503,
+            last_error="HTTP_503",
+            max_attempts=1,
+            backoff_seconds=60,
+        )
+
+    requeue_target = seed_dead_delivery("agent:order:TIMEOUT")
+    close_target = seed_dead_delivery("agent:billing:HTTP_503")
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+    monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+    get_settings.cache_clear()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        missing_write = client.post(
+            f"/api/v1/admin/monitor/alert-deliveries/{requeue_target.id}/requeue",
+            headers=_production_headers(scopes="monitor:read"),
+            json={"note": "retry"},
+        )
+        requeued = client.post(
+            f"/api/v1/admin/monitor/alert-deliveries/{requeue_target.id}/requeue",
+            headers=_production_headers(scopes="monitor:write"),
+            json={"note": "Webhook restored."},
+        )
+        invalid_close = client.post(
+            f"/api/v1/admin/monitor/alert-deliveries/{requeue_target.id}/close",
+            headers=_production_headers(scopes="monitor:write"),
+            json={"note": "cannot close pending"},
+        )
+        closed = client.post(
+            f"/api/v1/admin/monitor/alert-deliveries/{close_target.id}/close",
+            headers=_production_headers(scopes="monitor:write"),
+            json={"note": "Incident handled elsewhere."},
+        )
+        closed_records = client.get(
+            "/api/v1/admin/monitor/alert-deliveries",
+            headers=_production_headers(scopes="monitor:read"),
+            params={"status": "closed"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
+    assert requeued.status_code == 200
+    assert requeued.json()["status"] == "pending"
+    assert requeued.json()["attempt_count"] == 0
+    assert requeued.json()["operator_action"] == "requeued"
+    assert requeued.json()["operator_action_by"] == "user_prod"
+    assert invalid_close.status_code == 409
+    assert closed.status_code == 200
+    assert closed.json()["status"] == "closed"
+    assert closed.json()["operator_action"] == "closed"
+    assert closed.json()["operator_action_note"] == "Incident handled elsewhere."
+    assert closed_records.status_code == 200
+    assert [record["id"] for record in closed_records.json()] == [close_target.id]
 
 
 def test_production_api_rejects_tampered_signed_scopes(tmp_path, monkeypatch):

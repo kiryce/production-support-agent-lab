@@ -44,6 +44,8 @@ class StoredEvent(BaseModel):
 EVAL_GATE_EVENT_TYPE = "eval.gate.completed"
 ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
+ALERT_DELIVERY_REQUEUED_EVENT_TYPE = "monitor.alert.delivery.requeued"
+ALERT_DELIVERY_CLOSED_EVENT_TYPE = "monitor.alert.delivery.closed"
 
 
 class AlertDeliveryLockLostError(RuntimeError):
@@ -149,9 +151,10 @@ class SQLiteEventStore:
                       alert_first_seen_at, alert_last_seen_at, alert_count, reason,
                       sample_event_ids_json, sample_run_ids_json, payload_hash,
                       attempt_count, next_attempt_at, last_attempt_at, delivered_at,
-                      dead_lettered_at, locked_until, locked_by, response_status_code,
-                      last_error, created_at, updated_at
-                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      dead_lettered_at, locked_until, locked_by, operator_action,
+                      operator_action_at, operator_action_by, operator_action_note,
+                      response_status_code, last_error, created_at, updated_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.id,
@@ -175,6 +178,10 @@ class SQLiteEventStore:
                         record.dead_lettered_at.isoformat() if record.dead_lettered_at else None,
                         record.locked_until.isoformat() if record.locked_until else None,
                         record.locked_by,
+                        record.operator_action,
+                        record.operator_action_at.isoformat() if record.operator_action_at else None,
+                        record.operator_action_by,
+                        record.operator_action_note,
                         record.response_status_code,
                         record.last_error,
                         record.created_at.isoformat(),
@@ -399,6 +406,131 @@ class SQLiteEventStore:
                 "attempt_count": record.attempt_count,
                 "response_status_code": record.response_status_code,
                 "last_error": record.last_error,
+                "updated_at": record.updated_at.isoformat(),
+            },
+        )
+        return record
+
+    def requeue_alert_delivery(
+        self,
+        delivery_id: str,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        note: str = "",
+    ) -> AlertDeliveryRecord:
+        record = self._record_alert_delivery_operator_action(
+            delivery_id,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            note=note,
+            action="requeued",
+            final_status=AlertDeliveryStatus.pending,
+            allowed_statuses={
+                AlertDeliveryStatus.dead.value,
+            },
+            reset_attempts=True,
+            event_type=ALERT_DELIVERY_REQUEUED_EVENT_TYPE,
+        )
+        return record
+
+    def close_alert_delivery(
+        self,
+        delivery_id: str,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        note: str = "",
+    ) -> AlertDeliveryRecord:
+        record = self._record_alert_delivery_operator_action(
+            delivery_id,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            note=note,
+            action="closed",
+            final_status=AlertDeliveryStatus.closed,
+            allowed_statuses={
+                AlertDeliveryStatus.dead.value,
+            },
+            reset_attempts=False,
+            event_type=ALERT_DELIVERY_CLOSED_EVENT_TYPE,
+        )
+        return record
+
+    def _record_alert_delivery_operator_action(
+        self,
+        delivery_id: str,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        note: str,
+        action: str,
+        final_status: AlertDeliveryStatus,
+        allowed_statuses: set[str],
+        reset_attempts: bool,
+        event_type: str,
+    ) -> AlertDeliveryRecord:
+        now = utc_now()
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            row = conn.execute(
+                "select * from alert_delivery_outbox where id = ? and tenant_id = ?",
+                (delivery_id, tenant_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"Alert delivery not found: {delivery_id}")
+            if row["status"] not in allowed_statuses:
+                raise ValueError(f"Alert delivery {delivery_id} is not eligible for {action}")
+            conn.execute(
+                """
+                update alert_delivery_outbox
+                set status = ?,
+                    attempt_count = ?,
+                    next_attempt_at = null,
+                    dead_lettered_at = ?,
+                    locked_until = null,
+                    locked_by = null,
+                    operator_action = ?,
+                    operator_action_at = ?,
+                    operator_action_by = ?,
+                    operator_action_note = ?,
+                    response_status_code = ?,
+                    last_error = ?,
+                    updated_at = ?
+                where id = ? and tenant_id = ?
+                """,
+                (
+                    final_status.value,
+                    0 if reset_attempts else int(row["attempt_count"]),
+                    None if reset_attempts else row["dead_lettered_at"],
+                    action,
+                    now.isoformat(),
+                    actor_user_id,
+                    note,
+                    None if reset_attempts else row["response_status_code"],
+                    None if reset_attempts else row["last_error"],
+                    now.isoformat(),
+                    delivery_id,
+                    tenant_id,
+                ),
+            )
+            updated = conn.execute(
+                "select * from alert_delivery_outbox where id = ? and tenant_id = ?",
+                (delivery_id, tenant_id),
+            ).fetchone()
+        record = self._alert_delivery_from_row(updated)
+        self.append(
+            tenant_id=tenant_id,
+            event_type=event_type,
+            payload={
+                "delivery_id": record.id,
+                "alert_key": record.alert_key,
+                "severity": record.severity,
+                "status": record.status.value,
+                "operator_action": action,
+                "operator_action_by": actor_user_id,
+                "operator_action_note": note,
+                "attempt_count": record.attempt_count,
                 "updated_at": record.updated_at.isoformat(),
             },
         )
@@ -1174,6 +1306,10 @@ class SQLiteEventStore:
             dead_lettered_at=datetime.fromisoformat(row["dead_lettered_at"]) if row["dead_lettered_at"] else None,
             locked_until=datetime.fromisoformat(row["locked_until"]) if row["locked_until"] else None,
             locked_by=row["locked_by"],
+            operator_action=row["operator_action"],
+            operator_action_at=datetime.fromisoformat(row["operator_action_at"]) if row["operator_action_at"] else None,
+            operator_action_by=row["operator_action_by"],
+            operator_action_note=row["operator_action_note"],
             response_status_code=row["response_status_code"],
             last_error=row["last_error"],
             created_at=datetime.fromisoformat(row["created_at"]),
@@ -1301,6 +1437,10 @@ class SQLiteEventStore:
                   dead_lettered_at text,
                   locked_until text,
                   locked_by text,
+                  operator_action text,
+                  operator_action_at text,
+                  operator_action_by text,
+                  operator_action_note text,
                   response_status_code integer,
                   last_error text,
                   created_at text not null,
@@ -1318,6 +1458,10 @@ class SQLiteEventStore:
                 "dead_lettered_at": "text",
                 "locked_until": "text",
                 "locked_by": "text",
+                "operator_action": "text",
+                "operator_action_at": "text",
+                "operator_action_by": "text",
+                "operator_action_note": "text",
             }
             for column_name, column_type in alert_delivery_missing_columns.items():
                 if column_name not in alert_delivery_columns:

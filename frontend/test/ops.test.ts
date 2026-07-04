@@ -8,11 +8,15 @@ import {
   buildOpsMetrics,
   buildRunSearchStats,
   buildToolAuditStats,
+  canCloseAlertDelivery,
+  canReplayAlertDelivery,
+  deliveryStatusTone,
   filterAndSortAlerts,
   formatEvalStatus,
   latestEvalGateRecord
 } from "../src/shared/ops";
 import type {
+  AlertDeliveryRecord,
   ConsoleSnapshot,
   EvalGateRecord,
   KnowledgeSearchResponse,
@@ -682,6 +686,7 @@ describe("ops workbench helpers", () => {
         in_progress_count: 0,
         failed_count: 0,
         dead_count: 0,
+        closed_count: 0,
         oldest_pending_at: null,
         next_attempt_at: null,
         last_attempt_at: null,
@@ -701,6 +706,7 @@ describe("ops workbench helpers", () => {
         in_progress_count: 1,
         failed_count: 0,
         dead_count: 0,
+        closed_count: 0,
         oldest_pending_at: "2026-07-04T00:00:00.000Z",
         next_attempt_at: null,
         last_attempt_at: null,
@@ -721,6 +727,7 @@ describe("ops workbench helpers", () => {
         in_progress_count: 0,
         failed_count: 3,
         dead_count: 0,
+        closed_count: 1,
         oldest_pending_at: "2026-07-04T00:00:00.000Z",
         next_attempt_at: "2026-07-04T00:03:00.000Z",
         last_attempt_at: "2026-07-04T00:01:00.000Z",
@@ -741,6 +748,7 @@ describe("ops workbench helpers", () => {
         in_progress_count: 0,
         failed_count: 0,
         dead_count: 2,
+        closed_count: 0,
         oldest_pending_at: null,
         next_attempt_at: null,
         last_attempt_at: "2026-07-04T00:01:00.000Z",
@@ -754,4 +762,52 @@ describe("ops workbench helpers", () => {
       deadCount: 2
     });
   });
+
+  it("marks only dead alert delivery rows as operator actionable", () => {
+    const dead = deliveryRecord({ status: "dead" });
+    const failed = deliveryRecord({ status: "failed" });
+    const closed = deliveryRecord({ status: "closed" });
+
+    expect(canReplayAlertDelivery(dead)).toBe(true);
+    expect(canCloseAlertDelivery(dead)).toBe(true);
+    expect(canReplayAlertDelivery(failed)).toBe(false);
+    expect(canCloseAlertDelivery(closed)).toBe(false);
+    expect(deliveryStatusTone(dead.status)).toBe("danger");
+    expect(deliveryStatusTone(closed.status)).toBe("neutral");
+  });
 });
+
+function deliveryRecord(overrides: Partial<AlertDeliveryRecord>): AlertDeliveryRecord {
+  return {
+    id: "deliv_1",
+    tenant_id: "demo_tenant",
+    alert_key: "agent:order:TIMEOUT",
+    severity: "P1",
+    channel: "webhook",
+    destination_hash: "hash",
+    status: "dead",
+    alert_first_seen_at: "2026-07-04T00:00:00.000Z",
+    alert_last_seen_at: "2026-07-04T00:01:00.000Z",
+    alert_count: 1,
+    reason: "TIMEOUT clustered across 1 event(s)",
+    sample_event_ids: ["mon_1"],
+    sample_run_ids: ["run_1"],
+    payload_hash: "payload",
+    attempt_count: 3,
+    next_attempt_at: null,
+    last_attempt_at: "2026-07-04T00:02:00.000Z",
+    delivered_at: null,
+    dead_lettered_at: "2026-07-04T00:03:00.000Z",
+    locked_until: null,
+    locked_by: null,
+    operator_action: null,
+    operator_action_at: null,
+    operator_action_by: null,
+    operator_action_note: null,
+    response_status_code: 503,
+    last_error: "HTTP_503",
+    created_at: "2026-07-04T00:00:00.000Z",
+    updated_at: "2026-07-04T00:03:00.000Z",
+    ...overrides
+  };
+}

@@ -27,6 +27,7 @@ class AlertDeliverySummary(BaseModel):
     in_progress_count: int = 0
     failed_count: int
     dead_count: int = 0
+    closed_count: int = 0
     oldest_pending_at: datetime | None = None
     next_attempt_at: datetime | None = None
     last_attempt_at: datetime | None = None
@@ -155,12 +156,14 @@ def summarize_alert_deliveries(
             in_progress_count=0,
             failed_count=0,
             dead_count=0,
+            closed_count=0,
             next_attempt_at=None,
         )
     pending = [record for record in records if record.status == AlertDeliveryStatus.pending]
     in_progress = [record for record in records if record.status == AlertDeliveryStatus.in_progress]
     failed = [record for record in records if record.status == AlertDeliveryStatus.failed]
     dead = [record for record in records if record.status == AlertDeliveryStatus.dead]
+    closed = [record for record in records if record.status == AlertDeliveryStatus.closed]
     last_attempts = [record.last_attempt_at for record in records if record.last_attempt_at]
     next_attempts = [record.next_attempt_at for record in records if record.next_attempt_at]
     successes = [record.delivered_at for record in records if record.delivered_at]
@@ -179,6 +182,7 @@ def summarize_alert_deliveries(
         in_progress_count=len(in_progress),
         failed_count=len(failed),
         dead_count=len(dead),
+        closed_count=len(closed),
         oldest_pending_at=min((record.created_at for record in [*pending, *in_progress]), default=None),
         next_attempt_at=min(next_attempts) if next_attempts else None,
         last_attempt_at=max(last_attempts) if last_attempts else None,

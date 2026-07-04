@@ -6,6 +6,7 @@ import type {
   KnowledgeSearchResponse,
   MonitorAlert,
   MonitorAlertDeliverySummary,
+  AlertDeliveryRecord,
   MonitorDrilldownResponse,
   MonitorTriageMetricsResponse,
   ToolAuditSummary
@@ -100,9 +101,11 @@ export type MonitorTriageHealthStats = {
   oldestActiveAlertAt: string | null;
 };
 
+type Tone = "neutral" | "success" | "warn" | "danger";
+
 export type MonitorAlertDeliveryStats = {
   status: MonitorAlertDeliverySummary["status"];
-  tone: "neutral" | "success" | "warn" | "danger";
+  tone: Tone;
   badgeLabel: string;
   value: string;
   detail: string;
@@ -110,6 +113,7 @@ export type MonitorAlertDeliveryStats = {
   inProgressCount: number;
   failedCount: number;
   deadCount: number;
+  closedCount: number;
   oldestPendingAt: string | null;
   nextAttemptAt: string | null;
 };
@@ -342,12 +346,14 @@ export function buildMonitorAlertDeliveryStats(
       inProgressCount: 0,
       failedCount: 0,
       deadCount: 0,
+      closedCount: 0,
       oldestPendingAt: null,
       nextAttemptAt: null
     };
   }
   const inProgressCount = summary.in_progress_count ?? 0;
   const deadCount = summary.dead_count ?? 0;
+  const closedCount = summary.closed_count ?? 0;
   const nextAttemptAt = summary.next_attempt_at ?? null;
   if (!summary.webhook_enabled || summary.status === "disabled") {
     return {
@@ -360,6 +366,7 @@ export function buildMonitorAlertDeliveryStats(
       inProgressCount,
       failedCount: summary.failed_count,
       deadCount,
+      closedCount,
       oldestPendingAt: summary.oldest_pending_at,
       nextAttemptAt
     };
@@ -375,6 +382,7 @@ export function buildMonitorAlertDeliveryStats(
       inProgressCount,
       failedCount: summary.failed_count,
       deadCount,
+      closedCount,
       oldestPendingAt: summary.oldest_pending_at,
       nextAttemptAt
     };
@@ -390,6 +398,7 @@ export function buildMonitorAlertDeliveryStats(
       inProgressCount,
       failedCount: summary.failed_count,
       deadCount,
+      closedCount,
       oldestPendingAt: summary.oldest_pending_at,
       nextAttemptAt
     };
@@ -405,6 +414,7 @@ export function buildMonitorAlertDeliveryStats(
       inProgressCount,
       failedCount: summary.failed_count,
       deadCount,
+      closedCount,
       oldestPendingAt: summary.oldest_pending_at,
       nextAttemptAt
     };
@@ -419,9 +429,31 @@ export function buildMonitorAlertDeliveryStats(
     inProgressCount,
     failedCount: summary.failed_count,
     deadCount,
+    closedCount,
     oldestPendingAt: summary.oldest_pending_at,
     nextAttemptAt
   };
+}
+
+export function canReplayAlertDelivery(record: AlertDeliveryRecord) {
+  return record.status === "dead";
+}
+
+export function canCloseAlertDelivery(record: AlertDeliveryRecord) {
+  return record.status === "dead";
+}
+
+export function deliveryStatusTone(status: AlertDeliveryRecord["status"]): Tone {
+  if (status === "dead" || status === "failed") {
+    return "danger";
+  }
+  if (status === "pending" || status === "in_progress") {
+    return "warn";
+  }
+  if (status === "closed") {
+    return "neutral";
+  }
+  return "success";
 }
 
 export function latestEvalGateRecord(records: EvalGateRecord[]): EvalGateRecord | null {

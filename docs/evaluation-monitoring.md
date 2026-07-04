@@ -228,6 +228,8 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/summary" \
 失败会按指数 backoff 写入 `next_attempt_at`；`in_progress` 表示某个 dispatcher 正持有
 短租约；超过最大尝试次数后进入 `dead`，不再自动重试。webhook payload 只包含 alert key、severity、reason、sample run/event ids 和时间窗口，
 不包含用户原文、工具参数或 eval answer。
+控制台的 Delivery ledger 会读取同一个 outbox；值班人员只能对 `dead` row 执行
+replay/requeue 或 close，动作会保留在 append-only audit event 中。
 
 它会输出：
 

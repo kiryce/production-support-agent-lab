@@ -135,6 +135,8 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/alert-deliveries/summary` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alert-deliveries/dispatch` | `monitor:write` |
+| `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/requeue` | `monitor:write` |
+| `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/close` | `monitor:write` |
 | `GET /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | `monitor:write` |
 | `/api/v1/admin/events` | `events:read` |
@@ -189,7 +191,11 @@ sample run/event ids, and timing metadata. They do not include raw customer
 text, tool arguments, or eval answer text. Use
 `GET /api/v1/admin/monitor/alert-deliveries/summary` for the console/operator
 health strip and `GET /api/v1/admin/monitor/alert-deliveries` for the delivery
-ledger, including `pending`, `in_progress`, `failed`, `sent`, and `dead` rows.
+ledger, including `pending`, `in_progress`, `failed`, `sent`, `dead`, and
+`closed` rows. Operators can use `POST .../{delivery_id}/requeue` to move a
+`dead` row back to `pending` with attempts reset, or `POST .../{delivery_id}/close`
+to mark the dead-letter handled without pretending it was delivered. Both
+actions append audit events with the operator actor id and note.
 
 `POST /api/v1/admin/evals/regression-drafts` is production-allowed because it
 is read-only. It loads the persisted run, selected monitor event, and message

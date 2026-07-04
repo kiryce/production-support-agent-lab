@@ -291,6 +291,7 @@ class AlertDeliveryStatus(str, Enum):
     sent = "sent"
     failed = "failed"
     dead = "dead"
+    closed = "closed"
 
 
 class AlertDeliveryRecord(BaseModel):
@@ -315,6 +316,10 @@ class AlertDeliveryRecord(BaseModel):
     dead_lettered_at: datetime | None = None
     locked_until: datetime | None = None
     locked_by: str | None = None
+    operator_action: str | None = None
+    operator_action_at: datetime | None = None
+    operator_action_by: str | None = None
+    operator_action_note: str | None = None
     response_status_code: int | None = None
     last_error: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
