@@ -35,13 +35,17 @@ import {
 import {
   buildIncidentBrief,
   buildOpsMetrics,
+  buildRunSearchStats,
   filterAndSortAlerts,
   type AlertSort,
   type AlertStatusFilter,
   type IncidentBrief,
-  type OpsMetrics
+  type OpsMetrics,
+  type RunSearchStats
 } from "@/src/shared/ops";
 import type {
+  AgentRunSearchItem,
+  AgentRunSearchResponse,
   AgentRunTrace,
   ConsoleSnapshot,
   EvalReport,
@@ -80,6 +84,7 @@ type TimelineStepId =
   | "monitor";
 
 type EvidenceTab = "brief" | "citations" | "tool-audit" | "memory" | "triage";
+type WorkspaceMode = "alerts" | "runs";
 
 type LoadInput = {
   runId?: string | null;
@@ -101,7 +106,19 @@ export default function Home() {
   const [snapshot, setSnapshot] = useState<ConsoleSnapshot | null>(null);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedAlertKey, setSelectedAlertKey] = useState<string | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("alerts");
   const [runQuery, setRunQuery] = useState("");
+  const [runSearchQuery, setRunSearchQuery] = useState("");
+  const [runSearchUserId, setRunSearchUserId] = useState("");
+  const [runSearchConversationId, setRunSearchConversationId] = useState("");
+  const [runSearchIntent, setRunSearchIntent] = useState("");
+  const [runSearchRoute, setRunSearchRoute] = useState("");
+  const [runSearchStatus, setRunSearchStatus] = useState("");
+  const [runSearchErrorCode, setRunSearchErrorCode] = useState("");
+  const [runSearchResults, setRunSearchResults] = useState<AgentRunSearchResponse | null>(null);
+  const [runSearchOffset, setRunSearchOffset] = useState(0);
+  const [runSearchLoading, setRunSearchLoading] = useState(false);
+  const [runSearchError, setRunSearchError] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>("active");
   const [queueQuery, setQueueQuery] = useState("");
@@ -182,6 +199,11 @@ export default function Home() {
     [activeAlert, evalReport, snapshot]
   );
 
+  const runSearchStats = useMemo<RunSearchStats>(
+    () => buildRunSearchStats(runSearchResults),
+    [runSearchResults]
+  );
+
   useEffect(() => {
     setAssigneeUserId(activeAlert?.assignee_user_id ?? "");
   }, [activeAlert?.key, activeAlert?.assignee_user_id]);
@@ -213,6 +235,57 @@ export default function Home() {
     } finally {
       setActionBusy(null);
     }
+  }
+
+  async function searchRuns(nextOffset = 0) {
+    setRunSearchLoading(true);
+    setRunSearchError(null);
+    try {
+      const params = new URLSearchParams();
+      const values: Record<string, string> = {
+        q: runSearchQuery,
+        userId: runSearchUserId,
+        conversationId: runSearchConversationId,
+        intent: runSearchIntent,
+        route: runSearchRoute,
+        status: runSearchStatus,
+        errorCode: runSearchErrorCode,
+        limit: "25",
+        offset: String(nextOffset)
+      };
+      for (const [key, value] of Object.entries(values)) {
+        const trimmed = value.trim();
+        if (trimmed) {
+          params.set(key, trimmed);
+        }
+      }
+      const response = await fetch(`/api/console/runs?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Run search failed");
+      }
+      setRunSearchResults(data as AgentRunSearchResponse);
+      setRunSearchOffset(nextOffset);
+    } catch (nextError) {
+      setRunSearchError(nextError instanceof Error ? nextError.message : "Run search failed");
+    } finally {
+      setRunSearchLoading(false);
+    }
+  }
+
+  function submitRunSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void searchRuns(0);
+  }
+
+  function openRunFromWorkbench(item: AgentRunSearchItem) {
+    setWorkspaceMode("runs");
+    setSelectedAlertKey(null);
+    setSelectedRunId(item.id);
+    setRunQuery(item.id);
+    void loadSnapshot({ runId: item.id });
   }
 
   async function submitTriage(status: string, nextAssigneeUserId?: string | null, noteOverride?: string) {
@@ -330,8 +403,15 @@ export default function Home() {
   return (
     <main className="console-shell">
       <Rail
+        activeTarget={workspaceMode}
         alertCount={opsMetrics.activeAlerts}
         onSelect={(target) => {
+          if (target === "runs") {
+            setWorkspaceMode("runs");
+            if (!runSearchResults && !runSearchLoading) {
+              void searchRuns(0);
+            }
+          }
           if (target === "tools") {
             setEvidenceTab("tool-audit");
           }
@@ -339,6 +419,7 @@ export default function Home() {
             setEvidenceTab("memory");
           }
           if (target === "alerts") {
+            setWorkspaceMode("alerts");
             setSeverityFilter("all");
           }
           if (target === "settings") {
@@ -505,7 +586,34 @@ export default function Home() {
         <OpsOverview metrics={opsMetrics} snapshot={snapshot} evalReport={evalReport} />
 
         <section className="workspace">
-          <aside className="alerts-panel">
+          {workspaceMode === "runs" ? (
+            <RunWorkbenchPanel
+              results={runSearchResults}
+              stats={runSearchStats}
+              loading={runSearchLoading}
+              error={runSearchError}
+              selectedRunId={selectedRunId}
+              query={runSearchQuery}
+              userId={runSearchUserId}
+              conversationId={runSearchConversationId}
+              intent={runSearchIntent}
+              route={runSearchRoute}
+              status={runSearchStatus}
+              errorCode={runSearchErrorCode}
+              offset={runSearchOffset}
+              onQuery={setRunSearchQuery}
+              onUserId={setRunSearchUserId}
+              onConversationId={setRunSearchConversationId}
+              onIntent={setRunSearchIntent}
+              onRoute={setRunSearchRoute}
+              onStatus={setRunSearchStatus}
+              onErrorCode={setRunSearchErrorCode}
+              onSubmit={submitRunSearch}
+              onPage={searchRuns}
+              onOpenRun={openRunFromWorkbench}
+            />
+          ) : (
+            <aside className="alerts-panel">
             <div className="panel-heading">
               <div>
                 <span>Monitor Alert Queue</span>
@@ -626,7 +734,8 @@ export default function Home() {
                 <ChevronRight size={15} />
               </button>
             </div>
-          </aside>
+            </aside>
+          )}
 
           <section className="run-panel">
             <div className="run-heading">
@@ -816,7 +925,15 @@ function OpsOverview({
   );
 }
 
-function Rail({ alertCount, onSelect }: { alertCount: number; onSelect: (target: string) => void }) {
+function Rail({
+  activeTarget,
+  alertCount,
+  onSelect
+}: {
+  activeTarget: WorkspaceMode;
+  alertCount: number;
+  onSelect: (target: string) => void;
+}) {
   const items: Array<[string, string, LucideIcon, number | null]> = [
     ["runs", "Runs", Play, null],
     ["alerts", "Alerts", Bell, alertCount],
@@ -833,11 +950,12 @@ function Rail({ alertCount, onSelect }: { alertCount: number; onSelect: (target:
       <nav>
         {items.map(([id, label, Icon, count]) => (
           <button
-            className={id === "runs" ? "is-active" : ""}
+            className={id === activeTarget ? "is-active" : ""}
             type="button"
             key={id}
             onClick={() => onSelect(id)}
             title={label}
+            aria-pressed={id === activeTarget}
           >
             <Icon size={19} />
             <span>{label}</span>
@@ -845,6 +963,218 @@ function Rail({ alertCount, onSelect }: { alertCount: number; onSelect: (target:
           </button>
         ))}
       </nav>
+    </aside>
+  );
+}
+
+function RunWorkbenchPanel({
+  results,
+  stats,
+  loading,
+  error,
+  selectedRunId,
+  query,
+  userId,
+  conversationId,
+  intent,
+  route,
+  status,
+  errorCode,
+  offset,
+  onQuery,
+  onUserId,
+  onConversationId,
+  onIntent,
+  onRoute,
+  onStatus,
+  onErrorCode,
+  onSubmit,
+  onPage,
+  onOpenRun
+}: {
+  results: AgentRunSearchResponse | null;
+  stats: RunSearchStats;
+  loading: boolean;
+  error: string | null;
+  selectedRunId: string | null;
+  query: string;
+  userId: string;
+  conversationId: string;
+  intent: string;
+  route: string;
+  status: string;
+  errorCode: string;
+  offset: number;
+  onQuery: (value: string) => void;
+  onUserId: (value: string) => void;
+  onConversationId: (value: string) => void;
+  onIntent: (value: string) => void;
+  onRoute: (value: string) => void;
+  onStatus: (value: string) => void;
+  onErrorCode: (value: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onPage: (offset: number) => void | Promise<void>;
+  onOpenRun: (item: AgentRunSearchItem) => void;
+}) {
+  const items = results?.items ?? [];
+  const limit = results?.limit ?? 25;
+  const previousOffset = Math.max(0, offset - limit);
+  const nextOffset = offset + limit;
+  return (
+    <aside className="alerts-panel run-workbench">
+      <div className="panel-heading">
+        <div>
+          <span>Run Workbench</span>
+          <strong>{stats.total} persisted runs</strong>
+        </div>
+      </div>
+
+      <form className="run-search-form" onSubmit={onSubmit}>
+        <label className="search-control">
+          <Search size={14} />
+          <input
+            value={query}
+            onChange={(event) => onQuery(event.target.value)}
+            placeholder="Search run, conversation, message"
+            aria-label="Search persisted runs"
+          />
+        </label>
+        <label className="field-label">
+          User
+          <input value={userId} onChange={(event) => onUserId(event.target.value)} placeholder="user_demo" />
+        </label>
+        <label className="field-label">
+          Conversation
+          <input
+            value={conversationId}
+            onChange={(event) => onConversationId(event.target.value)}
+            placeholder="conv_..."
+          />
+        </label>
+        <div className="run-filter-grid">
+          <label className="filter-control">
+            <SlidersHorizontal size={14} />
+            <select value={intent} onChange={(event) => onIntent(event.target.value)} aria-label="Filter runs by intent">
+              <option value="">Any intent</option>
+              <option value="order_status">Order status</option>
+              <option value="refund_or_return">Refund</option>
+              <option value="billing">Billing</option>
+              <option value="technical_issue">Technical</option>
+              <option value="complaint">Complaint</option>
+              <option value="account_security">Security</option>
+              <option value="general_question">General</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <RouteIcon size={14} />
+            <select value={route} onChange={(event) => onRoute(event.target.value)} aria-label="Filter runs by route">
+              <option value="">Any route</option>
+              <option value="order_agent">Order</option>
+              <option value="billing_agent">Billing</option>
+              <option value="tech_agent">Tech</option>
+              <option value="retention_agent">Retention</option>
+              <option value="safety_agent">Safety</option>
+              <option value="general_agent">General</option>
+              <option value="human">Human</option>
+            </select>
+          </label>
+          <label className="filter-control">
+            <Filter size={14} />
+            <select value={status} onChange={(event) => onStatus(event.target.value)} aria-label="Filter runs by status">
+              <option value="">Any status</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+              <option value="running">Running</option>
+            </select>
+          </label>
+          <label className="field-label compact">
+            Error
+            <input
+              value={errorCode}
+              onChange={(event) => onErrorCode(event.target.value)}
+              placeholder="TIMEOUT"
+            />
+          </label>
+        </div>
+        <button className="primary-button" type="submit" disabled={loading}>
+          {loading ? <Loader2 className="spin" size={16} /> : <Search size={16} />}
+          Search runs
+        </button>
+      </form>
+
+      <div className="run-search-stats" aria-label="Run search stats">
+        <Metric label="Failed" value={String(stats.failedRuns)} />
+        <Metric label="Tool fail" value={String(stats.toolFailureRuns)} />
+        <Metric label="Human" value={String(stats.humanReviewRuns)} />
+        <Metric label="Avg" value={stats.averageDurationMs === null ? "n/a" : formatDurationMs(stats.averageDurationMs)} />
+      </div>
+
+      <div className={error ? "inline-error" : "sr-only"} role="status" aria-live="polite">
+        {error ?? `${items.length} run search results loaded`}
+      </div>
+
+      <div className="run-result-list">
+        {loading && !results ? <LoadingBlock /> : null}
+        {!loading && results && !items.length ? (
+          <PanelEmpty title="No runs found" detail="Try a broader query or clear a filter." />
+        ) : null}
+        {!results && !loading ? (
+          <PanelEmpty title="Search persisted runs" detail="Find runs by conversation, user, route, status, or tool error." />
+        ) : null}
+        {items.map((item) => (
+          <button
+            type="button"
+            className={`run-result-card ${item.id === selectedRunId ? "is-selected" : ""}`}
+            key={item.id}
+            onClick={() => onOpenRun(item)}
+            aria-pressed={item.id === selectedRunId}
+          >
+            <div className="run-result-top">
+              <Badge tone={statusTone(item.status)}>{item.status}</Badge>
+              <time title={item.created_at}>{ageLabel(item.created_at)}</time>
+            </div>
+            <strong>{item.id}</strong>
+            <span>{item.conversation_id}</span>
+            <div className="tag-row">
+              <Badge>{item.intent ?? "unknown"}</Badge>
+              <Badge>{item.route ?? "no route"}</Badge>
+              {item.needs_human ? <Badge tone="warn">human</Badge> : null}
+              {item.failed_tool_count ? <Badge tone="danger">{item.failed_tool_count} tool fail</Badge> : null}
+            </div>
+            <div className="run-result-meta">
+              <span>{item.user_id}</span>
+              <span>{formatDurationMs(item.duration_ms)}</span>
+              <span>{item.citation_count} citations</span>
+            </div>
+            {item.tool_error_codes.length ? (
+              <div className="tag-row">
+                {item.tool_error_codes.slice(0, 3).map((code) => (
+                  <Badge tone="warn" key={code}>
+                    {code}
+                  </Badge>
+                ))}
+              </div>
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {results ? (
+        <div className="queue-footer">
+          <span>
+            {offset + 1}-{offset + items.length} of {results.total}
+          </span>
+          <div className="pager-actions">
+            <button type="button" disabled={loading || offset === 0} onClick={() => void onPage(previousOffset)}>
+              Previous
+            </button>
+            <button type="button" disabled={loading || !results.has_more} onClick={() => void onPage(nextOffset)}>
+              Next
+              <ChevronRight size={15} />
+            </button>
+          </div>
+        </div>
+      ) : null}
     </aside>
   );
 }
@@ -1796,6 +2126,13 @@ function spanDuration(span: TraceSpan | undefined) {
   }
   const ms = Math.max(0, end - start);
   return ms > 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function formatDurationMs(value: number | null | undefined) {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  return value > 1000 ? `${(value / 1000).toFixed(1)}s` : `${value}ms`;
 }
 
 function runDuration(run: AgentRunTrace | null) {

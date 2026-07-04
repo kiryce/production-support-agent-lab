@@ -270,6 +270,71 @@ def test_event_store_list_events_filters_by_tenant(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_event_store_searches_agent_runs_by_operational_fields(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    orchestrator = _build_orchestrator(event_store)
+
+    shipping = await orchestrator.handle_message(
+        "conv_run_search_shipping",
+        "user_demo",
+        "Where is order A1002 shipping?",
+    )
+    forbidden = await orchestrator.handle_message(
+        "conv_run_search_forbidden",
+        "user_guest",
+        "Where is order A1001 shipping?",
+    )
+
+    all_runs, total = event_store.search_agent_run_traces(tenant_id="demo_tenant", limit=10)
+    order_runs, order_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        intent="order_status",
+        route="order_agent",
+        limit=10,
+    )
+    forbidden_runs, forbidden_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        error_code="FORBIDDEN",
+        limit=10,
+    )
+    query_runs, query_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        query="conv_run_search_shipping",
+        limit=10,
+    )
+    paged_runs, paged_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        status="completed",
+        limit=1,
+        offset=1,
+    )
+    future_runs, future_total = event_store.search_agent_run_traces(
+        tenant_id="demo_tenant",
+        created_after=(utc_now() + timedelta(days=1)).isoformat(),
+        limit=10,
+    )
+    other_tenant, other_total = event_store.search_agent_run_traces(
+        tenant_id="other_tenant",
+        limit=10,
+    )
+
+    assert total == 2
+    assert {run.id for run in all_runs} == {shipping.trace.id, forbidden.trace.id}
+    assert order_total == 2
+    assert {run.id for run in order_runs} == {shipping.trace.id, forbidden.trace.id}
+    assert forbidden_total == 1
+    assert forbidden_runs[0].id == forbidden.trace.id
+    assert query_total == 1
+    assert query_runs[0].id == shipping.trace.id
+    assert paged_total == 2
+    assert len(paged_runs) == 1
+    assert future_total == 0
+    assert future_runs == []
+    assert other_total == 0
+    assert other_tenant == []
+
+
+@pytest.mark.asyncio
 async def test_sqlite_tool_idempotency_replays_after_restart(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     first_store = DemoStore.seeded()

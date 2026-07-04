@@ -48,6 +48,8 @@ real local FastAPI endpoints:
 2. `POST /api/v1/chat/messages`
 3. `GET /api/v1/admin/monitor/summary?source=event_store`
 4. `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true`
+5. `GET /api/v1/admin/runs` when the `Runs` workbench searches persisted
+   history.
 
 ## Production Run
 
@@ -79,6 +81,9 @@ The backend listens on `8000`; the console listens on `3000`.
 ## What The Console Shows
 
 - Monitor alert queue from `MonitorSummary`.
+- Run workbench backed by persisted `agent.run.completed` events. It searches
+  by run text, user, conversation, intent, route, status, and tool error code,
+  then opens the same trace/evidence investigation view.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
@@ -102,11 +107,13 @@ memory, safety, monitoring, and incident response.
 ## Operator Workflow
 
 1. Start in the alert queue and keep the default `Active` status filter on.
-2. Use search to find a run, owner, alert reason, or event id.
-3. Assign the alert before investigation so ownership is explicit.
-4. Open `Brief` first for the operator summary and recommended next actions.
-5. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
+2. Switch to `Runs` when you need historical investigation across users,
+   conversations, routes, or tool error codes.
+3. Use alert search to find a run, owner, alert reason, or event id.
+4. Assign the alert before investigation so ownership is explicit.
+5. Open `Brief` first for the operator summary and recommended next actions.
+6. Drill into `Citations`, `Tool Audit`, and `Memory` only when the brief points
    at missing grounding, tool failures, or replay questions.
-6. Run the eval gate in local/staging before promoting prompt, routing, tool, or
+7. Run the eval gate in local/staging before promoting prompt, routing, tool, or
    policy changes.
-7. Resolve only after the triage note explains customer impact and mitigation.
+8. Resolve only after the triage note explains customer impact and mitigation.

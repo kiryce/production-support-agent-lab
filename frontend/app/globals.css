@@ -519,6 +519,130 @@ textarea:disabled {
   height: 14px;
 }
 
+.run-workbench {
+  background: #fbfcfb;
+}
+
+.run-search-form {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+}
+
+.run-search-form .primary-button {
+  width: 100%;
+}
+
+.run-filter-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.field-label.compact {
+  margin-bottom: 0;
+}
+
+.run-search-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.run-search-stats .metric {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: white;
+  padding: 8px;
+}
+
+.inline-error {
+  margin-top: 10px;
+  border: 1px solid #fecaca;
+  border-radius: 7px;
+  background: var(--red-100);
+  color: #991b1b;
+  padding: 9px;
+  font-size: 12px;
+}
+
+.run-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  margin-top: 13px;
+}
+
+.run-result-card {
+  display: grid;
+  width: 100%;
+  gap: 7px;
+  min-height: 144px;
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--green-700);
+  border-radius: 8px;
+  background: white;
+  padding: 12px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.run-result-card.is-selected {
+  border-color: #87c7ad;
+  background: linear-gradient(180deg, #f4fbf7, white);
+}
+
+.run-result-card > strong,
+.run-result-card > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-result-card > strong {
+  color: #17231e;
+  font-size: 13px;
+}
+
+.run-result-card > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-result-top,
+.run-result-meta,
+.pager-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.run-result-top {
+  justify-content: space-between;
+}
+
+.run-result-top time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.run-result-meta {
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.pager-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--green-800);
+}
+
 .filter-control select {
   border: 0;
   background: transparent;

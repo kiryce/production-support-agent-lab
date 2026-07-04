@@ -124,6 +124,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | --- | --- |
 | `/api/v1/admin/tools` | `admin:read` |
 | `GET /api/v1/admin/tools/audit` | `audit:read` |
+| `GET /api/v1/admin/runs` | `events:read` |
 | `GET /api/v1/admin/incidents/runs/{run_id}` | `events:read`, `monitor:read`, `audit:read`; add `memory:replay` when `include_memory=true` |
 | `/api/v1/admin/monitor/summary` | `monitor:read` |
 | `/api/v1/admin/monitor/events` | `monitor:read` |

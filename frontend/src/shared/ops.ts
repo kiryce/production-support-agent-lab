@@ -1,4 +1,4 @@
-import type { ConsoleSnapshot, EvalReport, MonitorAlert } from "./types";
+import type { AgentRunSearchResponse, ConsoleSnapshot, EvalReport, MonitorAlert } from "./types";
 
 export type AlertStatusFilter =
   | "active"
@@ -37,6 +37,14 @@ export type IncidentBrief = {
   riskLabel: string;
   recommendedActions: string[];
   markdown: string;
+};
+
+export type RunSearchStats = {
+  total: number;
+  failedRuns: number;
+  humanReviewRuns: number;
+  toolFailureRuns: number;
+  averageDurationMs: number | null;
 };
 
 const SEVERITY_RANK: Record<string, number> = {
@@ -158,6 +166,22 @@ export function buildIncidentBrief(
     ...recommendedActions.map((action) => `- ${action}`)
   ].join("\n");
   return { title, summary, riskLabel, recommendedActions, markdown };
+}
+
+export function buildRunSearchStats(response: AgentRunSearchResponse | null): RunSearchStats {
+  const items = response?.items ?? [];
+  const durations = items
+    .map((item) => item.duration_ms)
+    .filter((duration): duration is number => typeof duration === "number");
+  return {
+    total: response?.total ?? 0,
+    failedRuns: items.filter((item) => item.status === "failed").length,
+    humanReviewRuns: items.filter((item) => item.needs_human).length,
+    toolFailureRuns: items.filter((item) => item.failed_tool_count > 0).length,
+    averageDurationMs: durations.length
+      ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length)
+      : null
+  };
 }
 
 function buildRecommendedActions(input: {

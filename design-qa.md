@@ -9,6 +9,8 @@ Final implementation evidence:
 - Desktop screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-ops-desktop-1487x1058.png`
 - Tablet screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-ops-tablet-1280x720.png`
 - Mobile screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-ops-mobile-390x844.png`
+- Runs workbench desktop screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-runs-desktop-1487x1058.png`
+- Runs workbench mobile screenshot: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\console-runs-mobile-390x844.png`
 - Full desktop comparison: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\comparison-ops-desktop-full.png`
 - Focused first-fold comparison: `C:\Users\ice\Documents\Codex\2026-07-02\wo-x\work\design-qa\comparison-ops-desktop-focused.png`
 
@@ -32,6 +34,8 @@ Responsive probes:
 - `1487x1058`: `bodyScrollWidth=1487`, Brief visible, queue controls present, no loading state.
 - `1280x720`: `bodyScrollWidth=1280`, no loading state.
 - `390x844`: `bodyScrollWidth=390`, `documentScrollWidth=390`, zero critical clipping after mobile tab fix, no loading state.
+- Runs workbench desktop: `bodyScrollWidth=1487`, `viewportWidth=1487`, `workspaceColumns=300px 649.2px 470px`, 25 results loaded, selected result opened 7 timeline steps, no horizontal overflow.
+- Runs workbench mobile: `bodyScrollWidth=375`, `viewportWidth=375`, 25 results loaded, no horizontal overflow.
 
 Fixes made during QA:
 
@@ -42,6 +46,7 @@ Fixes made during QA:
 - Moved the 1280px layout to the responsive two-column/tablet mode to avoid horizontal scrolling.
 - Reworked mobile top controls, rail navigation, and run metrics so the page does not exceed the viewport.
 - Added ops workbench controls: queue search, severity/status/new-event filters, sorting, dynamic rail alert count, incident brief, readiness preflight, and staging eval gate.
+- Added persisted run search workbench behind the `Runs` rail item, reusing the same timeline/evidence investigation surface rather than creating a disconnected detail page.
 - Fixed mobile evidence tabs after the ops expansion so they fit inside the 390px viewport.
 
 Open issues:

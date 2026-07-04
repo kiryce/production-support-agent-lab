@@ -667,6 +667,120 @@ def test_admin_can_read_incident_bundle_from_event_store_after_live_state_is_cle
     assert body["memory_replay"]["replayed_run_count"] == 1
 
 
+def test_admin_can_search_persisted_agent_runs(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        demo_session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        shipping = client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": demo_session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        ).json()
+        guest_session = client.post(
+            "/api/v1/chat/sessions",
+            headers={"X-Demo-User": "user_guest"},
+            json={"user_id": "user_guest"},
+        ).json()
+        forbidden_trace = client.post(
+            "/api/v1/chat/messages",
+            headers={"X-Demo-User": "user_guest"},
+            json={
+                "conversation_id": guest_session["conversation_id"],
+                "user_id": "user_guest",
+                "content": "Where is order A1001 shipping?",
+            },
+        ).json()["trace_id"]
+
+        forbidden = client.get("/api/v1/admin/runs")
+        by_query = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"q": demo_session["conversation_id"]},
+        )
+        by_error = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"error_code": "FORBIDDEN"},
+        )
+        by_user = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"user_id": "user_demo", "limit": 1, "offset": 0},
+        )
+        invalid_limit = client.get(
+            "/api/v1/admin/runs",
+            headers={"X-Demo-Role": "admin"},
+            params={"limit": 0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert forbidden.status_code == 403
+    assert by_query.status_code == 200
+    query_body = by_query.json()
+    assert query_body["total"] == 1
+    assert query_body["items"][0]["id"] == shipping["trace_id"]
+    assert query_body["items"][0]["conversation_id"] == demo_session["conversation_id"]
+    assert query_body["items"][0]["intent"] == "order_status"
+    assert query_body["items"][0]["route"] == "order_agent"
+    assert query_body["items"][0]["tool_count"] >= 1
+    assert by_error.status_code == 200
+    assert by_error.json()["items"][0]["id"] == forbidden_trace
+    assert by_error.json()["items"][0]["tool_error_codes"] == ["FORBIDDEN"]
+    assert by_user.status_code == 200
+    assert by_user.json()["total"] == 1
+    assert by_user.json()["has_more"] is False
+    assert invalid_limit.status_code == 422
+
+
+def test_production_run_search_requires_events_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        session = client.post("/api/v1/chat/sessions", json={"user_id": "user_demo"}).json()
+        client.post(
+            "/api/v1/chat/messages",
+            json={
+                "conversation_id": session["conversation_id"],
+                "user_id": "user_demo",
+                "content": "Where is order A1002 shipping?",
+            },
+        )
+
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        missing_scope = client.get(
+            "/api/v1/admin/runs",
+            headers=_production_headers(scopes="monitor:read"),
+        )
+        allowed = client.get(
+            "/api/v1/admin/runs",
+            headers=_production_headers(scopes="events:read"),
+            params={"conversation_id": session["conversation_id"]},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_scope.status_code == 403
+    assert missing_scope.json()["detail"] == "Missing required scope: events:read"
+    assert allowed.status_code == 200
+    assert allowed.json()["total"] == 1
+
+
 def test_production_incident_bundle_requires_investigation_scopes(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()

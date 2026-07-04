@@ -27,6 +27,8 @@ from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
 from support_agent_lab.models import (
     AgentResponse,
+    AgentRunSearchItem,
+    AgentRunSearchResponse,
     AgentRunTrace,
     Message,
     MonitorAlertStatus,
@@ -318,6 +320,52 @@ def create_app() -> FastAPI:
             memory_replay=memory_replay,
         )
 
+    @app.get("/api/v1/admin/runs")
+    def search_agent_runs(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+        user_id: Annotated[str | None, Query(max_length=128)] = None,
+        conversation_id: Annotated[str | None, Query(max_length=128)] = None,
+        intent: Annotated[str | None, Query(max_length=64)] = None,
+        route: Annotated[str | None, Query(max_length=64)] = None,
+        status: Annotated[str | None, Query(pattern="^(running|completed|failed)$")] = None,
+        error_code: Annotated[str | None, Query(max_length=64)] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
+        from_: Annotated[datetime | None, Query(alias="from")] = None,
+        to_: Annotated[datetime | None, Query(alias="to")] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0, le=10000)] = 0,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+    ) -> AgentRunSearchResponse:
+        require_admin(actor)
+        require_scope(actor, "events:read")
+        if not deps.event_store:
+            return AgentRunSearchResponse(items=[], total=0, limit=limit, offset=offset, has_more=False)
+        runs, total = deps.event_store.search_agent_run_traces(
+            tenant_id=deps.settings.app_tenant_id,
+            query=q,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            intent=intent,
+            route=route,
+            status=status,
+            error_code=error_code,
+            created_after=(created_after or from_).isoformat() if (created_after or from_) else None,
+            created_before=(created_before or to_).isoformat() if (created_before or to_) else None,
+            limit=limit,
+            offset=offset,
+            order=order,
+        )
+        return AgentRunSearchResponse(
+            items=[_agent_run_search_item(run) for run in runs],
+            total=total,
+            limit=limit,
+            offset=offset,
+            has_more=offset + len(runs) < total,
+        )
+
     @app.get("/api/v1/admin/monitor/summary")
     def monitor_summary(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -461,6 +509,40 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return app
+
+
+def _agent_run_search_item(run: AgentRunTrace) -> AgentRunSearchItem:
+    duration_ms = None
+    if run.completed_at:
+        duration_ms = max(0, int((run.completed_at - run.created_at).total_seconds() * 1000))
+    error_codes = [
+        code
+        for code in dict.fromkeys(tool.error_code for tool in run.tool_results if tool.error_code)
+    ]
+    policy_codes = [code for code in dict.fromkeys(finding.code for finding in run.policy_findings)]
+    needs_human = bool(
+        (run.route.needs_human if run.route else False)
+        or any(finding.should_escalate for finding in run.policy_findings)
+    )
+    return AgentRunSearchItem(
+        id=run.id,
+        conversation_id=run.conversation_id,
+        user_id=run.user_id,
+        agent_version=run.agent_version,
+        intent=run.intent.primary if run.intent else None,
+        route=run.route.target if run.route else None,
+        status=run.status,
+        created_at=run.created_at,
+        completed_at=run.completed_at,
+        duration_ms=duration_ms,
+        tool_count=len(run.tool_results),
+        failed_tool_count=sum(1 for tool in run.tool_results if tool.status == "failed"),
+        tool_error_codes=error_codes,
+        policy_codes=policy_codes,
+        citation_count=len(run.retrieval.selected_context) if run.retrieval else 0,
+        llm_call_count=len(run.llm_calls),
+        needs_human=needs_human,
+    )
 
 
 app = create_app()

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildIncidentBrief,
   buildOpsMetrics,
+  buildRunSearchStats,
   filterAndSortAlerts
 } from "../src/shared/ops";
 import type { ConsoleSnapshot, MonitorAlert } from "../src/shared/types";
@@ -139,5 +140,60 @@ describe("ops workbench helpers", () => {
     expect(brief.markdown).toContain("run_1");
     expect(brief.recommendedActions.join(" ")).toContain("Assign an owner");
     expect(brief.recommendedActions.join(" ")).toContain("TIMEOUT");
+  });
+
+  it("summarizes run search results without needing full traces", () => {
+    const stats = buildRunSearchStats({
+      total: 3,
+      limit: 20,
+      offset: 0,
+      has_more: false,
+      items: [
+        {
+          id: "run_1",
+          conversation_id: "conv_1",
+          user_id: "user_demo",
+          agent_version: "agent_test",
+          intent: "order_status",
+          route: "order_agent",
+          status: "completed",
+          created_at: "2026-07-04T00:00:00.000Z",
+          completed_at: "2026-07-04T00:00:01.000Z",
+          duration_ms: 1000,
+          tool_count: 2,
+          failed_tool_count: 0,
+          tool_error_codes: [],
+          policy_codes: [],
+          citation_count: 2,
+          llm_call_count: 1,
+          needs_human: false
+        },
+        {
+          id: "run_2",
+          conversation_id: "conv_2",
+          user_id: "user_guest",
+          agent_version: "agent_test",
+          intent: "order_status",
+          route: "order_agent",
+          status: "failed",
+          created_at: "2026-07-04T00:01:00.000Z",
+          completed_at: null,
+          duration_ms: null,
+          tool_count: 1,
+          failed_tool_count: 1,
+          tool_error_codes: ["FORBIDDEN"],
+          policy_codes: [],
+          citation_count: 0,
+          llm_call_count: 0,
+          needs_human: true
+        }
+      ]
+    });
+
+    expect(stats.total).toBe(3);
+    expect(stats.failedRuns).toBe(1);
+    expect(stats.toolFailureRuns).toBe(1);
+    expect(stats.humanReviewRuns).toBe(1);
+    expect(stats.averageDurationMs).toBe(1000);
   });
 });

@@ -193,6 +193,34 @@ class AgentRunTrace(BaseModel):
         self.completed_at = utc_now()
 
 
+class AgentRunSearchItem(BaseModel):
+    id: str
+    conversation_id: str
+    user_id: str
+    agent_version: str
+    intent: IntentType | None = None
+    route: RouteTarget | None = None
+    status: Literal["running", "completed", "failed"]
+    created_at: datetime
+    completed_at: datetime | None = None
+    duration_ms: int | None = None
+    tool_count: int
+    failed_tool_count: int
+    tool_error_codes: list[str] = Field(default_factory=list)
+    policy_codes: list[str] = Field(default_factory=list)
+    citation_count: int
+    llm_call_count: int
+    needs_human: bool = False
+
+
+class AgentRunSearchResponse(BaseModel):
+    items: list[AgentRunSearchItem]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
 class AgentResponse(BaseModel):
     message: Message
     trace: AgentRunTrace

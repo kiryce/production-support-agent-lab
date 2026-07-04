@@ -56,6 +56,12 @@ Do not expose `X-Demo-*` in production.
 
 `events.run_id` is persisted and indexed for agent-run and monitor events. `/api/v1/admin/incidents/runs/{run_id}` uses that index to bundle the persisted run, monitor events, durable tool audit records, and optional memory replay after live process state is gone.
 
+`/api/v1/admin/runs` is the durable investigation index for the console. It
+searches persisted `agent.run.completed` events by user, conversation, intent,
+route, status, tool error code, text query, time window, limit, and offset, then
+returns lightweight summaries. Full trace hydration remains the responsibility
+of `/api/v1/admin/incidents/runs/{run_id}`.
+
 Production systems usually keep both:
 
 - Thread state lives in Redis/Postgres with fast reads and TTL.

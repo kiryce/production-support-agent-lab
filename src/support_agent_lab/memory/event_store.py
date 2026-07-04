@@ -413,6 +413,102 @@ class SQLiteEventStore:
                 return AgentRunTrace.model_validate(payload)
         return None
 
+    def search_agent_run_traces(
+        self,
+        *,
+        tenant_id: str | None = None,
+        query: str | None = None,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+        intent: str | None = None,
+        route: str | None = None,
+        status: str | None = None,
+        error_code: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "desc",
+    ) -> tuple[list[AgentRunTrace], int]:
+        where_sql = "where event_type = ?"
+        params: list[Any] = ["agent.run.completed"]
+        clauses: list[str] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if conversation_id:
+            clauses.append("conversation_id = ?")
+            params.append(conversation_id)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if intent:
+            clauses.append("json_extract(payload_json, '$.intent.primary') = ?")
+            params.append(intent)
+        if route:
+            clauses.append("json_extract(payload_json, '$.route.target') = ?")
+            params.append(route)
+        if status:
+            clauses.append("json_extract(payload_json, '$.status') = ?")
+            params.append(status)
+        if error_code:
+            clauses.append(
+                """
+                exists (
+                  select 1
+                  from json_each(events.payload_json, '$.tool_results') as tool
+                  where json_extract(tool.value, '$.error_code') = ?
+                )
+                """
+            )
+            params.append(error_code.strip())
+        if query and query.strip():
+            query_like = f"%{query.strip().lower()}%"
+            clauses.append(
+                """
+                (
+                  lower(coalesce(run_id, '')) like ?
+                  or lower(coalesce(conversation_id, '')) like ?
+                  or lower(coalesce(user_id, '')) like ?
+                  or lower(coalesce(json_extract(payload_json, '$.intent.primary'), '')) like ?
+                  or lower(coalesce(json_extract(payload_json, '$.route.target'), '')) like ?
+                  or exists (
+                    select 1
+                    from events as message_events
+                    where message_events.tenant_id = events.tenant_id
+                      and message_events.conversation_id = events.conversation_id
+                      and message_events.event_type in ('message.user', 'message.assistant')
+                      and lower(coalesce(json_extract(message_events.payload_json, '$.content'), '')) like ?
+                  )
+                )
+                """
+            )
+            params.extend([query_like, query_like, query_like, query_like, query_like, query_like])
+        if clauses:
+            where_sql += " and " + " and ".join(clauses)
+        direction = "asc" if order == "asc" else "desc"
+        count_sql = f"select count(*) from events {where_sql}"
+        select_sql = f"""
+            select payload_json
+            from events
+            {where_sql}
+            order by created_at {direction}, rowid {direction}
+            limit ? offset ?
+        """
+
+        with self._connect() as conn:
+            total = int(conn.execute(count_sql, params).fetchone()[0])
+            rows = conn.execute(select_sql, [*params, limit, offset]).fetchall()
+
+        traces = [AgentRunTrace.model_validate(json.loads(row["payload_json"])) for row in rows]
+        return traces, total
+
     def list_monitor_events(
         self,
         *,
@@ -555,6 +651,15 @@ class SQLiteEventStore:
             conn.execute("create index if not exists idx_events_run_id on events(run_id)")
             conn.execute("create index if not exists idx_events_tenant_run on events(tenant_id, run_id)")
             conn.execute("create index if not exists idx_events_type on events(event_type)")
+            conn.execute(
+                "create index if not exists idx_events_tenant_type_created on events(tenant_id, event_type, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_events_tenant_type_user_created on events(tenant_id, event_type, user_id, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_events_tenant_type_conversation_created on events(tenant_id, event_type, conversation_id, created_at)"
+            )
             conn.execute(
                 """
                 create table if not exists tool_idempotency (

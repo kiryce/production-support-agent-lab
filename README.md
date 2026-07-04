@@ -10,7 +10,8 @@ It is not a mock dashboard: the UI calls server-side BFF routes, and those
 routes call the real FastAPI Agent API for monitor alerts, run traces,
 citations, tool audit, memory replay, and triage writes.
 It now includes queue search/sort/status filtering, operator assignment,
-copyable incident briefs, readiness preflight, and a staging eval gate.
+persisted run search, copyable incident briefs, readiness preflight, and a
+staging eval gate.
 
 Start with `docs/frontend-console.md` after the backend quick start. In local
 learning mode, the `Run Scenario` button creates real local events through

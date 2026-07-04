@@ -115,6 +115,34 @@ export type AgentRunTrace = {
   status: "running" | "completed" | "failed";
 };
 
+export type AgentRunSearchItem = {
+  id: string;
+  conversation_id: string;
+  user_id: string;
+  agent_version: string;
+  intent: string | null;
+  route: string | null;
+  status: "running" | "completed" | "failed";
+  created_at: string;
+  completed_at: string | null;
+  duration_ms: number | null;
+  tool_count: number;
+  failed_tool_count: number;
+  tool_error_codes: string[];
+  policy_codes: string[];
+  citation_count: number;
+  llm_call_count: number;
+  needs_human: boolean;
+};
+
+export type AgentRunSearchResponse = {
+  items: AgentRunSearchItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  has_more: boolean;
+};
+
 export type MonitorEvent = {
   id: string;
   conversation_id: string;
