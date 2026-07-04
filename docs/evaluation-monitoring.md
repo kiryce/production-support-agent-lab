@@ -253,6 +253,8 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
 
 不要把 triage 写回 `monitor.reviewed`。原始观测事实不可改写，运营状态通过追加事件投影出来。
 
+如果一个 `resolved` 告警在最后一次 triage 之后又出现同 key 的新 `monitor.reviewed` 事件，投影会把它重新放回 `open`，同时保留 `new_events_since_triage=true`、`last_triage_event_id` 和上一次处置备注。这样值班队列不会把复发问题藏在已解决列表里。`silenced` 告警仍保持静默，只通过 `new_events_since_triage` 暴露复发事实，避免打破有意设置的静默窗口。
+
 `MonitorAlert` 字段速查：
 
 - `key`：聚合键，不是数据库主键。

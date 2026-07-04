@@ -188,3 +188,99 @@ def test_monitor_summary_marks_new_events_after_triage():
     assert alert.status == MonitorAlertStatus.acknowledged
     assert alert.new_events_since_triage is True
     assert alert.sample_event_ids == [first_event.id, "mon_timeout_2"]
+
+
+def test_monitor_summary_reopens_resolved_alert_when_new_events_arrive():
+    first_seen = utc_now()
+    first_event = MonitorEvent(
+        conversation_id="conv_reopen_1",
+        run_id="run_reopen_1",
+        timestamp=first_seen,
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.medium,
+        grounded=True,
+        policy_compliant=True,
+        needs_human_review=True,
+        failure_types=["TIMEOUT"],
+        summary="shipping timeout",
+    )
+    second_event = first_event.model_copy(
+        update={
+            "id": "mon_reopen_2",
+            "conversation_id": "conv_reopen_2",
+            "run_id": "run_reopen_2",
+            "timestamp": first_seen + timedelta(minutes=5),
+        }
+    )
+    triage_event = MonitorAlertTriageEvent(
+        alert_key=monitor_alert_key(first_event),
+        status=MonitorAlertStatus.resolved,
+        assignee_user_id="backend-oncall",
+        actor_user_id="admin_user",
+        note="resolved before the next timeout",
+        created_at=first_seen + timedelta(minutes=1),
+    )
+
+    summary = summarize_monitor_events(
+        [first_event, second_event],
+        triage_events=[triage_event],
+    )
+
+    alert = summary.alerts[0]
+    assert alert.status == MonitorAlertStatus.open
+    assert alert.new_events_since_triage is True
+    assert alert.last_triage_event_id == triage_event.id
+
+
+def test_monitor_summary_clears_new_events_after_followup_triage():
+    first_seen = utc_now()
+    first_event = MonitorEvent(
+        conversation_id="conv_followup_1",
+        run_id="run_followup_1",
+        timestamp=first_seen,
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.medium,
+        grounded=True,
+        policy_compliant=True,
+        needs_human_review=True,
+        failure_types=["TIMEOUT"],
+        summary="shipping timeout",
+    )
+    second_event = first_event.model_copy(
+        update={
+            "id": "mon_followup_2",
+            "conversation_id": "conv_followup_2",
+            "run_id": "run_followup_2",
+            "timestamp": first_seen + timedelta(minutes=5),
+        }
+    )
+    alert_key = monitor_alert_key(first_event)
+    resolved_event = MonitorAlertTriageEvent(
+        alert_key=alert_key,
+        status=MonitorAlertStatus.resolved,
+        assignee_user_id="backend-oncall",
+        actor_user_id="admin_user",
+        note="resolved before recurrence",
+        created_at=first_seen + timedelta(minutes=1),
+    )
+    followup_event = MonitorAlertTriageEvent(
+        alert_key=alert_key,
+        status=MonitorAlertStatus.investigating,
+        assignee_user_id="backend-oncall",
+        actor_user_id="admin_user",
+        note="recurrence acknowledged",
+        created_at=first_seen + timedelta(minutes=6),
+    )
+
+    summary = summarize_monitor_events(
+        [first_event, second_event],
+        triage_events=[resolved_event, followup_event],
+    )
+
+    alert = summary.alerts[0]
+    assert alert.status == MonitorAlertStatus.investigating
+    assert alert.new_events_since_triage is False
+    assert alert.last_triage_event_id == followup_event.id
+    assert alert.last_triage_note == "recurrence acknowledged"

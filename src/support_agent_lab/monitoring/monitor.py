@@ -156,8 +156,10 @@ def apply_monitor_triage(
             alert.last_triage_note = event.note
         alert.last_triage_event_id = event.id
         alert.last_triage_at = event.created_at
-        if alert.last_seen_at > event.created_at:
-            alert.new_events_since_triage = True
+        has_newer_events = alert.last_seen_at > event.created_at
+        alert.new_events_since_triage = has_newer_events
+        if has_newer_events and alert.status == MonitorAlertStatus.resolved:
+            alert.status = MonitorAlertStatus.open
 
 
 def monitor_alert_key(event: MonitorEvent) -> str:

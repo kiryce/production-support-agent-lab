@@ -1620,6 +1620,82 @@ def test_monitor_triage_metrics_track_resolution_time(tmp_path, monkeypatch):
     assert body["mttr_seconds"] == 180
 
 
+def test_monitor_triage_metrics_reopen_resolved_alerts_with_new_events(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    first_seen = utc_now() - timedelta(minutes=8)
+    first_event = MonitorEvent(
+        conversation_id="conv_metrics_reopen_1",
+        run_id="run_metrics_reopen_1",
+        timestamp=first_seen,
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.medium,
+        grounded=True,
+        policy_compliant=True,
+        needs_human_review=True,
+        failure_types=["TIMEOUT"],
+        summary="shipping timeout",
+    )
+    second_event = first_event.model_copy(
+        update={
+            "id": "mon_metrics_reopen_2",
+            "conversation_id": "conv_metrics_reopen_2",
+            "run_id": "run_metrics_reopen_2",
+            "timestamp": first_seen + timedelta(minutes=5),
+        }
+    )
+    alert_key = monitor_alert_key(first_event)
+    app_container.event_store.append_monitor_event(
+        first_event,
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    app_container.event_store.append_monitor_event(
+        second_event,
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    app_container.event_store.append_monitor_alert_triage(
+        MonitorAlertTriageEvent(
+            alert_key=alert_key,
+            status=MonitorAlertStatus.resolved,
+            assignee_user_id="ops-lead",
+            actor_user_id="user_demo",
+            note="resolved before recurrence",
+            created_at=first_seen + timedelta(minutes=2),
+        ),
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/admin/monitor/triage/metrics",
+            headers={"X-Demo-Role": "admin"},
+            params={"source": "event_store"},
+        )
+        summary = client.get(
+            "/api/v1/admin/monitor/summary",
+            headers={"X-Demo-Role": "admin"},
+            params={"source": "event_store"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert summary.status_code == 200
+    body = response.json()
+    alert = summary.json()["alerts"][0]
+    assert alert["status"] == "open"
+    assert alert["new_events_since_triage"] is True
+    assert body["active_alert_count"] == 1
+    assert body["resolved_alert_count"] == 0
+    assert body["by_status"]["open"] == 1
+    assert body["health_status"] == "degraded"
+    assert body["mttr_seconds"] is None
+
+
 def test_monitor_alert_triage_rejects_empty_or_unknown_alert(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()

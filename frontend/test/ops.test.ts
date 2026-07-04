@@ -158,6 +158,32 @@ describe("ops workbench helpers", () => {
     expect(result[0].key).toBe("agent:billing:PII");
   });
 
+  it("keeps resolved alerts with fresh monitor events in the active queue", () => {
+    const alerts = [
+      alert({
+        key: "agent:order:TIMEOUT",
+        status: "resolved",
+        assignee_user_id: "kai",
+        new_events_since_triage: true
+      }),
+      alert({
+        key: "agent:billing:PII",
+        status: "silenced",
+        new_events_since_triage: true
+      })
+    ];
+
+    const result = filterAndSortAlerts(alerts, {
+      severity: "all",
+      status: "active",
+      query: "",
+      onlyNew: false,
+      sort: "severity"
+    });
+
+    expect(result.map((item) => item.key)).toEqual(["agent:order:TIMEOUT"]);
+  });
+
   it("builds metrics and incident actions from real snapshot shape", () => {
     const snapshot = {
       health: { status: "ok" },

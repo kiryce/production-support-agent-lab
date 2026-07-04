@@ -396,7 +396,7 @@ def _monitor_triage_metrics_response(
             ),
             None,
         )
-        if resolution:
+        if resolution and alert.last_seen_at <= resolution.created_at:
             resolution_deltas.append(_duration_seconds(alert.first_seen_at, resolution.created_at))
 
     active_with_new_p0 = any(

@@ -95,6 +95,8 @@ The backend listens on `8000`; the console listens on `3000`.
 - Triage health from persisted monitor and triage events. The strip shows active
   alerts, unassigned active alerts, new events since the latest triage action,
   stale active alerts, P0/P1 pressure, oldest active alert age, and MTTA.
+  A resolved alert with fresh events is treated as active again so recurrence is
+  visible in the queue; silenced alerts remain hidden from the active queue.
 - Monitor drilldown from persisted `monitor.reviewed` events. It reuses the
   alert queue context, shows backend bucket aggregates, and opens a sampled
   run through the same trace/evidence panel. For the selected event, it can

@@ -115,7 +115,7 @@ export function filterAndSortAlerts(alerts: MonitorAlert[], filters: AlertFilter
         return true;
       }
       if (filters.status === "active") {
-        return alert.status !== "resolved" && alert.status !== "silenced";
+        return alertNeedsAttention(alert);
       }
       return alert.status === filters.status;
     })
@@ -149,9 +149,7 @@ export function filterAndSortAlerts(alerts: MonitorAlert[], filters: AlertFilter
 
 export function buildOpsMetrics(snapshot: ConsoleSnapshot | null): OpsMetrics {
   const alerts = snapshot?.summary.alerts ?? [];
-  const activeAlerts = alerts.filter(
-    (alert) => alert.status !== "resolved" && alert.status !== "silenced"
-  );
+  const activeAlerts = alerts.filter(alertNeedsAttention);
   const topFailure =
     topEntry(snapshot?.summary.by_failure_type ?? {})?.[0] ??
     (alerts[0]?.reason ? alerts[0].reason.split(" ")[0] : "none");
@@ -365,6 +363,13 @@ function buildRecommendedActions(input: {
 
 function compareSeverity(left: MonitorAlert, right: MonitorAlert) {
   return (SEVERITY_RANK[left.severity] ?? 9) - (SEVERITY_RANK[right.severity] ?? 9);
+}
+
+function alertNeedsAttention(alert: MonitorAlert) {
+  if (alert.status === "silenced") {
+    return false;
+  }
+  return alert.status !== "resolved" || alert.new_events_since_triage;
 }
 
 function topEntry(values: Record<string, number>) {
