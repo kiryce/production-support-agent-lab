@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from support_agent_lab.models import ToolStatus
-from support_agent_lab.tools.errors import RATE_LIMITED, UPSTREAM_ERROR, ToolError
+from support_agent_lab.tools.errors import RATE_LIMITED, UPSTREAM_ERROR, UPSTREAM_UNAVAILABLE, ToolError
 from support_agent_lab.tools.http_business_tools import HTTPBusinessClient, create_http_registry
 from support_agent_lab.tools.registry import Actor, ToolBroker, ToolContext
 
@@ -21,6 +21,19 @@ def _ctx(scopes: list[str] | None = None) -> ToolContext:
         tenant_id="tenant_live",
         idempotency_key="idem_123",
     )
+
+
+def test_http_registry_tool_timeouts_cover_retry_budget():
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        timeout_ms=1000,
+        retry_attempts=3,
+        retry_backoff_ms=10,
+    )
+
+    timeouts = {tool["timeout_ms"] for tool in create_http_registry(client).list_tools()}
+
+    assert timeouts == {3030}
 
 
 @pytest.mark.asyncio
@@ -82,6 +95,148 @@ async def test_http_business_client_maps_invalid_json_to_upstream_error():
 
     assert exc_info.value.code == UPSTREAM_ERROR
     assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_retries_safe_get_before_returning_success():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(200, json={"customer_id": "C123"})
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    payload = await client.get("/customers/user_123", ctx=_ctx())
+
+    assert payload == {"customer_id": "C123"}
+    assert calls == ["/customers/user_123", "/customers/user_123"]
+    assert client.circuit_status()["state"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_opens_circuit_after_retryable_failures():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(503, json={"error": "temporary"})
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        retry_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_reset_seconds=60,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ToolError) as first_error:
+        await client.get("/customers/user_123", ctx=_ctx())
+    with pytest.raises(ToolError) as second_error:
+        await client.get("/customers/user_123", ctx=_ctx())
+
+    assert first_error.value.code == UPSTREAM_ERROR
+    assert second_error.value.code == UPSTREAM_UNAVAILABLE
+    assert second_error.value.retryable is True
+    assert "circuit is open" in second_error.value.message
+    assert calls == ["/customers/user_123"]
+    assert client.circuit_status()["state"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_half_open_success_closes_circuit():
+    now = 0.0
+    calls = []
+
+    def clock() -> float:
+        return now
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if len(calls) == 1:
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(200, json={"customer_id": "C123"})
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        retry_attempts=1,
+        circuit_failure_threshold=1,
+        circuit_reset_seconds=10,
+        transport=httpx.MockTransport(handler),
+        clock=clock,
+    )
+
+    with pytest.raises(ToolError):
+        await client.get("/customers/user_123", ctx=_ctx())
+    assert client.circuit_status()["state"] == "open"
+
+    now = 11.0
+    payload = await client.get("/customers/user_123", ctx=_ctx())
+
+    assert payload == {"customer_id": "C123"}
+    assert calls == ["/customers/user_123", "/customers/user_123"]
+    assert client.circuit_status()["state"] == "closed"
+    assert client.circuit_status()["failure_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_retries_post_only_when_idempotency_key_is_present():
+    seen_idempotency_headers = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_idempotency_headers.append(request.headers.get("idempotency-key"))
+        if len(seen_idempotency_headers) == 1:
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(
+            200,
+            json={
+                "ticket_id": "T9001",
+                "status": "open",
+                "created_at": "2026-07-02T00:00:00+00:00",
+            },
+        )
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        retry_attempts=2,
+        retry_backoff_ms=0,
+        transport=httpx.MockTransport(handler),
+    )
+
+    payload = await client.post("/tickets", json={"title": "Need help"}, ctx=_ctx())
+
+    assert payload["ticket_id"] == "T9001"
+    assert seen_idempotency_headers == ["idem_123", "idem_123"]
+
+
+@pytest.mark.asyncio
+async def test_http_business_client_does_not_retry_post_without_idempotency_key():
+    calls = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(503, json={"error": "temporary"})
+
+    client = HTTPBusinessClient(
+        base_url="https://business.internal.test",
+        retry_attempts=3,
+        retry_backoff_ms=0,
+        transport=httpx.MockTransport(handler),
+    )
+    ctx = _ctx().model_copy(update={"idempotency_key": None})
+
+    with pytest.raises(ToolError) as exc_info:
+        await client.post("/tickets", json={"title": "Need help"}, ctx=ctx)
+
+    assert exc_info.value.code == UPSTREAM_ERROR
+    assert calls == ["/tickets"]
 
 
 @pytest.mark.asyncio

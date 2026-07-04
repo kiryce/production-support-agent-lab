@@ -132,6 +132,9 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         "business_api": "ok",
         "knowledge_api": "ok",
     }
+    business_detail = {check.name: check.detail for check in report.checks}["business_api"]
+    assert "circuit=closed" in business_detail
+    assert "retry_attempts=2" in business_detail
 
 
 def test_ready_endpoint_returns_503_when_dependency_fails():

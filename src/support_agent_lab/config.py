@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     app_actor_signature_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     app_request_signature_required: bool | None = None
     app_http_timeout_ms: int = Field(default=5000, ge=500, le=60000)
+    app_business_api_retry_attempts: int = Field(default=2, ge=1, le=5)
+    app_business_api_retry_backoff_ms: int = Field(default=100, ge=0, le=5000)
+    app_business_api_circuit_failure_threshold: int = Field(default=5, ge=1, le=50)
+    app_business_api_circuit_reset_seconds: int = Field(default=30, ge=1, le=3600)
     app_llm_timeout_ms: int = Field(default=15000, ge=1000, le=120000)
     app_readiness_deep_checks: bool | None = None
     app_monitor_alert_webhook_enabled: bool = False

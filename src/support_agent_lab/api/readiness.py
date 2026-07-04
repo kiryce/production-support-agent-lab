@@ -104,8 +104,27 @@ async def _check_business_api(container: AppContainer) -> ReadinessCheck:
     try:
         await container.business_client.health_check(container.settings.app_tenant_id)
     except Exception as exc:
-        return ReadinessCheck(name="business_api", status="failed", detail=str(exc))
-    return ReadinessCheck(name="business_api", status="ok", detail="business /health reachable")
+        return ReadinessCheck(
+            name="business_api",
+            status="failed",
+            detail=f"{exc}; {_business_circuit_detail(container)}",
+        )
+    return ReadinessCheck(
+        name="business_api",
+        status="ok",
+        detail=f"business /health reachable; {_business_circuit_detail(container)}",
+    )
+
+
+def _business_circuit_detail(container: AppContainer) -> str:
+    if not container.business_client:
+        return "circuit=missing"
+    status = container.business_client.circuit_status()
+    return (
+        f"circuit={status['state']}, "
+        f"failures={status['failure_count']}/{status['failure_threshold']}, "
+        f"retry_attempts={status['retry_attempts']}"
+    )
 
 
 async def _check_knowledge_api(container: AppContainer) -> ReadinessCheck:

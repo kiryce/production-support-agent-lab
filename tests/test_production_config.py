@@ -249,6 +249,10 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
     monkeypatch.setenv("APP_INTERNAL_API_KEY", "internal-test-key")
     monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_BUSINESS_API_RETRY_ATTEMPTS", "3")
+    monkeypatch.setenv("APP_BUSINESS_API_RETRY_BACKOFF_MS", "25")
+    monkeypatch.setenv("APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD", "7")
+    monkeypatch.setenv("APP_BUSINESS_API_CIRCUIT_RESET_SECONDS", "45")
     get_settings.cache_clear()
     try:
         container = create_container()
@@ -256,6 +260,11 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
         get_settings.cache_clear()
 
     assert container.store is None
+    assert container.business_client is not None
+    assert container.business_client.retry_attempts == 3
+    assert container.business_client.retry_backoff_ms == 25
+    assert container.business_client.circuit_failure_threshold == 7
+    assert container.business_client.circuit_reset_seconds == 45
     assert container.event_store is not None
     assert container.tools.idempotency_store is container.event_store
     assert container.tools.audit_sink is container.event_store

@@ -59,10 +59,11 @@ python scripts/run_eval.py examples/evals/tool_failure_regression.json
 ## 生产化增强顺序
 
 1. 先把错误码稳定下来：所有工具异常都必须映射到有限枚举。
-2. 再做 retry：只重试 `retryable=true` 且副作用安全的工具。
-3. 再做 fallback：比如物流工具不可用时，可以返回“暂时无法确认最新节点”，但不能猜测 ETA。
-4. 再做 monitor 聚合：按 `agent_version + intent + failure_type` 看某次发布是否放大了工具错误。
-5. 最后接告警：`FORBIDDEN` 和 PII 相关问题优先级高于普通 `NOT_FOUND`。
+2. 再做 retry：只重试 `retryable=true` 且副作用安全的工具；HTTP business adapter 已内置有限重试，写工具只有带幂等键才会重试。
+3. 再做 circuit breaker：连续 `429`、`5xx`、timeout、network failure、transient bad JSON 会打开业务上游断路器，readiness 会显示 `circuit=open`。
+4. 再做 fallback：比如物流工具不可用时，可以返回“暂时无法确认最新节点”，但不能猜测 ETA。
+5. 再做 monitor 聚合：按 `agent_version + intent + failure_type` 看某次发布是否放大了工具错误。
+6. 最后接告警：`FORBIDDEN` 和 PII 相关问题优先级高于普通 `NOT_FOUND`。
 
 ## 新增失败 case 的模板
 

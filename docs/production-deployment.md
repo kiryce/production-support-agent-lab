@@ -20,6 +20,10 @@ APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
 APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_HTTP_TIMEOUT_MS=5000
+APP_BUSINESS_API_RETRY_ATTEMPTS=2
+APP_BUSINESS_API_RETRY_BACKOFF_MS=100
+APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD=5
+APP_BUSINESS_API_CIRCUIT_RESET_SECONDS=30
 APP_LLM_TIMEOUT_MS=15000
 APP_READINESS_DEEP_CHECKS=true
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
@@ -69,6 +73,8 @@ Idempotency-Key: <for write tools>
 The business-tool headers are downstream context headers. The public Agent API has a separate ingress contract below: the trusted gateway must sign the inbound actor claims before this service trusts them. If your business backend also wants to reject header tampering at its own edge, give it an equivalent JWT/HMAC contract there too.
 
 Production HTTP tools normalize upstream failures before the model sees them: `401 -> UNAUTHORIZED`, `403 -> FORBIDDEN`, `404 -> NOT_FOUND`, `409 -> CONFLICT`, `429 -> RATE_LIMITED`, `5xx -> UPSTREAM_ERROR`, timeout -> `TIMEOUT`, network failure -> `UPSTREAM_UNAVAILABLE`, invalid JSON -> `UPSTREAM_ERROR`.
+
+The business adapter has a small production resilience layer. Safe reads and `/health` are attempted up to `APP_BUSINESS_API_RETRY_ATTEMPTS` times with exponential backoff starting at `APP_BUSINESS_API_RETRY_BACKOFF_MS`. Each attempt uses `APP_HTTP_TIMEOUT_MS`; the tool registry timeout is sized to cover the full attempt plus backoff budget. `POST /tickets` is retried only when the request has an `Idempotency-Key`; the business backend must treat that key as a real idempotency key before you enable production traffic. Retryable failures are `429`, `5xx`, timeout, network failure, and transient invalid JSON. Repeated retryable failures open an in-process circuit after `APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD` failures and keep it open for `APP_BUSINESS_API_CIRCUIT_RESET_SECONDS`; while open, tool calls fail fast with `UPSTREAM_UNAVAILABLE`.
 
 Your backend should still enforce tenant isolation and resource ownership. The Agent has route-level `allowed_tools`, `ToolBroker` enforces scopes, and the HTTP adapter performs basic defense-in-depth checks, but production authorization must live in the business service too. Path identifiers such as `user_id`, `order_id`, and `logistics_id` are schema-validated and encoded before being placed in upstream URLs; keep the same rule when adding tools.
 
@@ -312,6 +318,8 @@ The service exposes two health endpoints:
 
 In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable.
 
+The `business_api` readiness detail includes the adapter circuit state, failure count, threshold, and retry attempts. Use that detail during incidents: `circuit=closed` means calls are flowing, `circuit=open` means the adapter is failing fast until the reset window, and `circuit=half_open` means the next upstream call is probing recovery.
+
 You can force or skip deep checks per request:
 
 ```bash
@@ -335,6 +343,13 @@ curl "http://127.0.0.1:8000/api/v1/ready?deep=false"
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
+
+Business API resilience knobs are optional but should be set deliberately for each environment:
+
+- `APP_BUSINESS_API_RETRY_ATTEMPTS`
+- `APP_BUSINESS_API_RETRY_BACKOFF_MS`
+- `APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD`
+- `APP_BUSINESS_API_CIRCUIT_RESET_SECONDS`
 
 If proactive monitor alert delivery is enabled, startup also validates:
 
@@ -370,6 +385,7 @@ The default release check is deterministic and local. `--prod-smoke` is intentio
 - Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
+- During a controlled staging failure, repeated Business API `5xx` responses open the adapter circuit and `/api/v1/ready?deep=true` reports `business_api` as failed with `circuit=open`.
 - Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
