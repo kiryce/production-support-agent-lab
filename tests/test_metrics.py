@@ -66,6 +66,7 @@ def test_metrics_endpoint_is_scrapeable_when_signatures_and_rate_limits_are_enab
     monkeypatch.setenv("APP_RATE_LIMIT_BURST", "1")
     get_settings.cache_clear()
     app.state.rate_limiter.reset()
+    app.state.http_metrics.reset()
     app.dependency_overrides[get_container] = lambda: _metrics_container()
     try:
         client = TestClient(app)
@@ -75,12 +76,43 @@ def test_metrics_endpoint_is_scrapeable_when_signatures_and_rate_limits_are_enab
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         app.state.rate_limiter.reset()
+        app.state.http_metrics.reset()
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.headers["content-type"].startswith("text/plain; version=0.0.4")
     assert "X-RateLimit-Limit" not in first.headers
     assert "support_agent_info" in first.text
+
+
+def test_metrics_endpoint_exports_http_and_rate_limit_live_counters(monkeypatch):
+    monkeypatch.setenv("APP_RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("APP_RATE_LIMIT_REQUESTS_PER_MINUTE", "1")
+    monkeypatch.setenv("APP_RATE_LIMIT_BURST", "1")
+    get_settings.cache_clear()
+    app.state.rate_limiter.reset()
+    app.state.http_metrics.reset()
+    app.dependency_overrides[get_container] = lambda: _metrics_container()
+    try:
+        client = TestClient(app)
+        health = client.get("/api/v1/health")
+        allowed = client.post("/api/v1/chat/sessions", json={})
+        blocked = client.post("/api/v1/chat/sessions", json={})
+        metrics = client.get("/metrics?source=live")
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+        app.state.rate_limiter.reset()
+        app.state.http_metrics.reset()
+
+    assert health.status_code == 200
+    assert allowed.status_code == 200
+    assert blocked.status_code == 429
+    assert 'support_agent_http_requests_total{method="GET",route_family="health",status="200"} 1' in metrics.text
+    assert 'support_agent_http_requests_total{method="POST",route_family="chat",status="200"} 1' in metrics.text
+    assert 'support_agent_http_requests_total{method="POST",route_family="chat",status="429"} 1' in metrics.text
+    assert 'support_agent_rate_limit_decisions_total{decision="allowed",route_family="chat"} 1' in metrics.text
+    assert 'support_agent_rate_limit_decisions_total{decision="blocked",route_family="chat"} 1' in metrics.text
 
 
 def _metrics_container(settings: Settings | None = None) -> AppContainer:

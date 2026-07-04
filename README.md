@@ -147,7 +147,7 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置和 event store；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
-`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：monitor event、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、工具参数或知识库正文。
+`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、工具参数或知识库正文。
 
 ### 4. 启动前端控制台
 

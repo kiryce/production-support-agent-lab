@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Literal
 
+from support_agent_lab.api.rate_limit import route_family
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.models import MonitorAlertStatus, MonitorAlertTriageEvent, MonitorEvent, ToolStatus, utc_now
@@ -15,12 +19,55 @@ from support_agent_lab.tools.registry import ToolAuditSummary, ToolAuditToolSumm
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 
+@dataclass(frozen=True)
+class HTTPMetricsSnapshot:
+    request_counts: dict[tuple[str, str, str], int]
+    request_duration_ms: dict[tuple[str, str, str], float]
+    rate_limit_counts: dict[tuple[str, str], int]
+
+
+@dataclass
+class InMemoryHTTPMetrics:
+    """Low-cardinality process-local HTTP counters for single-instance scrapes."""
+
+    _request_counts: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    _request_duration_ms: Counter[tuple[str, str, str]] = field(default_factory=Counter)
+    _rate_limit_counts: Counter[tuple[str, str]] = field(default_factory=Counter)
+    _lock: Lock = field(default_factory=Lock)
+
+    def observe_request(self, *, method: str, path: str, status_code: int, duration_ms: float) -> None:
+        key = (method.upper(), route_family(path), str(status_code))
+        with self._lock:
+            self._request_counts[key] += 1
+            self._request_duration_ms[key] += max(0.0, duration_ms)
+
+    def observe_rate_limit(self, *, path: str, decision: Literal["allowed", "blocked"]) -> None:
+        key = (route_family(path), decision)
+        with self._lock:
+            self._rate_limit_counts[key] += 1
+
+    def snapshot(self) -> HTTPMetricsSnapshot:
+        with self._lock:
+            return HTTPMetricsSnapshot(
+                request_counts=dict(self._request_counts),
+                request_duration_ms=dict(self._request_duration_ms),
+                rate_limit_counts=dict(self._rate_limit_counts),
+            )
+
+    def reset(self) -> None:
+        with self._lock:
+            self._request_counts.clear()
+            self._request_duration_ms.clear()
+            self._rate_limit_counts.clear()
+
+
 def render_prometheus_metrics(
     deps: AppContainer,
     *,
     source: Literal["event_store", "live"] = "event_store",
     window_hours: int = 24,
     limit: int = 1000,
+    http_metrics: InMemoryHTTPMetrics | None = None,
 ) -> str:
     now = utc_now()
     created_after = now - timedelta(hours=window_hours)
@@ -70,11 +117,49 @@ def render_prometheus_metrics(
         help_text="Configured ingress rate-limit burst size.",
     )
 
+    _add_http_metrics(metrics, http_metrics)
     _add_monitor_metrics(metrics, monitor_summary, monitor_events)
     _add_tool_metrics(metrics, tool_summary)
     _add_circuit_metrics(metrics, deps)
     _add_llm_metrics(metrics, deps, source=resolved_source, created_after=created_after, limit=limit)
     return metrics.render()
+
+
+def _add_http_metrics(metrics: "_MetricWriter", http_metrics: InMemoryHTTPMetrics | None) -> None:
+    if not http_metrics:
+        return
+    snapshot = http_metrics.snapshot()
+    for (method, family, status), count in sorted(snapshot.request_counts.items()):
+        labels = {"method": method, "route_family": family, "status": status}
+        metrics.add(
+            "support_agent_http_requests_total",
+            count,
+            labels,
+            metric_type="counter",
+            help_text="HTTP requests observed by this process since startup.",
+        )
+        metrics.add(
+            "support_agent_http_request_duration_ms_sum",
+            snapshot.request_duration_ms[(method, family, status)],
+            labels,
+            metric_type="counter",
+            help_text="Total HTTP request duration observed by this process since startup.",
+        )
+        metrics.add(
+            "support_agent_http_request_duration_ms_count",
+            count,
+            labels,
+            metric_type="counter",
+            help_text="HTTP request duration sample count observed by this process since startup.",
+        )
+    for (family, decision), count in sorted(snapshot.rate_limit_counts.items()):
+        metrics.add(
+            "support_agent_rate_limit_decisions_total",
+            count,
+            {"route_family": family, "decision": decision},
+            metric_type="counter",
+            help_text="Ingress rate-limit decisions observed by this process since startup.",
+        )
 
 
 def _load_monitor_window(

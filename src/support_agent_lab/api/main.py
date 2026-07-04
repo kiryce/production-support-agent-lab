@@ -6,6 +6,7 @@ import inspect
 import json
 import re
 from datetime import datetime, timedelta
+from time import perf_counter
 from typing import Annotated, Any, Literal, get_args
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -29,7 +30,7 @@ from support_agent_lab.api.request_signature import (
     verify_request_signature,
 )
 from support_agent_lab.api.rate_limit import InMemoryRateLimiter, rate_limit_key, should_rate_limit
-from support_agent_lab.api.metrics import PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
+from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import StoredEvent
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
@@ -648,6 +649,15 @@ def _empty_tool_audit_summary() -> ToolAuditSummary:
         window_end=None,
         top_error_codes=[],
         tools=[],
+    )
+
+
+def _observe_http_request(app: FastAPI, request: Request, *, status_code: int, started: float) -> None:
+    app.state.http_metrics.observe_request(
+        method=request.method,
+        path=request.url.path,
+        status_code=status_code,
+        duration_ms=(perf_counter() - started) * 1000,
     )
 
 
@@ -1724,9 +1734,11 @@ def create_app() -> FastAPI:
         description="A production-shaped customer support agent for learning agent engineering.",
     )
     app.state.rate_limiter = InMemoryRateLimiter()
+    app.state.http_metrics = InMemoryHTTPMetrics()
 
     @app.middleware("http")
     async def production_request_signature_middleware(request: Request, call_next):
+        started = perf_counter()
         settings = get_settings()
         if request_signature_required(settings, request.url.path):
             body = await read_body_and_restore(request)
@@ -1734,6 +1746,7 @@ def create_app() -> FastAPI:
                 verified = verify_request_signature(settings=settings, request=request, body=body)
                 reserve_request_nonce(settings, verified)
             except RequestSignatureError as exc:
+                _observe_http_request(app, request, status_code=401, started=started)
                 return JSONResponse(status_code=401, content={"detail": str(exc)})
         rate_decision = None
         if should_rate_limit(settings, request.url.path):
@@ -1743,6 +1756,8 @@ def create_app() -> FastAPI:
                 burst=settings.app_rate_limit_burst,
             )
             if not rate_decision.allowed:
+                app.state.http_metrics.observe_rate_limit(path=request.url.path, decision="blocked")
+                _observe_http_request(app, request, status_code=429, started=started)
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -1755,10 +1770,16 @@ def create_app() -> FastAPI:
                         "X-RateLimit-Remaining": "0",
                     },
                 )
-        response = await call_next(request)
+            app.state.http_metrics.observe_rate_limit(path=request.url.path, decision="allowed")
+        try:
+            response = await call_next(request)
+        except Exception:
+            _observe_http_request(app, request, status_code=500, started=started)
+            raise
         if rate_decision:
             response.headers["X-RateLimit-Limit"] = str(rate_decision.limit)
             response.headers["X-RateLimit-Remaining"] = str(rate_decision.remaining)
+        _observe_http_request(app, request, status_code=response.status_code, started=started)
         return response
 
     @app.get("/api/v1/health")
@@ -1783,7 +1804,13 @@ def create_app() -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
     ) -> PlainTextResponse:
         return PlainTextResponse(
-            render_prometheus_metrics(deps, source=source, window_hours=window_hours, limit=limit),
+            render_prometheus_metrics(
+                deps,
+                source=source,
+                window_hours=window_hours,
+                limit=limit,
+                http_metrics=app.state.http_metrics,
+            ),
             media_type=PROMETHEUS_CONTENT_TYPE,
         )
 
