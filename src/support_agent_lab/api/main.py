@@ -212,8 +212,10 @@ class PromotionGateThresholds(BaseModel):
     max_active_p0p1_alerts: int
     max_active_alerts: int
     max_tool_failure_rate: float
+    max_feedback_negative_rate: float
     max_eval_age_hours: int
     min_tool_calls: int
+    min_feedback_count: int
 
 
 class PromotionGateCheck(BaseModel):
@@ -234,6 +236,7 @@ class PromotionGateResponse(BaseModel):
     readiness: ReadinessResponse
     monitor: MonitorTriageMetricsResponse
     tool_audit: ToolAuditSummary
+    feedback: FeedbackSummary
     latest_eval_gate: EvalGateRecord | None = None
 
 
@@ -385,8 +388,10 @@ async def _promotion_gate_response(
     max_active_p0p1_alerts: int,
     max_active_alerts: int,
     max_tool_failure_rate: float,
+    max_feedback_negative_rate: float,
     max_eval_age_hours: int,
     min_tool_calls: int,
+    min_feedback_count: int,
 ) -> PromotionGateResponse:
     generated_at = utc_now()
     created_after = generated_at - timedelta(hours=window_hours)
@@ -401,18 +406,22 @@ async def _promotion_gate_response(
         deps=deps,
         created_after=created_after,
     )
+    feedback = _load_feedback_summary(deps=deps, created_after=created_after)
     latest_eval_gate = _latest_promotion_eval_gate(deps)
     thresholds = PromotionGateThresholds(
         max_active_p0p1_alerts=max_active_p0p1_alerts,
         max_active_alerts=max_active_alerts,
         max_tool_failure_rate=max_tool_failure_rate,
+        max_feedback_negative_rate=max_feedback_negative_rate,
         max_eval_age_hours=max_eval_age_hours,
         min_tool_calls=min_tool_calls,
+        min_feedback_count=min_feedback_count,
     )
     checks = [
         _promotion_readiness_check(readiness),
         _promotion_alert_check(monitor, max_active_p0p1_alerts, max_active_alerts),
         _promotion_tool_audit_check(tool_audit, max_tool_failure_rate, min_tool_calls),
+        _promotion_feedback_check(feedback, max_feedback_negative_rate, min_feedback_count),
         _promotion_eval_gate_check(latest_eval_gate, generated_at, max_eval_age_hours),
     ]
     return PromotionGateResponse(
@@ -426,6 +435,7 @@ async def _promotion_gate_response(
         readiness=readiness,
         monitor=monitor,
         tool_audit=tool_audit,
+        feedback=feedback,
         latest_eval_gate=latest_eval_gate,
     )
 
@@ -474,6 +484,15 @@ def _load_tool_audit_summary(
     if not deps.event_store:
         return _empty_tool_audit_summary()
     return deps.event_store.summarize_tool_audit_records(
+        tenant_id=deps.settings.app_tenant_id,
+        created_after=created_after.isoformat(),
+    )
+
+
+def _load_feedback_summary(*, deps: AppContainer, created_after: datetime) -> FeedbackSummary:
+    if not deps.event_store:
+        return FeedbackSummary()
+    return deps.event_store.summarize_agent_feedback(
         tenant_id=deps.settings.app_tenant_id,
         created_after=created_after.isoformat(),
     )
@@ -626,6 +645,47 @@ def _promotion_tool_audit_check(
         name="tool_audit",
         status="passed",
         detail="Tool failure rate is within threshold.",
+        evidence=evidence,
+    )
+
+
+def _promotion_feedback_check(
+    summary: FeedbackSummary,
+    max_negative_rate: float,
+    min_feedback_count: int,
+) -> PromotionGateCheck:
+    evidence = {
+        "total_count": summary.total_count,
+        "positive_count": summary.positive_count,
+        "negative_count": summary.negative_count,
+        "negative_rate": summary.negative_rate,
+        "max_negative_rate": max_negative_rate,
+        "min_feedback_count": min_feedback_count,
+        "window_start": summary.window_start,
+        "window_end": summary.window_end,
+        "top_reasons": [
+            reason.model_dump(mode="json")
+            for reason in summary.counts_by_reason[:5]
+        ],
+    }
+    if summary.total_count < min_feedback_count:
+        return PromotionGateCheck(
+            name="feedback",
+            status="warn",
+            detail=f"Only {summary.total_count} feedback rating(s) in the window; threshold evidence is thin.",
+            evidence=evidence,
+        )
+    if summary.negative_rate > max_negative_rate:
+        return PromotionGateCheck(
+            name="feedback",
+            status="blocked",
+            detail=f"Feedback negative rate exceeds threshold: {summary.negative_rate:.1%} > {max_negative_rate:.1%}.",
+            evidence=evidence,
+        )
+    return PromotionGateCheck(
+        name="feedback",
+        status="passed",
+        detail="Feedback negative rate is within threshold.",
         evidence=evidence,
     )
 
@@ -1694,14 +1754,17 @@ def create_app() -> FastAPI:
         max_active_p0p1_alerts: Annotated[int, Query(ge=0, le=100)] = 0,
         max_active_alerts: Annotated[int, Query(ge=0, le=1000)] = 10,
         max_tool_failure_rate: Annotated[float, Query(ge=0, le=1)] = 0.05,
+        max_feedback_negative_rate: Annotated[float, Query(ge=0, le=1)] = 0.4,
         max_eval_age_hours: Annotated[int, Query(ge=1, le=720)] = 24,
         min_tool_calls: Annotated[int, Query(ge=0, le=10000)] = 1,
+        min_feedback_count: Annotated[int, Query(ge=0, le=10000)] = 5,
     ) -> PromotionGateResponse:
         require_admin(actor)
         require_scope(actor, "admin:read")
         require_scope(actor, "monitor:read")
         require_scope(actor, "audit:read")
         require_scope(actor, "eval:read")
+        require_scope(actor, "feedback:read")
         return await _promotion_gate_response(
             deps=deps,
             source=source,
@@ -1710,8 +1773,10 @@ def create_app() -> FastAPI:
             max_active_p0p1_alerts=max_active_p0p1_alerts,
             max_active_alerts=max_active_alerts,
             max_tool_failure_rate=max_tool_failure_rate,
+            max_feedback_negative_rate=max_feedback_negative_rate,
             max_eval_age_hours=max_eval_age_hours,
             min_tool_calls=min_tool_calls,
+            min_feedback_count=min_feedback_count,
         )
 
     @app.post("/api/v1/chat/sessions")

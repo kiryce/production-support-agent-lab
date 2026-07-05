@@ -187,7 +187,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/evals/gates` | `eval:read` |
 | `GET /api/v1/admin/feedback` | `feedback:read` |
 | `GET /api/v1/admin/feedback/summary` | `feedback:read` |
-| `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`. Read-only release preflight. |
+| `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 `GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
@@ -203,10 +203,12 @@ ids, and compact case observations, but not full eval answer text.
 
 `GET /api/v1/admin/promotion/gate` is the read-only release preflight used by
 the console and automation. It combines readiness, monitor triage metrics,
-tool audit summary, and the latest `gate_name=staging`, `runner=aggregate`
-eval gate. It returns `passed`, `warn`, or `blocked` plus threshold evidence for
-each check. It never runs bundled evals, writes triage events, or returns raw
-tool arguments, raw monitor events, or eval answer text.
+tool audit summary, response feedback summary, and the latest
+`gate_name=staging`, `runner=aggregate` eval gate. It returns `passed`, `warn`,
+or `blocked` plus threshold evidence for each check. High feedback negative
+rate blocks promotion, while thin feedback volume warns reviewers that the
+online signal is not yet strong. It never runs bundled evals, writes triage
+events, or returns raw tool arguments, raw monitor events, or eval answer text.
 
 ## Event Store Operations
 

@@ -153,8 +153,8 @@ machine.
   rebuilt facts, working summary, open questions, recent messages, replayed
   run count, and ignored event count without mutating live memory.
 - Settings workbench for release and event-store operations. It expands the
-  read-only promotion gate into per-check readiness, monitor, tool-audit, and
-  eval evidence; it also creates verified backups through a label-only BFF
+  read-only promotion gate into per-check readiness, monitor, tool-audit,
+  feedback, and eval evidence; it also creates verified backups through a label-only BFF
   call, previews retention, and only enables apply after a verified backup, a
   dry-run report, and operator confirmation. The browser never sends filesystem
   paths to the backend.
@@ -185,9 +185,9 @@ machine.
   can expose the control without weakening production safety.
 - Promotion gate via `GET /api/v1/admin/promotion/gate`. The console uses it
   as a read-only preflight that combines readiness, monitor triage metrics,
-  tool audit failure rate, and the latest aggregate staging eval gate. It
-  returns `passed`, `warn`, or `blocked` with evidence for each check; it does
-  not run evals or change alert triage state.
+  tool audit failure rate, feedback negative rate, and the latest aggregate
+  staging eval gate. It returns `passed`, `warn`, or `blocked` with evidence
+  for each check; it does not run evals or change alert triage state.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,
@@ -230,7 +230,7 @@ memory, safety, monitoring, and incident response.
    policy changes. Check the persisted history row so the reviewer can see who
    ran it, when, against which run/alert context, and whether any cases failed.
 16. Use `Settings` before release: inspect `Release Preflight` and do not
-   promote while readiness, monitor, tool-audit, or eval checks are blocked.
+   promote while readiness, monitor, tool-audit, feedback, or eval checks are blocked.
 17. Use `Settings` before manual cleanup: create a verified backup, preview
    retention, then apply only after reviewing the table-level candidate counts.
 18. Resolve only after the triage note explains customer impact and mitigation.

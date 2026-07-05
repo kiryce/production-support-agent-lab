@@ -466,13 +466,16 @@ export type PromotionGateResponse = {
     max_active_p0p1_alerts: number;
     max_active_alerts: number;
     max_tool_failure_rate: number;
+    max_feedback_negative_rate: number;
     max_eval_age_hours: number;
     min_tool_calls: number;
+    min_feedback_count: number;
   };
   checks: PromotionGateCheck[];
   readiness: ReadinessResponse;
   monitor: MonitorTriageMetricsResponse;
   tool_audit: ToolAuditSummary;
+  feedback: FeedbackSummary;
   latest_eval_gate: EvalGateRecord | null;
 };
 

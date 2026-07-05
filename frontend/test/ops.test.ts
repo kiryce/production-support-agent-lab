@@ -371,8 +371,10 @@ describe("ops workbench helpers", () => {
           max_active_p0p1_alerts: 0,
           max_active_alerts: 10,
           max_tool_failure_rate: 0.05,
+          max_feedback_negative_rate: 0.4,
           max_eval_age_hours: 24,
-          min_tool_calls: 1
+          min_tool_calls: 1,
+          min_feedback_count: 5
         },
         checks: [
           {
@@ -400,6 +402,15 @@ describe("ops workbench helpers", () => {
           window_end: "2026-07-04T00:01:00.000Z",
           top_error_codes: [],
           tools: []
+        },
+        feedback: {
+          total_count: 5,
+          positive_count: 5,
+          negative_count: 0,
+          negative_rate: 0,
+          counts_by_reason: [],
+          window_start: "2026-07-04T00:00:00.000Z",
+          window_end: "2026-07-04T00:01:00.000Z"
         },
         latest_eval_gate: null
       },
@@ -856,8 +867,10 @@ describe("ops workbench helpers", () => {
         max_active_p0p1_alerts: 0,
         max_active_alerts: 10,
         max_tool_failure_rate: 0.05,
+        max_feedback_negative_rate: 0.4,
         max_eval_age_hours: 24,
-        min_tool_calls: 1
+        min_tool_calls: 1,
+        min_feedback_count: 5
       },
       checks: [
         { name: "readiness", status: "passed", detail: "Ready.", evidence: {} },
@@ -882,6 +895,15 @@ describe("ops workbench helpers", () => {
         window_end: "2026-07-04T00:01:00.000Z",
         top_error_codes: [],
         tools: []
+      },
+      feedback: {
+        total_count: 5,
+        positive_count: 5,
+        negative_count: 0,
+        negative_rate: 0,
+        counts_by_reason: [],
+        window_start: "2026-07-04T00:00:00.000Z",
+        window_end: "2026-07-04T00:01:00.000Z"
       },
       latest_eval_gate: null
     });

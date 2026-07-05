@@ -614,7 +614,7 @@ function buildRecommendedActions(input: {
     actions.push(`Fix readiness failures first: ${input.readinessFailures.join(", ")}.`);
   }
   if (input.promotionGateStatus === "blocked") {
-    actions.push("Do not promote: the promotion gate is blocked by readiness, monitor, tool, or eval evidence.");
+    actions.push("Do not promote: the promotion gate is blocked by readiness, monitor, tool, feedback, or eval evidence.");
   } else if (input.promotionGateStatus === "warn") {
     actions.push("Review promotion gate warnings before approving this change.");
   }
