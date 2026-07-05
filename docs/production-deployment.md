@@ -190,6 +190,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
 | `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
 | `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes the release preflight and writes an append-only decision event. |
+| `GET /api/v1/admin/audit/export` | `audit:read`, `events:read`. Returns sanitized `application/x-ndjson` for SIEM or warehouse ingestion. |
 | `/api/v1/admin/conversations/{conversation_id}/memory/replay` | `memory:replay` |
 
 `GET /api/v1/agent/runs/{run_id}` lets the original actor inspect their own run trace. Cross-user incident review must use an admin actor with `events:read`, and the endpoint falls back to the SQLite event store when live in-process run state has been cleared.
@@ -219,6 +220,14 @@ event, then returns the stored record. Approval is rejected when the gate is
 `blocked` unless the request includes `override_blocked=true` and an
 `override_reason`. This endpoint records the operator decision; it does not
 deploy code, shift traffic, or call an external CD system.
+
+`GET /api/v1/admin/audit/export` exports NDJSON records with
+`schema_version=audit_export.v1`. It combines append-only event rows and durable
+tool-audit rows, keeps tenant and record metadata, hashes user/conversation/run
+correlation ids, and summarizes only safe machine fields such as event type,
+status, rating, decision, tool name, latency, error code, failure type, and
+policy code. It deliberately omits user text, feedback comments, tool
+arguments, knowledge snippets, and eval answer text.
 
 ## Event Store Operations
 

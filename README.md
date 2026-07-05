@@ -53,6 +53,7 @@
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
+- audit export：把脱敏后的 event/tool audit 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
 - 从真实 monitor event 或 response feedback 生成 regression eval draft
 
 本地运行后打开：
@@ -479,6 +480,8 @@ Eval 不只看最终回答，还检查：
 
 `/api/v1/admin/promotion/decisions` 会重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
 
+`/api/v1/admin/audit/export` 会导出 `application/x-ndjson`，每行是 `audit_export.v1` 摘要记录。它只包含事件类型、状态、错误码、工具名、评分、发布决策、failure/policy code 和哈希化 correlation id，不包含用户原文、反馈 comment、eval answer、工具参数或知识库正文。控制台 Settings 可以直接下载这份 NDJSON。
+
 `/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。这些适合 Prometheus alert rule；控制台仍然负责展示具体 alert、run、事件和处置备注。
 
 Prometheus 示例配置在 `deploy/prometheus/prometheus.yml`，生产告警规则在 `deploy/prometheus/support-agent-alerts.yml`，对应 runbook 在 `docs/alerting-runbook.md`。`docker compose --profile observability up --build` 会把配置和规则只读挂载进 Prometheus，把 UI 绑定到 `127.0.0.1:9090`，并保留 Prometheus lifecycle endpoint 关闭状态；默认 `docker compose up --build` 仍只启动 backend + console。规则覆盖 API down、5xx、限流、P0/P1 monitor alert、new-after-triage、stale alert、alert delivery dead-letter、tool failure、LLM fallback 和 circuit breaker。
@@ -553,7 +556,7 @@ python -m support_agent_lab.mcp.server
 - Redis/Postgres request nonce store
 - OpenTelemetry exporter
 - 异步 monitor worker
-- SIEM/warehouse audit export
+- SIEM/warehouse 批量同步和托管 connector
 - 多模型 fallback 和成本预算
 - 更强 PII detector 和合规审批流
 - 检索服务的 hard negative、metadata filter、reranker、answerability gate

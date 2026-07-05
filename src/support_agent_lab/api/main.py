@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+import hashlib
 import inspect
 import json
 import re
@@ -241,6 +242,7 @@ class PromotionGateResponse(BaseModel):
 
 
 PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
+AUDIT_EXPORT_MEDIA_TYPE = "application/x-ndjson"
 
 
 class PromotionDecisionRequest(BaseModel):
@@ -779,6 +781,225 @@ def _promotion_status(checks: list[PromotionGateCheck]) -> Literal["passed", "wa
 
 def _promotion_decision_from_event(event: StoredEvent) -> PromotionDecisionRecord:
     return PromotionDecisionRecord.model_validate(event.payload)
+
+
+def _audit_export_rows(
+    *,
+    deps: AppContainer,
+    include_events: bool,
+    include_tool_audit: bool,
+    event_type: str | None,
+    created_after: str | None,
+    created_before: str | None,
+    limit: int,
+    order: Literal["asc", "desc"],
+) -> list[dict[str, Any]]:
+    if not deps.event_store:
+        return []
+    rows: list[dict[str, Any]] = []
+    if include_events:
+        rows.extend(
+            _audit_event_row(event)
+            for event in deps.event_store.list_events(
+                tenant_id=deps.settings.app_tenant_id,
+                event_type=event_type,
+                created_after=created_after,
+                created_before=created_before,
+                limit=limit,
+                order=order,
+            )
+        )
+    if include_tool_audit:
+        rows.extend(
+            _audit_tool_row(record)
+            for record in deps.event_store.list_tool_audit_records(
+                tenant_id=deps.settings.app_tenant_id,
+                created_after=created_after,
+                created_before=created_before,
+                limit=limit,
+                order=order,
+            )
+        )
+    reverse = order == "desc"
+    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=reverse)
+    return rows[:limit]
+
+
+def _audit_event_row(event: StoredEvent) -> dict[str, Any]:
+    return {
+        "schema_version": "audit_export.v1",
+        "record_type": "event",
+        "source": "events",
+        "id": event.id,
+        "tenant_id": event.tenant_id,
+        "event_type": event.event_type,
+        "created_at": event.created_at,
+        "correlation": _audit_correlation(
+            tenant_id=event.tenant_id,
+            user_id=event.user_id,
+            conversation_id=event.conversation_id,
+            run_id=event.run_id,
+        ),
+        "payload_summary": _audit_payload_summary(event.payload),
+    }
+
+
+def _audit_tool_row(record: ToolAuditRecord) -> dict[str, Any]:
+    return {
+        "schema_version": "audit_export.v1",
+        "record_type": "tool_audit",
+        "source": "tool_audit_records",
+        "id": record.id,
+        "tenant_id": record.tenant_id,
+        "tool_name": record.tool_name,
+        "status": record.status.value,
+        "latency_ms": record.latency_ms,
+        "error_code": record.error_code,
+        "argument_hash": record.argument_hash,
+        "idempotency_key_hash": record.idempotency_key_hash,
+        "replayed": record.replayed,
+        "created_at": record.created_at,
+        "correlation": _audit_correlation(
+            tenant_id=record.tenant_id,
+            user_id=record.actor_user_id,
+            run_id=record.trace_id,
+            request_id=record.request_id,
+        ),
+    }
+
+
+def _audit_correlation(
+    *,
+    tenant_id: str,
+    user_id: str | None = None,
+    conversation_id: str | None = None,
+    run_id: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, str | None]:
+    return {
+        "tenant_id": tenant_id,
+        "user_hash": _audit_hash(user_id),
+        "conversation_hash": _audit_hash(conversation_id),
+        "run_hash": _audit_hash(run_id),
+        "request_hash": _audit_hash(request_id),
+    }
+
+
+def _audit_hash(value: str | None) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(f"audit_export.v1:{value}".encode("utf-8")).hexdigest()[:32]
+
+
+def _audit_payload_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for key in (
+        "id",
+        "status",
+        "rating",
+        "source",
+        "decision",
+        "gate_status",
+        "target_version",
+        "environment",
+        "tool_name",
+        "error_code",
+        "risk_level",
+        "user_intent",
+        "needs_human_review",
+        "grounded",
+        "policy_compliant",
+        "pii_leak",
+        "severity",
+        "gate_name",
+        "runner",
+        "suite_id",
+        "trigger",
+        "total",
+        "passed",
+        "score",
+    ):
+        value = payload.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            summary[key] = value
+    if isinstance(payload.get("reasons"), list):
+        summary["reasons"] = _audit_string_list(payload.get("reasons"))
+    if isinstance(payload.get("failure_types"), list):
+        summary["failure_types"] = _audit_string_list(payload.get("failure_types"))
+    if isinstance(payload.get("failed_case_ids"), list):
+        summary["failed_case_count"] = len(payload["failed_case_ids"])
+    if isinstance(payload.get("policy_findings"), list):
+        summary["policy_codes"] = _audit_policy_codes(payload["policy_findings"])
+    if isinstance(payload.get("tool_results"), list):
+        tool_results = [item for item in payload["tool_results"] if isinstance(item, dict)]
+        summary["tool_count"] = len(tool_results)
+        summary["failed_tool_count"] = sum(1 for item in tool_results if item.get("status") != "success")
+        summary["tool_names"] = sorted(
+            {
+                str(item.get("name"))
+                for item in tool_results
+                if isinstance(item.get("name"), str)
+            }
+        )
+        summary["tool_error_codes"] = sorted(
+            {
+                str(item.get("error_code"))
+                for item in tool_results
+                if isinstance(item.get("error_code"), str) and item.get("error_code")
+            }
+        )
+    intent = payload.get("intent")
+    if isinstance(intent, dict):
+        summary["intent_primary"] = intent.get("primary")
+        summary["intent_confidence"] = intent.get("confidence")
+    route = payload.get("route")
+    if isinstance(route, dict):
+        summary["route_target"] = route.get("target")
+        summary["route_needs_human"] = route.get("needs_human")
+    retrieval = payload.get("retrieval")
+    if isinstance(retrieval, dict):
+        selected_context = retrieval.get("selected_context")
+        selected_sources = retrieval.get("selected_sources")
+        if isinstance(selected_context, list):
+            summary["retrieval_selected_count"] = len(selected_context)
+        if isinstance(selected_sources, list):
+            summary["retrieval_source_count"] = len(selected_sources)
+    gate = payload.get("gate")
+    if isinstance(gate, dict):
+        summary["gate_snapshot_status"] = gate.get("status")
+        checks = gate.get("checks")
+        if isinstance(checks, list):
+            summary["gate_check_statuses"] = {
+                str(item.get("name")): item.get("status")
+                for item in checks
+                if isinstance(item, dict) and item.get("name")
+            }
+    alert_key = payload.get("alert_key")
+    if isinstance(alert_key, str):
+        summary["alert_key_hash"] = _audit_hash(alert_key)
+    return {key: value for key, value in summary.items() if value not in ({}, [])}
+
+
+def _audit_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted({str(item)[:120] for item in value if isinstance(item, (str, int, float))})
+
+
+def _audit_policy_codes(findings: list[Any]) -> list[str]:
+    codes: set[str] = set()
+    for finding in findings:
+        if isinstance(finding, dict) and isinstance(finding.get("code"), str):
+            codes.add(finding["code"])
+    return sorted(codes)
+
+
+def _ndjson(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    return "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n"
 
 
 def _datetime_age_hours(then: datetime | None, now: datetime) -> float | None:
@@ -2877,6 +3098,44 @@ def create_app() -> FastAPI:
             conversation_id=conversation_id,
             event_type=event_type,
             limit=limit,
+        )
+
+    @app.get("/api/v1/admin/audit/export")
+    def export_audit_records(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        event_type: Annotated[str | None, Query()] = None,
+        created_after: Annotated[str | None, Query()] = None,
+        created_before: Annotated[str | None, Query()] = None,
+        include_events: Annotated[bool, Query()] = True,
+        include_tool_audit: Annotated[bool, Query()] = True,
+        limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
+        order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    ) -> PlainTextResponse:
+        require_admin(actor)
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        if not include_events and not include_tool_audit:
+            raise HTTPException(status_code=422, detail="At least one audit source must be included")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        rows = _audit_export_rows(
+            deps=deps,
+            include_events=include_events,
+            include_tool_audit=include_tool_audit,
+            event_type=event_type,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            order=order,
+        )
+        return PlainTextResponse(
+            _ndjson(rows),
+            media_type=AUDIT_EXPORT_MEDIA_TYPE,
+            headers={
+                "Content-Disposition": "attachment; filename=support-agent-audit-export.ndjson",
+                "X-Audit-Export-Records": str(len(rows)),
+            },
         )
 
     @app.post("/api/v1/admin/event-store/backups")

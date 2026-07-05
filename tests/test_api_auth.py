@@ -1810,6 +1810,110 @@ def test_admin_can_list_persisted_events():
     }
 
 
+def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    created_at = utc_now().isoformat()
+    event_store.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_sensitive_export",
+        user_id="user_sensitive_export",
+        run_id="run_sensitive_export",
+        event_type="message.user",
+        payload={
+            "id": "msg_sensitive_export",
+            "tenant_id": "demo_tenant",
+            "conversation_id": "conv_sensitive_export",
+            "user_id": "user_sensitive_export",
+            "role": "user",
+            "content": "My card is 4111 and order A1001 should not leave the audit boundary.",
+            "created_at": created_at,
+            "metadata": {},
+        },
+    )
+    event_store.append_tool_audit(
+        ToolAuditRecord(
+            id="audit_export_tool",
+            tenant_id="demo_tenant",
+            actor_user_id="operator_sensitive_export",
+            request_id="req_sensitive_export",
+            trace_id="run_sensitive_export",
+            tool_name="order.get",
+            argument_hash="argument_hash_only",
+            status=ToolStatus.failed,
+            latency_ms=500,
+            error_code="TIMEOUT",
+            created_at=created_at,
+        )
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/admin/audit/export",
+            headers={"X-Demo-Role": "admin"},
+            params={"limit": 10, "order": "asc"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert response.headers["x-audit-export-records"] == "2"
+    assert "4111" not in response.text
+    assert "A1001" not in response.text
+    assert "user_sensitive_export" not in response.text
+    assert "operator_sensitive_export" not in response.text
+    rows = [json.loads(line) for line in response.text.splitlines()]
+    assert {row["record_type"] for row in rows} == {"event", "tool_audit"}
+    event_row = next(row for row in rows if row["record_type"] == "event")
+    tool_row = next(row for row in rows if row["record_type"] == "tool_audit")
+    assert event_row["event_type"] == "message.user"
+    assert "content" not in event_row["payload_summary"]
+    assert event_row["correlation"]["user_hash"]
+    assert tool_row["tool_name"] == "order.get"
+    assert tool_row["argument_hash"] == "argument_hash_only"
+    assert tool_row["correlation"]["user_hash"]
+
+
+def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_audit = client.get(
+            "/api/v1/admin/audit/export",
+            headers=_production_headers(scopes="events:read"),
+        )
+        missing_events = client.get(
+            "/api/v1/admin/audit/export",
+            headers=_production_headers(scopes="audit:read"),
+        )
+        allowed = client.get(
+            "/api/v1/admin/audit/export",
+            headers=_production_headers(scopes="audit:read,events:read"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert missing_events.status_code == 403
+    assert missing_events.json()["detail"] == "Missing required scope: events:read"
+    assert allowed.status_code == 200
+
+
 def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()

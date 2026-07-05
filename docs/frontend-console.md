@@ -76,6 +76,8 @@ real local FastAPI endpoints:
 16. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
+17. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+   NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
 
@@ -158,10 +160,10 @@ machine.
 - Settings workbench for release and event-store operations. It expands the
   read-only promotion gate into per-check readiness, monitor, tool-audit,
   feedback, and eval evidence, records approve/reject/defer decisions as
-  append-only audit events, creates verified backups through a label-only BFF
-  call, previews retention, and only enables apply after a verified backup, a
-  dry-run report, and operator confirmation. The browser never sends filesystem
-  paths to the backend.
+  append-only audit events, downloads sanitized audit NDJSON, creates verified
+  backups through a label-only BFF call, previews retention, and only enables
+  apply after a verified backup, a dry-run report, and operator confirmation.
+  The browser never sends filesystem paths to the backend.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
 - Shareable investigation URLs for `runId`, `alertKey`, active workspace,
@@ -196,6 +198,9 @@ machine.
   recomputes the gate, stores the decision and gate snapshot as
   `release.promotion.decision`, and rejects non-override approval while the gate
   is blocked.
+- Audit export via `GET /api/v1/admin/audit/export`. The BFF streams NDJSON
+  summary rows from events and tool audit records; raw messages, comments,
+  tool arguments, and eval answers are not included.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

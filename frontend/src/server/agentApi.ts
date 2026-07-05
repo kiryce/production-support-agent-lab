@@ -76,6 +76,7 @@ export async function agentFetch<T>(
     method?: AgentMethod;
     query?: Record<string, QueryValue>;
     body?: JsonValue;
+    responseType?: "json" | "text";
   } = {}
 ): Promise<T> {
   const method = options.method ?? "GET";
@@ -96,7 +97,7 @@ export async function agentFetch<T>(
     cache: "no-store"
   });
   const text = await response.text();
-  const payload = parsePayload(text);
+  const payload = options.responseType === "text" && response.ok ? text : parsePayload(text);
 
   if (!response.ok) {
     const detail =

@@ -1211,6 +1211,14 @@ textarea:disabled {
   justify-items: end;
 }
 
+.audit-export-section {
+  border-left: 4px solid var(--green-700);
+}
+
+.audit-export-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .retention-table-list {
   display: grid;
   gap: 7px;

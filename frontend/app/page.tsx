@@ -265,6 +265,10 @@ export default function Home() {
   const [promotionDecisionNote, setPromotionDecisionNote] = useState("");
   const [promotionOverrideBlocked, setPromotionOverrideBlocked] = useState(false);
   const [promotionOverrideReason, setPromotionOverrideReason] = useState("");
+  const [auditExportLimit, setAuditExportLimit] = useState("1000");
+  const [auditExportIncludeEvents, setAuditExportIncludeEvents] = useState(true);
+  const [auditExportIncludeToolAudit, setAuditExportIncludeToolAudit] = useState(true);
+  const [auditExportStatus, setAuditExportStatus] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState(DEFAULT_CONSOLE_URL_STATE.severity);
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(DEFAULT_CONSOLE_URL_STATE.status);
   const [queueQuery, setQueueQuery] = useState(DEFAULT_CONSOLE_URL_STATE.query);
@@ -1044,6 +1048,45 @@ export default function Home() {
     }
   }
 
+  async function downloadAuditExport() {
+    if (!auditExportIncludeEvents && !auditExportIncludeToolAudit) {
+      setEventOpsError("Select at least one audit source.");
+      return;
+    }
+    setEventOpsBusy("audit-export");
+    setEventOpsError(null);
+    setAuditExportStatus(null);
+    try {
+      const params = new URLSearchParams({
+        limit: auditExportLimit,
+        order: "asc",
+        include_events: String(auditExportIncludeEvents),
+        include_tool_audit: String(auditExportIncludeToolAudit)
+      });
+      const response = await fetch(`/api/console/audit/export?${params.toString()}`, {
+        cache: "no-store"
+      });
+      if (!response.ok) {
+        const detail = await response.json().catch(() => null);
+        throw new Error(detail?.detail ?? "Audit export failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `support-agent-audit-export-${new Date().toISOString().slice(0, 10)}.ndjson`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setAuditExportStatus(`Downloaded ${formatBytes(blob.size)}`);
+    } catch (nextError) {
+      setEventOpsError(nextError instanceof Error ? nextError.message : "Audit export failed");
+    } finally {
+      setEventOpsBusy(null);
+    }
+  }
+
   function loadCurrentRunRetrieval(trace: RetrievalTrace) {
     setKnowledgeTrace(toKnowledgeSearchResponse(trace));
     setKnowledgeQuery(trace.query);
@@ -1587,6 +1630,10 @@ export default function Home() {
               promotionDecisionNote={promotionDecisionNote}
               promotionOverrideBlocked={promotionOverrideBlocked}
               promotionOverrideReason={promotionOverrideReason}
+              auditExportLimit={auditExportLimit}
+              auditExportIncludeEvents={auditExportIncludeEvents}
+              auditExportIncludeToolAudit={auditExportIncludeToolAudit}
+              auditExportStatus={auditExportStatus}
               eventRetentionDays={eventRetentionDays}
               toolAuditRetentionDays={toolAuditRetentionDays}
               idempotencyRetentionDays={idempotencyRetentionDays}
@@ -1605,11 +1652,15 @@ export default function Home() {
               onPromotionDecisionNote={setPromotionDecisionNote}
               onPromotionOverrideBlocked={setPromotionOverrideBlocked}
               onPromotionOverrideReason={setPromotionOverrideReason}
+              onAuditExportLimit={setAuditExportLimit}
+              onAuditExportIncludeEvents={setAuditExportIncludeEvents}
+              onAuditExportIncludeToolAudit={setAuditExportIncludeToolAudit}
               onIncludeEvents={setRetentionIncludeEvents}
               onVacuum={setRetentionVacuum}
               onApplyConfirmed={setRetentionApplyConfirmed}
               onBackup={() => void createEventStoreBackup()}
               onPromotionDecisionSubmit={recordPromotionDecision}
+              onAuditExport={() => void downloadAuditExport()}
               onRetention={(dryRun) => void runEventStoreRetention(dryRun)}
             />
           ) : workspaceMode === "tools" ? (
@@ -2639,6 +2690,10 @@ function SettingsWorkbenchPanel({
   promotionDecisionNote,
   promotionOverrideBlocked,
   promotionOverrideReason,
+  auditExportLimit,
+  auditExportIncludeEvents,
+  auditExportIncludeToolAudit,
+  auditExportStatus,
   eventRetentionDays,
   toolAuditRetentionDays,
   idempotencyRetentionDays,
@@ -2657,11 +2712,15 @@ function SettingsWorkbenchPanel({
   onPromotionDecisionNote,
   onPromotionOverrideBlocked,
   onPromotionOverrideReason,
+  onAuditExportLimit,
+  onAuditExportIncludeEvents,
+  onAuditExportIncludeToolAudit,
   onIncludeEvents,
   onVacuum,
   onApplyConfirmed,
   onBackup,
   onPromotionDecisionSubmit,
+  onAuditExport,
   onRetention
 }: {
   backupLabel: string;
@@ -2676,6 +2735,10 @@ function SettingsWorkbenchPanel({
   promotionDecisionNote: string;
   promotionOverrideBlocked: boolean;
   promotionOverrideReason: string;
+  auditExportLimit: string;
+  auditExportIncludeEvents: boolean;
+  auditExportIncludeToolAudit: boolean;
+  auditExportStatus: string | null;
   eventRetentionDays: string;
   toolAuditRetentionDays: string;
   idempotencyRetentionDays: string;
@@ -2694,17 +2757,22 @@ function SettingsWorkbenchPanel({
   onPromotionDecisionNote: (value: string) => void;
   onPromotionOverrideBlocked: (value: boolean) => void;
   onPromotionOverrideReason: (value: string) => void;
+  onAuditExportLimit: (value: string) => void;
+  onAuditExportIncludeEvents: (value: boolean) => void;
+  onAuditExportIncludeToolAudit: (value: boolean) => void;
   onIncludeEvents: (value: boolean) => void;
   onVacuum: (value: boolean) => void;
   onApplyConfirmed: (value: boolean) => void;
   onBackup: () => void;
   onPromotionDecisionSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onAuditExport: () => void;
   onRetention: (dryRun: boolean) => void;
 }) {
   const backupBusy = busy === "backup";
   const previewBusy = busy === "retention-preview";
   const applyBusy = busy === "retention-apply";
   const decisionBusy = busy === "promotion-decision";
+  const auditExportBusy = busy === "audit-export";
   const canApply = backupReport?.verified === true && previewReady && applyConfirmed;
   const promotionStats = buildPromotionGateStats(promotionGate);
   return (
@@ -2860,6 +2928,53 @@ function SettingsWorkbenchPanel({
         ) : (
           <PanelEmpty title="No release decisions" detail="No persisted decision records." />
         )}
+      </section>
+
+      <section className="settings-section audit-export-section">
+        <div className="settings-section-head">
+          <strong>Audit Export</strong>
+          <Badge>NDJSON</Badge>
+        </div>
+        <div className="settings-action-row">
+          <label className="field-label compact">
+            Limit
+            <input
+              value={auditExportLimit}
+              onChange={(event) => onAuditExportLimit(event.target.value)}
+              inputMode="numeric"
+            />
+          </label>
+          <button className="secondary-button" type="button" disabled={Boolean(busy)} onClick={onAuditExport}>
+            {auditExportBusy ? <Loader2 className="spin" size={16} /> : <Download size={16} />}
+            Download
+          </button>
+        </div>
+        <div className="settings-check-grid audit-export-grid">
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={auditExportIncludeEvents}
+              onChange={(event) => onAuditExportIncludeEvents(event.target.checked)}
+            />
+            Events
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={auditExportIncludeToolAudit}
+              onChange={(event) => onAuditExportIncludeToolAudit(event.target.checked)}
+            />
+            Tool audit
+          </label>
+        </div>
+        {auditExportStatus ? (
+          <div className="event-op-result state-success">
+            <div className="event-op-copy">
+              <strong>{auditExportStatus}</strong>
+              <span>support-agent-audit-export.ndjson</span>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <section className="settings-section">
