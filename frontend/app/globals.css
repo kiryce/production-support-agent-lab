@@ -381,7 +381,7 @@ textarea:disabled {
 
 .ops-strip {
   display: grid;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
+  grid-template-columns: repeat(9, minmax(0, 1fr));
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -1127,6 +1127,84 @@ textarea:disabled {
 }
 
 .preflight-check-row .preflight-evidence {
+  grid-column: 1 / -1;
+}
+
+.slo-report-section {
+  border-left: 4px solid var(--green-700);
+}
+
+.slo-report-section.state-warn {
+  border-left-color: var(--orange);
+}
+
+.slo-report-section.state-danger {
+  border-left-color: var(--red);
+}
+
+.slo-report-section.state-neutral {
+  border-left-color: #94a3b8;
+}
+
+.slo-report-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.slo-objective-list {
+  display: grid;
+  gap: 7px;
+}
+
+.slo-objective-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: #f8faf9;
+  padding: 8px;
+}
+
+.slo-objective-row.state-success {
+  border-left-color: var(--green-700);
+}
+
+.slo-objective-row.state-warn {
+  border-left-color: var(--orange);
+}
+
+.slo-objective-row.state-danger {
+  border-left-color: var(--red);
+}
+
+.slo-objective-row > div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.slo-objective-row strong,
+.slo-objective-row span,
+.slo-objective-row small {
+  overflow-wrap: anywhere;
+}
+
+.slo-objective-row strong {
+  color: #17231e;
+  font-size: 12px;
+}
+
+.slo-objective-row span,
+.slo-objective-row small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.slo-objective-row .preflight-evidence {
   grid-column: 1 / -1;
 }
 
@@ -2846,6 +2924,8 @@ textarea {
   .settings-check-grid,
   .promotion-override-grid,
   .promotion-decision-row,
+  .slo-objective-row,
+  .slo-report-stats,
   .automation-action-row,
   .automation-plan-stats {
     grid-template-columns: 1fr;

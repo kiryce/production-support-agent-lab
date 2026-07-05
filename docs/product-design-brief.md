@@ -19,6 +19,7 @@ The console should help an on-call operator or Agent beginner answer:
 - Which regression file should receive the real failure sample?
 - Which operation should happen next, and is it safe for a cron/on-call bot to
   execute automatically?
+- Are the service objectives healthy, at risk, breached, or missing enough data?
 - Has someone acknowledged, investigated, or resolved a monitor alert?
 - Did proactive alert delivery fail, and should a dead-letter row be replayed or closed?
 
@@ -38,6 +39,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Monitor drilldown | `GET /api/v1/admin/monitor/drilldown?source=event_store&alert_key=...` | Event-level alert investigation with failure, intent, and risk buckets. |
 | Alert delivery ledger | `GET /api/v1/admin/monitor/alert-deliveries`; `POST .../{delivery_id}/requeue`; `POST .../{delivery_id}/close` | Durable webhook outbox handling with operator replay/close for dead-letter rows. |
 | Alert triage | `GET/POST /api/v1/admin/monitor/alerts/{alert_key}/triage` | Append-only ack/investigate/resolve workflow. |
+| SLO report | `GET /api/v1/admin/operations/slo-report` | Service-objective status, observed aggregates, and error-budget remaining for on-call review. |
 | Operations automation | `GET /api/v1/admin/operations/automation-plan` | Prioritized next-action plan with runnable commands, scopes, guardrails, and auto-execution safety labels. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |

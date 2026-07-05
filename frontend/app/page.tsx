@@ -100,6 +100,8 @@ import type {
   RegressionDraftResponse,
   RetrievalHit,
   RetrievalTrace,
+  SloObjectiveResult,
+  SloReportResponse,
   SQLiteBackupReport,
   StoredEvent,
   ToolAuditRecord,
@@ -1681,6 +1683,7 @@ export default function Home() {
               promotionGate={snapshot?.promotionGate ?? null}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
               operationsAutomation={snapshot?.operationsAutomation ?? null}
+              sloReport={snapshot?.sloReport ?? null}
               busy={eventOpsBusy}
               error={eventOpsError}
               promotionTargetVersion={promotionTargetVersion}
@@ -1982,6 +1985,7 @@ function OpsOverview({
 }) {
   const latestEvalGate = snapshot?.evalGateLatest ?? null;
   const promotionGate = snapshot?.promotionGate ?? null;
+  const sloReport = snapshot?.sloReport ?? null;
   return (
     <section className="ops-strip" aria-label="Operations overview">
       <div className="ops-tile">
@@ -2013,6 +2017,11 @@ function OpsOverview({
         <FileCheck2 size={16} />
         <span>Eval Gate</span>
         <strong>{evalGateTileLabel(evalReport, latestEvalGate)}</strong>
+      </div>
+      <div className={`ops-tile ${sloTileClass(sloReport?.status ?? null)}`}>
+        <Activity size={16} />
+        <span>SLO</span>
+        <strong>{sloReport?.status ?? "unknown"}</strong>
       </div>
       <div className={`ops-tile ${promotionGateTileClass(promotionGate?.status ?? null)}`}>
         <Rocket size={16} />
@@ -2743,6 +2752,7 @@ function SettingsWorkbenchPanel({
   promotionGate,
   promotionDecisions,
   operationsAutomation,
+  sloReport,
   busy,
   error,
   promotionTargetVersion,
@@ -2789,6 +2799,7 @@ function SettingsWorkbenchPanel({
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
+  sloReport: SloReportResponse | null;
   busy: string | null;
   error: string | null;
   promotionTargetVersion: string;
@@ -2838,6 +2849,7 @@ function SettingsWorkbenchPanel({
   const promotionStats = buildPromotionGateStats(promotionGate);
   const automationTone = automationPlanTone(operationsAutomation);
   const automationActions = operationsAutomation?.actions ?? [];
+  const sloTone = sloReportTone(sloReport);
   return (
     <aside className="alerts-panel run-workbench settings-workbench">
       <div className="panel-heading">
@@ -2892,6 +2904,55 @@ function SettingsWorkbenchPanel({
           </>
         ) : (
           <PanelEmpty title="Preflight unavailable" detail="Check admin scopes or the Agent API connection." />
+        )}
+      </section>
+
+      <section className={`settings-section slo-report-section state-${sloTone}`}>
+        <div className="settings-section-head">
+          <strong>Service Objectives</strong>
+          <Badge tone={sloTone}>{sloReport?.status ?? "unavailable"}</Badge>
+        </div>
+        <div className="run-search-stats event-op-stats slo-report-stats">
+          <Metric label="Breached" value={sloReport ? String(sloReport.breached_count) : "n/a"} />
+          <Metric label="Watch" value={sloReport ? String(sloReport.at_risk_count) : "n/a"} />
+          <Metric label="No data" value={sloReport ? String(sloReport.no_data_count) : "n/a"} />
+          <Metric label="Window" value={sloReport ? `${sloReport.window_hours}h` : "n/a"} />
+        </div>
+        {sloReport ? (
+          <>
+            <div className="preflight-meta">
+              <span>{sloReport.environment}</span>
+              <span>{sloReport.source}</span>
+              <span>{formatTime(sloReport.generated_at)}</span>
+              {sloReport.guardrails.slice(0, 2).map((guardrail) => (
+                <span key={guardrail}>{guardrail}</span>
+              ))}
+            </div>
+            <div className="slo-objective-list">
+              {sloReport.objectives.map((objective) => (
+                <div className={`slo-objective-row state-${sloObjectiveTone(objective)}`} key={objective.name}>
+                  <div>
+                    <strong>{objective.name}</strong>
+                    <span>{objective.detail}</span>
+                    <small>{sloBudgetLabel(objective)}</small>
+                  </div>
+                  <Badge tone={sloObjectiveTone(objective)}>{objective.status}</Badge>
+                  <div className="preflight-evidence">
+                    {Object.entries(objective.observed)
+                      .slice(0, 3)
+                      .map(([key, value]) => (
+                        <span key={key}>
+                          <b>{key}</b>
+                          {stringifyValue(value as JsonValue)}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <PanelEmpty title="SLO report unavailable" detail="Check admin scopes or the Agent API connection." />
         )}
       </section>
 
@@ -5619,6 +5680,46 @@ function automationActionTone(action: OperationsAutomationAction): "neutral" | "
     return "warn";
   }
   return action.kind === "no_action_required" ? "success" : "neutral";
+}
+
+function sloReportTone(report: SloReportResponse | null): "neutral" | "success" | "warn" | "danger" {
+  if (!report || report.status === "unknown") {
+    return "neutral";
+  }
+  if (report.status === "breached") {
+    return "danger";
+  }
+  return report.status === "watch" ? "warn" : "success";
+}
+
+function sloObjectiveTone(objective: SloObjectiveResult): "neutral" | "success" | "warn" | "danger" {
+  if (objective.status === "breached") {
+    return "danger";
+  }
+  if (objective.status === "at_risk") {
+    return "warn";
+  }
+  if (objective.status === "met") {
+    return "success";
+  }
+  return "neutral";
+}
+
+function sloTileClass(status: SloReportResponse["status"] | null) {
+  if (status === "breached") {
+    return "is-bad";
+  }
+  if (status === "watch") {
+    return "is-warn";
+  }
+  return "";
+}
+
+function sloBudgetLabel(objective: SloObjectiveResult) {
+  if (objective.error_budget_remaining === null) {
+    return "Budget n/a";
+  }
+  return `Budget ${Math.round(objective.error_budget_remaining * 100)}%`;
 }
 
 function promotionGateTileClass(status: "passed" | "warn" | "blocked" | null) {

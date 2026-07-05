@@ -52,6 +52,7 @@
 - response feedback workbench：读取真实 run 的好评/差评、reason 分布和用户评论，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
+- SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA 和 alert delivery 计算服务目标与错误预算
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
 - operations automation plan：聚合 monitor、alert delivery、promotion gate、tool audit、feedback、eval 证据，返回可执行 endpoint、scope、guardrail 和是否可自动执行，适合接 cron、值班机器人或发布前检查
 - audit export：把脱敏后的 event/tool audit 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
@@ -478,6 +479,8 @@ Eval 不只看最终回答，还检查：
 生产环境会拒绝 `/api/v1/admin/evals/golden` 和 `/api/v1/admin/evals/staging`，避免 lab fixtures 打到真实系统。请在 CI 或 staging sandbox 跑 eval。
 
 `/api/v1/admin/promotion/gate` 是只读发布前检查：它不会自动跑 eval 或改 triage，而是读取 readiness、monitor triage metrics、tool audit summary、response feedback summary 和最新 staging aggregate eval gate，返回 `passed`、`warn` 或 `blocked` 以及每条 evidence。负反馈率超过阈值会阻断发布；反馈样本量不足会给出 warning。控制台会把这个状态放进 Overview 和 Production Preflight。
+
+`/api/v1/admin/operations/slo-report` 是只读服务目标报告：它复用同一套生产证据，返回 `slo_report.v1`，逐项说明 grounded rate、policy compliance、human review rate、active P0/P1、tool failure rate、feedback negative rate、staging eval freshness、triage MTTA 和 alert delivery health 是否 `met`、`at_risk`、`breached` 或 `no_data`，并给出 `error_budget_remaining`。它只输出聚合证据，不输出用户原文、工具参数、检索正文、memory facts 或反馈 comment。控制台 Overview 会显示 SLO 总状态，Settings 会列出每个 objective。
 
 `/api/v1/admin/operations/automation-plan` 是只读运营自动化计划：它在同一个证据窗口里汇总 active P0/P1 alert、webhook/outbox 状态、dead-letter delivery、incident brief、regression draft、promotion gate、tool audit、feedback、retrieval grounding 和 staging eval gate，然后返回 `ops_automation.v1`。每条 action 都包含 title、detail、priority、`safe_to_auto_execute`、所需 scope、可调用的 method/path/query/body，以及不含用户原文的 evidence。它不会自己改 triage、不会发 webhook、不会跑 eval；真正执行必须由有 scope 的控制台、cron 或值班机器人显式调用返回的 command。
 

@@ -306,6 +306,34 @@ class OperationsAutomationPlan(BaseModel):
     guardrails: list[str] = Field(default_factory=list)
 
 
+class SloObjectiveResult(BaseModel):
+    name: str
+    status: Literal["met", "at_risk", "breached", "no_data"]
+    target_type: Literal["minimum", "maximum", "freshness", "state"]
+    target: dict[str, Any] = Field(default_factory=dict)
+    observed: dict[str, Any] = Field(default_factory=dict)
+    error_budget_remaining: float | None = None
+    detail: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+class SloReportResponse(BaseModel):
+    schema_version: str = "slo_report.v1"
+    generated_at: datetime
+    environment: str
+    source: Literal["event_store", "live"]
+    window_hours: int
+    status: Literal["healthy", "watch", "breached", "unknown"]
+    objective_count: int
+    met_count: int
+    at_risk_count: int
+    breached_count: int
+    no_data_count: int
+    objectives: list[SloObjectiveResult]
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    guardrails: list[str] = Field(default_factory=list)
+
+
 PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
 AUDIT_EXPORT_MEDIA_TYPE = "application/x-ndjson"
 
@@ -551,6 +579,433 @@ OPS_AUTOMATION_GUARDRAILS = [
 ]
 OPS_ACTIVE_ALERT_STATUSES = {"open", "acknowledged", "investigating"}
 OPS_PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
+
+SLO_REPORT_GUARDRAILS = [
+    "This endpoint is read-only and returns aggregate service objectives only.",
+    "It does not include message content, tool arguments, tool payloads, retrieval bodies, memory facts, or feedback comments.",
+    "No-data objectives are treated as watch-level risk unless every objective lacks data.",
+    "Use this report for operational review; release approval still requires the promotion gate and append-only decision audit.",
+]
+
+
+async def _slo_report_response(
+    *,
+    deps: AppContainer,
+    source: Literal["event_store", "live"],
+    deep: bool,
+    window_hours: int,
+    min_grounded_rate: float,
+    min_policy_compliance_rate: float,
+    max_human_review_rate: float,
+    max_active_p0p1_alerts: int,
+    max_tool_failure_rate: float,
+    max_feedback_negative_rate: float,
+    max_eval_age_hours: int,
+    max_mtta_seconds: int,
+    max_alert_delivery_dead_count: int,
+    min_tool_calls: int,
+    min_feedback_count: int,
+) -> SloReportResponse:
+    promotion = await _promotion_gate_response(
+        deps=deps,
+        source=source,
+        deep=deep,
+        window_hours=window_hours,
+        max_active_p0p1_alerts=max_active_p0p1_alerts,
+        max_active_alerts=10,
+        max_tool_failure_rate=max_tool_failure_rate,
+        max_feedback_negative_rate=max_feedback_negative_rate,
+        max_eval_age_hours=max_eval_age_hours,
+        min_tool_calls=min_tool_calls,
+        min_feedback_count=min_feedback_count,
+    )
+    delivery_summary = _safe_monitor_alert_delivery_summary(deps, limit=200)
+    dead_delivery_records = _list_ops_delivery_records(
+        deps,
+        status=AlertDeliveryStatus.dead,
+        limit=max_alert_delivery_dead_count + 1,
+    )
+    active_p0p1_alerts = (promotion.monitor.active_by_severity.get("P0", 0) or 0) + (
+        promotion.monitor.active_by_severity.get("P1", 0) or 0
+    )
+    eval_age_hours = _datetime_age_hours(
+        promotion.latest_eval_gate.completed_at if promotion.latest_eval_gate else None,
+        promotion.generated_at,
+    )
+    objectives = [
+        _slo_minimum_rate(
+            name="grounded_rate",
+            observed_rate=promotion.monitor.grounded_rate,
+            target_rate=min_grounded_rate,
+            sample_count=promotion.monitor.total_events,
+            detail_label="Grounded answer rate",
+            evidence={
+                "total_events": promotion.monitor.total_events,
+                "ungrounded_events": promotion.monitor.ungrounded_events,
+            },
+        ),
+        _slo_minimum_rate(
+            name="policy_compliance_rate",
+            observed_rate=promotion.monitor.policy_compliance_rate,
+            target_rate=min_policy_compliance_rate,
+            sample_count=promotion.monitor.total_events,
+            detail_label="Policy-compliant monitor event rate",
+            evidence={
+                "total_events": promotion.monitor.total_events,
+                "policy_violations": promotion.monitor.policy_violations,
+                "pii_leak_events": promotion.monitor.pii_leak_events,
+            },
+        ),
+        _slo_maximum_rate(
+            name="human_review_rate",
+            observed_rate=promotion.monitor.human_review_rate,
+            target_rate=max_human_review_rate,
+            sample_count=promotion.monitor.total_events,
+            min_sample_count=1,
+            detail_label="Human-review pressure",
+            evidence={
+                "total_events": promotion.monitor.total_events,
+                "human_review_events": promotion.monitor.human_review_events,
+            },
+        ),
+        _slo_maximum_count(
+            name="active_p0p1_alerts",
+            observed_count=active_p0p1_alerts,
+            target_count=max_active_p0p1_alerts,
+            detail_label="Active P0/P1 monitor alerts",
+            evidence={
+                "active_alert_count": promotion.monitor.active_alert_count,
+                "active_by_severity": promotion.monitor.active_by_severity,
+                "new_events_since_triage_count": promotion.monitor.new_events_since_triage_count,
+            },
+        ),
+        _slo_maximum_rate(
+            name="tool_failure_rate",
+            observed_rate=promotion.tool_audit.failure_rate,
+            target_rate=max_tool_failure_rate,
+            sample_count=promotion.tool_audit.total_calls,
+            min_sample_count=min_tool_calls,
+            detail_label="Audited tool failure rate",
+            evidence={
+                "total_calls": promotion.tool_audit.total_calls,
+                "failed_calls": promotion.tool_audit.failed_calls,
+                "top_error_codes": [item.error_code for item in promotion.tool_audit.top_error_codes[:5]],
+            },
+        ),
+        _slo_maximum_rate(
+            name="feedback_negative_rate",
+            observed_rate=promotion.feedback.negative_rate,
+            target_rate=max_feedback_negative_rate,
+            sample_count=promotion.feedback.total_count,
+            min_sample_count=min_feedback_count,
+            detail_label="Negative response-feedback rate",
+            evidence={
+                "total_count": promotion.feedback.total_count,
+                "negative_count": promotion.feedback.negative_count,
+                "top_reasons": [
+                    reason.model_dump(mode="json") for reason in promotion.feedback.counts_by_reason[:5]
+                ],
+            },
+        ),
+        _slo_fresh_eval_gate(
+            record=promotion.latest_eval_gate,
+            age_hours=eval_age_hours,
+            max_eval_age_hours=max_eval_age_hours,
+        ),
+        _slo_triage_response(
+            monitor=promotion.monitor,
+            max_mtta_seconds=max_mtta_seconds,
+        ),
+        _slo_alert_delivery(
+            summary=delivery_summary,
+            active_p0p1_alerts=active_p0p1_alerts,
+            max_dead_count=max_alert_delivery_dead_count,
+            observed_dead_count=len(dead_delivery_records),
+        ),
+    ]
+    counts = Counter(objective.status for objective in objectives)
+    return SloReportResponse(
+        generated_at=promotion.generated_at,
+        environment=deps.settings.app_env,
+        source=promotion.source,
+        window_hours=window_hours,
+        status=_slo_report_status(objectives),
+        objective_count=len(objectives),
+        met_count=counts.get("met", 0),
+        at_risk_count=counts.get("at_risk", 0),
+        breached_count=counts.get("breached", 0),
+        no_data_count=counts.get("no_data", 0),
+        objectives=objectives,
+        evidence={
+            "readiness_status": promotion.readiness.status,
+            "monitor_health_status": promotion.monitor.health_status,
+            "promotion_gate_status": promotion.status,
+            "alert_delivery_status": delivery_summary.status if delivery_summary else None,
+            "latest_eval_gate_id": promotion.latest_eval_gate.id if promotion.latest_eval_gate else None,
+        },
+        guardrails=SLO_REPORT_GUARDRAILS,
+    )
+
+
+def _slo_minimum_rate(
+    *,
+    name: str,
+    observed_rate: float,
+    target_rate: float,
+    sample_count: int,
+    detail_label: str,
+    evidence: dict[str, Any],
+) -> SloObjectiveResult:
+    target = {"min_rate": target_rate}
+    observed = {"rate": observed_rate, "sample_count": sample_count}
+    if sample_count <= 0:
+        return SloObjectiveResult(
+            name=name,
+            status="no_data",
+            target_type="minimum",
+            target=target,
+            observed=observed,
+            detail=f"{detail_label} has no monitor samples in the window.",
+            evidence=evidence,
+        )
+    budget = max(1.0 - target_rate, 0.000001)
+    consumed = max(0.0, 1.0 - observed_rate)
+    remaining = _bounded_budget((budget - consumed) / budget)
+    status = _slo_rate_status(observed_rate >= target_rate, remaining)
+    return SloObjectiveResult(
+        name=name,
+        status=status,
+        target_type="minimum",
+        target=target,
+        observed=observed,
+        error_budget_remaining=remaining,
+        detail=f"{detail_label} is {observed_rate:.1%}; target is at least {target_rate:.1%}.",
+        evidence=evidence,
+    )
+
+
+def _slo_maximum_rate(
+    *,
+    name: str,
+    observed_rate: float,
+    target_rate: float,
+    sample_count: int,
+    min_sample_count: int,
+    detail_label: str,
+    evidence: dict[str, Any],
+) -> SloObjectiveResult:
+    target = {"max_rate": target_rate, "min_sample_count": min_sample_count}
+    observed = {"rate": observed_rate, "sample_count": sample_count}
+    if sample_count < min_sample_count:
+        return SloObjectiveResult(
+            name=name,
+            status="no_data",
+            target_type="maximum",
+            target=target,
+            observed=observed,
+            detail=(
+                f"{detail_label} has {sample_count} sample(s), below the minimum "
+                f"{min_sample_count} needed for an SLO decision."
+            ),
+            evidence=evidence,
+        )
+    if target_rate <= 0:
+        remaining = 1.0 if observed_rate <= 0 else 0.0
+    else:
+        remaining = _bounded_budget((target_rate - observed_rate) / target_rate)
+    status = _slo_rate_status(observed_rate <= target_rate, remaining)
+    return SloObjectiveResult(
+        name=name,
+        status=status,
+        target_type="maximum",
+        target=target,
+        observed=observed,
+        error_budget_remaining=remaining,
+        detail=f"{detail_label} is {observed_rate:.1%}; target is at most {target_rate:.1%}.",
+        evidence=evidence,
+    )
+
+
+def _slo_maximum_count(
+    *,
+    name: str,
+    observed_count: int,
+    target_count: int,
+    detail_label: str,
+    evidence: dict[str, Any],
+) -> SloObjectiveResult:
+    target = {"max_count": target_count}
+    observed = {"count": observed_count}
+    if target_count <= 0:
+        remaining = 1.0 if observed_count <= 0 else 0.0
+    else:
+        remaining = _bounded_budget((target_count - observed_count) / target_count)
+    status = _slo_rate_status(observed_count <= target_count, remaining)
+    return SloObjectiveResult(
+        name=name,
+        status=status,
+        target_type="maximum",
+        target=target,
+        observed=observed,
+        error_budget_remaining=remaining,
+        detail=f"{detail_label}: {observed_count}; target is at most {target_count}.",
+        evidence=evidence,
+    )
+
+
+def _slo_fresh_eval_gate(
+    *,
+    record: EvalGateRecord | None,
+    age_hours: float | None,
+    max_eval_age_hours: int,
+) -> SloObjectiveResult:
+    target = {"status": "passed", "max_age_hours": max_eval_age_hours}
+    observed = {
+        "gate_id": record.id if record else None,
+        "status": record.status if record else None,
+        "age_hours": age_hours,
+    }
+    if record is None:
+        return SloObjectiveResult(
+            name="staging_eval_gate_freshness",
+            status="no_data",
+            target_type="freshness",
+            target=target,
+            observed=observed,
+            detail="No aggregate staging eval gate record is available.",
+        )
+    status: Literal["met", "at_risk", "breached", "no_data"] = "met"
+    if record.status != "passed":
+        status = "breached"
+    elif age_hours is not None and age_hours > max_eval_age_hours:
+        status = "at_risk"
+    return SloObjectiveResult(
+        name="staging_eval_gate_freshness",
+        status=status,
+        target_type="freshness",
+        target=target,
+        observed=observed,
+        error_budget_remaining=0.0 if status == "breached" else 1.0 if status == "met" else 0.25,
+        detail=(
+            f"Latest aggregate staging eval gate is {record.status}; "
+            f"age is {age_hours if age_hours is not None else 'unknown'} hour(s)."
+        ),
+        evidence={"suite_id": record.suite_id, "passed": record.passed, "total": record.total},
+    )
+
+
+def _slo_triage_response(
+    *,
+    monitor: MonitorTriageMetricsResponse,
+    max_mtta_seconds: int,
+) -> SloObjectiveResult:
+    target = {"max_mtta_seconds": max_mtta_seconds}
+    observed = {
+        "mtta_seconds": monitor.mtta_seconds,
+        "unassigned_active_alert_count": monitor.unassigned_active_alert_count,
+        "active_alert_count": monitor.active_alert_count,
+    }
+    if monitor.active_alert_count == 0:
+        return SloObjectiveResult(
+            name="triage_response_time",
+            status="met",
+            target_type="maximum",
+            target=target,
+            observed=observed,
+            error_budget_remaining=1.0,
+            detail="No active alerts need triage response in the window.",
+            evidence=observed,
+        )
+    if monitor.mtta_seconds is None:
+        return SloObjectiveResult(
+            name="triage_response_time",
+            status="breached" if monitor.unassigned_active_alert_count else "no_data",
+            target_type="maximum",
+            target=target,
+            observed=observed,
+            error_budget_remaining=0.0 if monitor.unassigned_active_alert_count else None,
+            detail="Active alerts have no measured first triage response yet.",
+            evidence=observed,
+        )
+    remaining = _bounded_budget((max_mtta_seconds - monitor.mtta_seconds) / max(max_mtta_seconds, 1))
+    status = _slo_rate_status(monitor.mtta_seconds <= max_mtta_seconds, remaining)
+    return SloObjectiveResult(
+        name="triage_response_time",
+        status=status,
+        target_type="maximum",
+        target=target,
+        observed=observed,
+        error_budget_remaining=remaining,
+        detail=f"MTTA is {monitor.mtta_seconds}s; target is at most {max_mtta_seconds}s.",
+        evidence=observed,
+    )
+
+
+def _slo_alert_delivery(
+    *,
+    summary: AlertDeliverySummary | None,
+    active_p0p1_alerts: int,
+    max_dead_count: int,
+    observed_dead_count: int,
+) -> SloObjectiveResult:
+    target = {"max_dead_count": max_dead_count, "terminal_statuses": ["ok", "disabled_without_active_p0p1"]}
+    if summary is None:
+        return SloObjectiveResult(
+            name="alert_delivery_health",
+            status="no_data",
+            target_type="state",
+            target=target,
+            detail="Alert delivery outbox is not configured.",
+        )
+    observed = _ops_delivery_summary_evidence(summary)
+    observed["active_p0p1_alert_count"] = active_p0p1_alerts
+    observed["dead_count"] = observed_dead_count
+    status: Literal["met", "at_risk", "breached", "no_data"] = "met"
+    if observed_dead_count > max_dead_count or summary.status == "failed":
+        status = "breached"
+    elif summary.status in {"queued", "degraded"} or (summary.status == "disabled" and active_p0p1_alerts):
+        status = "at_risk"
+    elif summary.status == "disabled":
+        status = "no_data"
+    return SloObjectiveResult(
+        name="alert_delivery_health",
+        status=status,
+        target_type="state",
+        target=target,
+        observed=observed,
+        error_budget_remaining=1.0 if status == "met" else 0.25 if status == "at_risk" else 0.0,
+        detail=(
+            f"Alert delivery is {summary.status}; {observed_dead_count} dead-letter row(s), "
+            f"{summary.pending_count} pending row(s)."
+        ),
+        evidence=observed,
+    )
+
+
+def _slo_rate_status(
+    within_target: bool,
+    error_budget_remaining: float,
+) -> Literal["met", "at_risk", "breached"]:
+    if not within_target:
+        return "breached"
+    if error_budget_remaining < 0.25:
+        return "at_risk"
+    return "met"
+
+
+def _bounded_budget(value: float) -> float:
+    return round(max(0.0, min(1.0, value)), 4)
+
+
+def _slo_report_status(objectives: list[SloObjectiveResult]) -> Literal["healthy", "watch", "breached", "unknown"]:
+    if not objectives or all(objective.status == "no_data" for objective in objectives):
+        return "unknown"
+    if any(objective.status == "breached" for objective in objectives):
+        return "breached"
+    if any(objective.status in {"at_risk", "no_data"} for objective in objectives):
+        return "watch"
+    return "healthy"
 
 
 async def _operations_automation_plan_response(
@@ -3196,6 +3651,49 @@ def create_app() -> FastAPI:
             max_tool_failure_rate=max_tool_failure_rate,
             max_feedback_negative_rate=max_feedback_negative_rate,
             max_eval_age_hours=max_eval_age_hours,
+            min_tool_calls=min_tool_calls,
+            min_feedback_count=min_feedback_count,
+        )
+
+    @app.get("/api/v1/admin/operations/slo-report")
+    async def operations_slo_report(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        source: Annotated[Literal["event_store", "live"], Query()] = "event_store",
+        deep: Annotated[bool, Query()] = False,
+        window_hours: Annotated[int, Query(ge=1, le=168)] = 24,
+        min_grounded_rate: Annotated[float, Query(ge=0, le=1)] = 0.95,
+        min_policy_compliance_rate: Annotated[float, Query(ge=0, le=1)] = 0.99,
+        max_human_review_rate: Annotated[float, Query(ge=0, le=1)] = 0.4,
+        max_active_p0p1_alerts: Annotated[int, Query(ge=0, le=100)] = 0,
+        max_tool_failure_rate: Annotated[float, Query(ge=0, le=1)] = 0.05,
+        max_feedback_negative_rate: Annotated[float, Query(ge=0, le=1)] = 0.4,
+        max_eval_age_hours: Annotated[int, Query(ge=1, le=720)] = 24,
+        max_mtta_seconds: Annotated[int, Query(ge=1, le=86400)] = 900,
+        max_alert_delivery_dead_count: Annotated[int, Query(ge=0, le=1000)] = 0,
+        min_tool_calls: Annotated[int, Query(ge=0, le=10000)] = 1,
+        min_feedback_count: Annotated[int, Query(ge=0, le=10000)] = 5,
+    ) -> SloReportResponse:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "monitor:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "eval:read")
+        require_scope(actor, "feedback:read")
+        return await _slo_report_response(
+            deps=deps,
+            source=source,
+            deep=deep,
+            window_hours=window_hours,
+            min_grounded_rate=min_grounded_rate,
+            min_policy_compliance_rate=min_policy_compliance_rate,
+            max_human_review_rate=max_human_review_rate,
+            max_active_p0p1_alerts=max_active_p0p1_alerts,
+            max_tool_failure_rate=max_tool_failure_rate,
+            max_feedback_negative_rate=max_feedback_negative_rate,
+            max_eval_age_hours=max_eval_age_hours,
+            max_mtta_seconds=max_mtta_seconds,
+            max_alert_delivery_dead_count=max_alert_delivery_dead_count,
             min_tool_calls=min_tool_calls,
             min_feedback_count=min_feedback_count,
         )

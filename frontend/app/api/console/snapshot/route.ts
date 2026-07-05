@@ -15,6 +15,7 @@ import type {
   PromotionDecisionRecord,
   PromotionGateResponse,
   ReadinessResponse,
+  SloReportResponse,
   StoredEvent,
   ToolDefinition
 } from "@/src/shared/types";
@@ -73,6 +74,13 @@ export async function GET(request: NextRequest) {
     () =>
       agentFetch("/api/v1/admin/operations/automation-plan", {
         query: { source: monitorSource, deep: false, window_hours: 24, limit: 500 }
+      }),
+    issues
+  );
+  const sloReport = await optional<SloReportResponse>(
+    () =>
+      agentFetch("/api/v1/admin/operations/slo-report", {
+        query: { source: monitorSource, deep: false, window_hours: 24 }
       }),
     issues
   );
@@ -184,6 +192,7 @@ export async function GET(request: NextRequest) {
     promotionGate,
     promotionDecisions: promotionDecisions ?? [],
     operationsAutomation,
+    sloReport,
     monitorAlertDelivery,
     triageEvents: triageEvents ?? [],
     evalGateLatest: resolvedEvalGateRecords[0] ?? null,

@@ -3297,6 +3297,145 @@ def test_admin_operations_automation_plan_recommends_actions_from_persisted_evid
     assert "tool_results" not in serialized
 
 
+def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    now = utc_now()
+    monitor_event = MonitorEvent(
+        conversation_id="conv_slo_private",
+        run_id="run_slo_private",
+        agent_version="agent_test",
+        user_intent=IntentType.order_status,
+        risk_level=RiskLevel.high,
+        grounded=False,
+        policy_compliant=False,
+        needs_human_review=True,
+        failure_types=["TIMEOUT"],
+        summary="PRIVATE order A1002 should not leak from SLO reports",
+    )
+    event_store.append_monitor_event(monitor_event, tenant_id=app_container.settings.app_tenant_id)
+    alert = MonitorAlert(
+        severity="P1",
+        key=monitor_alert_key(monitor_event),
+        count=1,
+        reason="TIMEOUT clustered across 1 event(s)",
+        first_seen_at=monitor_event.timestamp,
+        last_seen_at=monitor_event.timestamp,
+        sample_event_ids=[monitor_event.id],
+        sample_run_ids=[monitor_event.run_id],
+    )
+    delivery_record, _ = event_store.enqueue_alert_delivery(
+        build_alert_delivery_record(
+            tenant_id=app_container.settings.app_tenant_id,
+            alert=alert,
+            destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+        )
+    )
+    event_store.record_alert_delivery_attempt(
+        delivery_record.id,
+        status=AlertDeliveryStatus.failed,
+        response_status_code=503,
+        last_error="HTTP_503",
+        max_attempts=1,
+        backoff_seconds=60,
+    )
+    event_store.append_tool_audit(
+        ToolAuditRecord(
+            id="audit_slo_failed",
+            tenant_id=app_container.settings.app_tenant_id,
+            actor_user_id="operator",
+            request_id="req_slo_failed",
+            trace_id="run_slo_private",
+            tool_name="shipping.track",
+            argument_hash="hash_slo_args",
+            status=ToolStatus.failed,
+            latency_ms=3000,
+            error_code="TIMEOUT",
+            created_at=now.isoformat(),
+        )
+    )
+    event_store.append_tool_audit(
+        ToolAuditRecord(
+            id="audit_slo_success",
+            tenant_id=app_container.settings.app_tenant_id,
+            actor_user_id="operator",
+            request_id="req_slo_success",
+            trace_id="run_slo_ok",
+            tool_name="order.get",
+            argument_hash="hash_slo_success_args",
+            status=ToolStatus.success,
+            latency_ms=30,
+            error_code=None,
+            created_at=now.isoformat(),
+        )
+    )
+    for index in range(5):
+        event_store.append_agent_feedback(
+            AgentFeedback(
+                tenant_id=app_container.settings.app_tenant_id,
+                conversation_id="conv_slo_private",
+                run_id=f"run_slo_feedback_{index}",
+                user_id="customer_sensitive",
+                rating=FeedbackRating.negative,
+                reasons=["wrong_answer"],
+                comment="PRIVATE feedback comment should not leak",
+                source="qa",
+                created_at=now,
+            )
+        )
+    eval_record = EvalGateRecord(
+        tenant_id=app_container.settings.app_tenant_id,
+        gate_name="staging",
+        runner="aggregate",
+        suite_id="staging_release_gate",
+        suite_path="examples/evals/*",
+        environment=app_container.settings.app_env,
+        actor_user_id="operator",
+        trigger="console",
+        status="passed",
+        total=10,
+        passed=10,
+        score=1,
+        completed_at=now,
+        created_at=now,
+    )
+    event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.get(
+            "/api/v1/admin/operations/slo-report",
+            headers={"X-Demo-Role": "admin"},
+            params={"source": "event_store", "min_tool_calls": 1, "min_feedback_count": 5},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    serialized = json.dumps(body, ensure_ascii=False)
+    objectives = {objective["name"]: objective for objective in body["objectives"]}
+    assert body["schema_version"] == "slo_report.v1"
+    assert body["status"] == "breached"
+    assert body["objective_count"] == 9
+    assert body["breached_count"] >= 5
+    assert objectives["grounded_rate"]["status"] == "breached"
+    assert objectives["policy_compliance_rate"]["status"] == "breached"
+    assert objectives["active_p0p1_alerts"]["status"] == "breached"
+    assert objectives["tool_failure_rate"]["status"] == "breached"
+    assert objectives["feedback_negative_rate"]["status"] == "breached"
+    assert objectives["alert_delivery_health"]["status"] == "breached"
+    assert objectives["staging_eval_gate_freshness"]["status"] == "met"
+    assert objectives["tool_failure_rate"]["error_budget_remaining"] == 0
+    assert "PRIVATE" not in serialized
+    assert "A1002" not in serialized
+    assert "PRIVATE feedback comment should not leak" not in serialized
+
+
 def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -3491,6 +3630,42 @@ def test_production_operations_automation_plan_requires_read_scopes(tmp_path, mo
     assert missing_events.json()["detail"] == "Missing required scope: events:read"
     assert allowed.status_code == 200
     assert allowed.json()["schema_version"] == "ops_automation.v1"
+
+
+def test_production_operations_slo_report_requires_read_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_admin = client.get(
+            "/api/v1/admin/operations/slo-report",
+            headers=_production_headers(scopes="monitor:read,audit:read,eval:read,feedback:read"),
+        )
+        missing_audit = client.get(
+            "/api/v1/admin/operations/slo-report",
+            headers=_production_headers(scopes="admin:read,monitor:read,eval:read,feedback:read"),
+        )
+        allowed = client.get(
+            "/api/v1/admin/operations/slo-report",
+            headers=_production_headers(scopes="admin:read,monitor:read,audit:read,eval:read,feedback:read"),
+            params={"min_tool_calls": 0, "min_feedback_count": 0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_admin.status_code == 403
+    assert missing_admin.json()["detail"] == "Missing required scope: admin:read"
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert allowed.status_code == 200
+    assert allowed.json()["schema_version"] == "slo_report.v1"
 
 
 def test_production_promotion_decision_requires_write_and_gate_read_scopes(tmp_path, monkeypatch):

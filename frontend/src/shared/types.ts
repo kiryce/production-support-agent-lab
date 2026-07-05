@@ -544,6 +544,34 @@ export type OperationsAutomationPlan = {
   guardrails: string[];
 };
 
+export type SloObjectiveResult = {
+  name: string;
+  status: "met" | "at_risk" | "breached" | "no_data";
+  target_type: "minimum" | "maximum" | "freshness" | "state";
+  target: JsonRecord;
+  observed: JsonRecord;
+  error_budget_remaining: number | null;
+  detail: string;
+  evidence: JsonRecord;
+};
+
+export type SloReportResponse = {
+  schema_version: "slo_report.v1";
+  generated_at: string;
+  environment: string;
+  source: "event_store" | "live";
+  window_hours: number;
+  status: "healthy" | "watch" | "breached" | "unknown";
+  objective_count: number;
+  met_count: number;
+  at_risk_count: number;
+  breached_count: number;
+  no_data_count: number;
+  objectives: SloObjectiveResult[];
+  evidence: JsonRecord;
+  guardrails: string[];
+};
+
 export type MonitorAlertDeliverySummary = {
   status: "ok" | "queued" | "degraded" | "failed" | "disabled" | "unknown";
   webhook_enabled: boolean;
@@ -708,6 +736,7 @@ export type ConsoleSnapshot = {
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
+  sloReport: SloReportResponse | null;
   monitorAlertDelivery: MonitorAlertDeliverySummary | null;
   triageEvents: MonitorAlertTriageEvent[];
   evalGateLatest: EvalGateRecord | null;

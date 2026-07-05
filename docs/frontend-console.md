@@ -78,10 +78,13 @@ real local FastAPI endpoints:
 17. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-18. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+18. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+   show service objectives, error-budget remaining, and breached/watch/no-data
+   counts.
+19. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-19. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+20. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -169,6 +172,11 @@ machine.
   backups through a label-only BFF call, previews retention, and only enables
   apply after a verified backup, a dry-run report, and operator confirmation.
   The browser never sends filesystem paths to the backend.
+- Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
+  to display grounded rate, policy compliance, human-review pressure, active
+  P0/P1 alerts, tool failure rate, negative feedback, eval freshness, MTTA, and
+  alert delivery health. Each row shows the status and remaining error budget
+  from backend aggregates, not from browser-only math.
 - Operations Automation in `Settings` uses `GET /api/v1/admin/operations/automation-plan`
   to show prioritized actions with command method/path, required scopes, and
   whether an external runner may safely auto-execute them. The plan is read-only:
@@ -181,8 +189,8 @@ machine.
   evidence tab, and queue filters. Pasting the URL restores the same incident
   context and reloads the matching backend snapshot.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
-  rate, policy compliance, the latest persisted staging eval gate status, and
-  the read-only promotion gate status.
+  rate, policy compliance, the latest persisted staging eval gate status, the
+  SLO report status, and the read-only promotion gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
   promotion checks, latest eval gate audit, recent gate history, and backend
   generated Markdown that can be copied or downloaded without message content,
@@ -206,6 +214,10 @@ machine.
   tool audit failure rate, feedback negative rate, and the latest aggregate
   staging eval gate. It returns `passed`, `warn`, or `blocked` with evidence
   for each check; it does not run evals or change alert triage state.
+- SLO report via `GET /api/v1/admin/operations/slo-report`. It returns
+  `slo_report.v1` with objective status, target, observed aggregate, and error
+  budget remaining. It is useful for on-call review because no-data objectives
+  are visible rather than silently treated as healthy.
 - Operations automation plan via `GET /api/v1/admin/operations/automation-plan`.
   It combines the same production evidence with alert delivery, incident brief,
   regression-draft, retrieval, and staging-eval recommendations. Each action

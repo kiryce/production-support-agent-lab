@@ -189,6 +189,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/feedback` | `feedback:read` |
 | `GET /api/v1/admin/feedback/summary` | `feedback:read` |
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
+| `GET /api/v1/admin/operations/slo-report` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only service objectives and error-budget report. |
 | `GET /api/v1/admin/operations/automation-plan` | `admin:read`, `monitor:read`, `audit:read`, `events:read`, `eval:read`, `feedback:read`. Read-only next-action plan with runnable commands and guardrails. |
 | `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
 | `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes the release preflight and writes an append-only decision event. |
@@ -224,6 +225,17 @@ or `blocked` plus threshold evidence for each check. High feedback negative
 rate blocks promotion, while thin feedback volume warns reviewers that the
 online signal is not yet strong. It never runs bundled evals, writes triage
 events, or returns raw tool arguments, raw monitor events, or eval answer text.
+
+`GET /api/v1/admin/operations/slo-report` is the read-only service objective
+view for on-call and release review. It returns `slo_report.v1` with individual
+objective rows for grounded rate, policy compliance, human-review pressure,
+active P0/P1 alerts, tool failure rate, negative feedback rate, staging eval
+freshness, triage MTTA, and alert delivery health. Each row includes target,
+observed aggregate, status (`met`, `at_risk`, `breached`, or `no_data`), and
+`error_budget_remaining` when that math is meaningful. No-data is explicit so
+missing evidence cannot look healthy. The endpoint uses only aggregates and
+does not return messages, tool arguments, payloads, retrieval bodies, memory
+facts, feedback comments, or raw eval answers.
 
 `GET /api/v1/admin/operations/automation-plan` is the read-only production
 next-action planner used by the console `Settings` workbench and external
