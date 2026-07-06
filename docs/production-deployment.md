@@ -343,15 +343,21 @@ python scripts/event_store_ops.py \
   --tenant-id your_real_tenant
 ```
 
-Apply retention only after checking the backup, restore-drill report, and
-retention dry-run JSON:
+Use the console or admin API for production retention apply after checking the
+backup, restore-drill report, and retention dry-run JSON. A direct CLI apply in
+production is treated as an emergency local bypass: it refuses to run unless the
+operator adds `--unsafe-local-apply`, and the refusal is written to the same
+operation ledger.
+
+Emergency-only direct CLI apply:
 
 ```bash
 python scripts/event_store_ops.py \
   --database-url sqlite:///./data/production/support-agent-lab.db \
   retention \
   --tenant-id your_real_tenant \
-  --apply
+  --apply \
+  --unsafe-local-apply
 ```
 
 By default, retention deletes only expired request nonces, old tool idempotency
@@ -373,19 +379,21 @@ exists under `APP_EVENT_STORE_BACKUP_DIR`, the retention parameters are
 unchanged, and the event-store high-water mark still matches the preview. Any
 mismatch returns `409 Conflict` without deleting rows.
 
-Every authenticated event-store operation writes a separate
-`event_store_operations` ledger row. Completed backups, restore drills,
-retention previews, and retention applies are recorded, as are guard rejections
-and execution failures after the caller has passed admin auth and scope checks.
+Every authenticated event-store API operation and every direct
+`event_store_ops.py` CLI operation writes a separate `event_store_operations`
+ledger row. Completed backups, restore drills, retention previews, and
+retention applies are recorded, as are guard rejections and execution failures.
 The row stores actor id, operation, status, timestamp, and a safe summary:
-backup file name plus path hash, restore-drill table counts and token hash,
-retention parameters and table-level candidate/deleted counts, or a short error
-detail. It never stores raw backup/restore/preview tokens or full filesystem
-paths. The table is included in backup and restore-drill schema verification,
-but it is intentionally excluded from `retention_high_water_mark`; otherwise
-the act of writing audit rows would invalidate the backup/preview guard tokens.
-Operators can review it through `GET /api/v1/admin/event-store/operations`, the
-Settings operation ledger, or the audit NDJSON export.
+backup file name plus path hash, restore-drill table counts and token hash when
+the API flow is used, retention parameters and table-level candidate/deleted
+counts, or a short error detail. It never stores raw backup/restore/preview
+tokens or full filesystem paths. The CLI actor defaults to `event_store_cli`
+and can be set with `--actor-user-id`. The table is included in backup and
+restore-drill schema verification, but it is intentionally excluded from
+`retention_high_water_mark`; otherwise the act of writing audit rows would
+invalidate the backup/preview guard tokens. Operators can review it through
+`GET /api/v1/admin/event-store/operations`, the Settings operation ledger, or
+the audit NDJSON export.
 
 Monitor summary, events, and drilldown endpoints support `source=event_store`,
 `created_after`, `created_before`, and `order=desc|asc` for durable production
