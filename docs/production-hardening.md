@@ -11,8 +11,8 @@
 | Knowledge | HTTPKnowledgeIndex 调真实 knowledge service，内置有限重试和进程内断路器 | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API，内置有限重试、grounded draft fallback 和进程内断路器 | Provider routing + fallback model + budget |
-| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox |
-| Tool audit | SQLite `tool_audit_records` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
+| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + event-store operation ledger; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox |
+| Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table + in-process rate limit | mTLS/JWT, centralized Redis/Postgres nonce and rate-limit state, tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |

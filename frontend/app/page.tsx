@@ -92,6 +92,7 @@ import type {
   ConsoleSnapshot,
   EvalGateRecord,
   EvalReport,
+  EventStoreOperationRecord,
   EventStoreRetentionReport,
   FeedbackSearchResponse,
   IncidentBriefResponse,
@@ -288,6 +289,11 @@ export default function Home() {
   const [eventRestoreDrillReport, setEventRestoreDrillReport] =
     useState<SQLiteRestoreDrillReport | null>(null);
   const [eventRestoreDrillBackupToken, setEventRestoreDrillBackupToken] = useState<string | null>(null);
+  const [eventStoreOperations, setEventStoreOperations] = useState<EventStoreOperationRecord[]>([]);
+  const [eventStoreOperationsLoading, setEventStoreOperationsLoading] = useState(false);
+  const [eventStoreOperationsError, setEventStoreOperationsError] = useState<string | null>(null);
+  const [eventStoreOperationFilter, setEventStoreOperationFilter] = useState("");
+  const [eventStoreOperationStatusFilter, setEventStoreOperationStatusFilter] = useState("");
   const [eventOpsBusy, setEventOpsBusy] = useState<string | null>(null);
   const [eventOpsError, setEventOpsError] = useState<string | null>(null);
   const [automationActionBusyId, setAutomationActionBusyId] = useState<string | null>(null);
@@ -309,6 +315,8 @@ export default function Home() {
   const [auditExportLimit, setAuditExportLimit] = useState("1000");
   const [auditExportIncludeEvents, setAuditExportIncludeEvents] = useState(true);
   const [auditExportIncludeToolAudit, setAuditExportIncludeToolAudit] = useState(true);
+  const [auditExportIncludeEventStoreOperations, setAuditExportIncludeEventStoreOperations] =
+    useState(true);
   const [auditExportStatus, setAuditExportStatus] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState(DEFAULT_CONSOLE_URL_STATE.severity);
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(DEFAULT_CONSOLE_URL_STATE.status);
@@ -648,9 +656,48 @@ export default function Home() {
     ]
   );
 
+  const loadEventStoreOperations = useCallback(async () => {
+    setEventStoreOperationsLoading(true);
+    setEventStoreOperationsError(null);
+    try {
+      const params = new URLSearchParams({
+        limit: "20",
+        order: "desc"
+      });
+      if (eventStoreOperationFilter) {
+        params.set("operation", eventStoreOperationFilter);
+      }
+      if (eventStoreOperationStatusFilter) {
+        params.set("status", eventStoreOperationStatusFilter);
+      }
+      const response = await fetch(`/api/console/event-store/operations?${params.toString()}`, {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Event-store operation ledger failed");
+      }
+      setEventStoreOperations(
+        Array.isArray(data.records) ? (data.records as EventStoreOperationRecord[]) : []
+      );
+    } catch (nextError) {
+      setEventStoreOperationsError(
+        nextError instanceof Error ? nextError.message : "Event-store operation ledger failed"
+      );
+    } finally {
+      setEventStoreOperationsLoading(false);
+    }
+  }, [eventStoreOperationFilter, eventStoreOperationStatusFilter]);
+
   useEffect(() => {
     setRetentionApplyConfirmed(false);
   }, [eventRetentionRequestKey]);
+
+  useEffect(() => {
+    if (workspaceMode === "settings") {
+      void loadEventStoreOperations();
+    }
+  }, [loadEventStoreOperations, workspaceMode]);
 
   useEffect(() => {
     if (!triageDraftDirty) {
@@ -1197,6 +1244,7 @@ export default function Home() {
       setEventRetentionReport(null);
       setEventRetentionPreviewKey(null);
       setRetentionApplyConfirmed(false);
+      await loadEventStoreOperations();
     } catch (nextError) {
       setEventOpsError(nextError instanceof Error ? nextError.message : "Event-store backup failed");
     } finally {
@@ -1228,6 +1276,7 @@ export default function Home() {
       setEventRetentionReport(null);
       setEventRetentionPreviewKey(null);
       setRetentionApplyConfirmed(false);
+      await loadEventStoreOperations();
     } catch (nextError) {
       setEventOpsError(
         nextError instanceof Error ? nextError.message : "Event-store restore drill failed"
@@ -1283,6 +1332,7 @@ export default function Home() {
         setRetentionApplyConfirmed(false);
         await loadSnapshot({ runId: selectedRunId, alertKey: selectedAlertKey });
       }
+      await loadEventStoreOperations();
     } catch (nextError) {
       setEventOpsError(nextError instanceof Error ? nextError.message : "Event-store retention failed");
     } finally {
@@ -1344,7 +1394,11 @@ export default function Home() {
   }
 
   async function downloadAuditExport() {
-    if (!auditExportIncludeEvents && !auditExportIncludeToolAudit) {
+    if (
+      !auditExportIncludeEvents &&
+      !auditExportIncludeToolAudit &&
+      !auditExportIncludeEventStoreOperations
+    ) {
       setEventOpsError("Select at least one audit source.");
       return;
     }
@@ -1356,7 +1410,8 @@ export default function Home() {
         limit: auditExportLimit,
         order: "asc",
         include_events: String(auditExportIncludeEvents),
-        include_tool_audit: String(auditExportIncludeToolAudit)
+        include_tool_audit: String(auditExportIncludeToolAudit),
+        include_event_store_operations: String(auditExportIncludeEventStoreOperations)
       });
       const response = await fetch(`/api/console/audit/export?${params.toString()}`, {
         cache: "no-store"
@@ -2186,6 +2241,11 @@ export default function Home() {
               restoreDrillReport={eventRestoreDrillReport}
               restoreDrillBackupToken={eventRestoreDrillBackupToken}
               retentionReport={eventRetentionReport}
+              eventStoreOperations={eventStoreOperations}
+              eventStoreOperationsLoading={eventStoreOperationsLoading}
+              eventStoreOperationsError={eventStoreOperationsError}
+              eventStoreOperationFilter={eventStoreOperationFilter}
+              eventStoreOperationStatusFilter={eventStoreOperationStatusFilter}
               promotionGate={snapshot?.promotionGate ?? null}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
               operationsAutomation={snapshot?.operationsAutomation ?? null}
@@ -2202,6 +2262,7 @@ export default function Home() {
               auditExportLimit={auditExportLimit}
               auditExportIncludeEvents={auditExportIncludeEvents}
               auditExportIncludeToolAudit={auditExportIncludeToolAudit}
+              auditExportIncludeEventStoreOperations={auditExportIncludeEventStoreOperations}
               auditExportStatus={auditExportStatus}
               eventRetentionDays={eventRetentionDays}
               toolAuditRetentionDays={toolAuditRetentionDays}
@@ -2224,6 +2285,9 @@ export default function Home() {
               onAuditExportLimit={setAuditExportLimit}
               onAuditExportIncludeEvents={setAuditExportIncludeEvents}
               onAuditExportIncludeToolAudit={setAuditExportIncludeToolAudit}
+              onAuditExportIncludeEventStoreOperations={setAuditExportIncludeEventStoreOperations}
+              onEventStoreOperationFilter={setEventStoreOperationFilter}
+              onEventStoreOperationStatusFilter={setEventStoreOperationStatusFilter}
               onIncludeEvents={setRetentionIncludeEvents}
               onVacuum={setRetentionVacuum}
               onApplyConfirmed={setRetentionApplyConfirmed}
@@ -2232,6 +2296,7 @@ export default function Home() {
               onPromotionDecisionSubmit={recordPromotionDecision}
               onExecuteAutomationAction={(action) => void executeAutomationAction(action)}
               onAuditExport={() => void downloadAuditExport()}
+              onRefreshEventStoreOperations={() => void loadEventStoreOperations()}
               onRetention={(dryRun) => void runEventStoreRetention(dryRun)}
             />
           ) : workspaceMode === "tools" ? (
@@ -3287,6 +3352,11 @@ function SettingsWorkbenchPanel({
   restoreDrillReport,
   restoreDrillBackupToken,
   retentionReport,
+  eventStoreOperations,
+  eventStoreOperationsLoading,
+  eventStoreOperationsError,
+  eventStoreOperationFilter,
+  eventStoreOperationStatusFilter,
   promotionGate,
   promotionDecisions,
   operationsAutomation,
@@ -3303,6 +3373,7 @@ function SettingsWorkbenchPanel({
   auditExportLimit,
   auditExportIncludeEvents,
   auditExportIncludeToolAudit,
+  auditExportIncludeEventStoreOperations,
   auditExportStatus,
   eventRetentionDays,
   toolAuditRetentionDays,
@@ -3325,6 +3396,9 @@ function SettingsWorkbenchPanel({
   onAuditExportLimit,
   onAuditExportIncludeEvents,
   onAuditExportIncludeToolAudit,
+  onAuditExportIncludeEventStoreOperations,
+  onEventStoreOperationFilter,
+  onEventStoreOperationStatusFilter,
   onIncludeEvents,
   onVacuum,
   onApplyConfirmed,
@@ -3333,6 +3407,7 @@ function SettingsWorkbenchPanel({
   onPromotionDecisionSubmit,
   onExecuteAutomationAction,
   onAuditExport,
+  onRefreshEventStoreOperations,
   onRetention
 }: {
   backupLabel: string;
@@ -3340,6 +3415,11 @@ function SettingsWorkbenchPanel({
   restoreDrillReport: SQLiteRestoreDrillReport | null;
   restoreDrillBackupToken: string | null;
   retentionReport: EventStoreRetentionReport | null;
+  eventStoreOperations: EventStoreOperationRecord[];
+  eventStoreOperationsLoading: boolean;
+  eventStoreOperationsError: string | null;
+  eventStoreOperationFilter: string;
+  eventStoreOperationStatusFilter: string;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
@@ -3356,6 +3436,7 @@ function SettingsWorkbenchPanel({
   auditExportLimit: string;
   auditExportIncludeEvents: boolean;
   auditExportIncludeToolAudit: boolean;
+  auditExportIncludeEventStoreOperations: boolean;
   auditExportStatus: string | null;
   eventRetentionDays: string;
   toolAuditRetentionDays: string;
@@ -3378,6 +3459,9 @@ function SettingsWorkbenchPanel({
   onAuditExportLimit: (value: string) => void;
   onAuditExportIncludeEvents: (value: boolean) => void;
   onAuditExportIncludeToolAudit: (value: boolean) => void;
+  onAuditExportIncludeEventStoreOperations: (value: boolean) => void;
+  onEventStoreOperationFilter: (value: string) => void;
+  onEventStoreOperationStatusFilter: (value: string) => void;
   onIncludeEvents: (value: boolean) => void;
   onVacuum: (value: boolean) => void;
   onApplyConfirmed: (value: boolean) => void;
@@ -3386,6 +3470,7 @@ function SettingsWorkbenchPanel({
   onPromotionDecisionSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onExecuteAutomationAction: (action: OperationsAutomationAction) => void;
   onAuditExport: () => void;
+  onRefreshEventStoreOperations: () => void;
   onRetention: (dryRun: boolean) => void;
 }) {
   const backupBusy = busy === "backup";
@@ -3699,6 +3784,63 @@ function SettingsWorkbenchPanel({
         )}
       </section>
 
+      <section className="settings-section operations-ledger-section">
+        <div className="settings-section-head">
+          <strong>Operation Ledger</strong>
+          <Badge tone={eventStoreOperationsError ? "danger" : "neutral"}>
+            {eventStoreOperations.length} rows
+          </Badge>
+        </div>
+        <div className="settings-action-row operations-ledger-controls">
+          <div className="tool-window-grid operations-ledger-filter-grid">
+            <label className="field-label compact">
+              Operation
+              <select
+                value={eventStoreOperationFilter}
+                onChange={(event) => onEventStoreOperationFilter(event.target.value)}
+              >
+                <option value="">all</option>
+                <option value="backup">backup</option>
+                <option value="restore_drill">restore drill</option>
+                <option value="retention_preview">retention preview</option>
+                <option value="retention_apply">retention apply</option>
+              </select>
+            </label>
+            <label className="field-label compact">
+              Status
+              <select
+                value={eventStoreOperationStatusFilter}
+                onChange={(event) => onEventStoreOperationStatusFilter(event.target.value)}
+              >
+                <option value="">all</option>
+                <option value="completed">completed</option>
+                <option value="rejected">rejected</option>
+                <option value="failed">failed</option>
+              </select>
+            </label>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={eventStoreOperationsLoading || Boolean(busy)}
+            onClick={onRefreshEventStoreOperations}
+            aria-label="Refresh event-store operation ledger"
+          >
+            {eventStoreOperationsLoading ? <Loader2 className="spin" size={16} /> : <RefreshCw size={16} />}
+            Refresh
+          </button>
+        </div>
+        {eventStoreOperationsError ? (
+          <div className="event-op-result state-danger">
+            <div className="event-op-copy">
+              <strong>Ledger unavailable</strong>
+              <span>{eventStoreOperationsError}</span>
+            </div>
+          </div>
+        ) : null}
+        <EventStoreOperationLedger records={eventStoreOperations} loading={eventStoreOperationsLoading} />
+      </section>
+
       <section className="settings-section audit-export-section">
         <div className="settings-section-head">
           <strong>Audit Export</strong>
@@ -3734,6 +3876,14 @@ function SettingsWorkbenchPanel({
               onChange={(event) => onAuditExportIncludeToolAudit(event.target.checked)}
             />
             Tool audit
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={auditExportIncludeEventStoreOperations}
+              onChange={(event) => onAuditExportIncludeEventStoreOperations(event.target.checked)}
+            />
+            Operations
           </label>
         </div>
         {auditExportStatus ? (
@@ -3892,6 +4042,121 @@ function SettingsWorkbenchPanel({
       </div>
     </aside>
   );
+}
+
+function EventStoreOperationLedger({
+  records,
+  loading
+}: {
+  records: EventStoreOperationRecord[];
+  loading: boolean;
+}) {
+  if (!records.length) {
+    return (
+      <PanelEmpty
+        title={loading ? "Loading operation ledger" : "No operation records"}
+        detail={loading ? "Fetching persisted event-store operations." : "Run a backup, restore drill, or retention preview."}
+      />
+    );
+  }
+  return (
+    <div className="operations-ledger-list">
+      {records.map((record) => (
+        <article className={`operations-ledger-row state-${operationLedgerTone(record)}`} key={record.id}>
+          <div className="operations-ledger-copy">
+            <div className="operations-ledger-title">
+              <Badge tone={operationLedgerTone(record)}>{record.status}</Badge>
+              <strong>{operationLedgerLabel(record.operation)}</strong>
+            </div>
+            <span>{record.actor_user_id}</span>
+            <time>{formatTime(record.created_at)}</time>
+          </div>
+          <div className="preflight-evidence operations-ledger-evidence">
+            {operationLedgerChips(record).map(([key, value]) => (
+              <span key={key}>
+                <b>{key}</b>
+                {value}
+              </span>
+            ))}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function operationLedgerTone(record: EventStoreOperationRecord): "neutral" | "success" | "warn" | "danger" {
+  if (record.status === "completed") {
+    return "success";
+  }
+  if (record.status === "rejected") {
+    return "warn";
+  }
+  if (record.status === "failed") {
+    return "danger";
+  }
+  return "neutral";
+}
+
+function operationLedgerLabel(operation: string) {
+  return (
+    {
+      backup: "Backup",
+      restore_drill: "Restore Drill",
+      retention_preview: "Retention Preview",
+      retention_apply: "Retention Apply"
+    }[operation] ?? operation
+  );
+}
+
+function operationLedgerChips(record: EventStoreOperationRecord): Array<[string, string]> {
+  const summary = record.summary;
+  const preferredKeys = [
+    "backup_file",
+    "label",
+    "verified",
+    "health_check_passed",
+    "total_candidates",
+    "total_deleted",
+    "include_events",
+    "vacuum_performed",
+    "size_bytes",
+    "page_count",
+    "error_type",
+    "detail"
+  ];
+  const chips: Array<[string, string]> = [];
+  for (const key of preferredKeys) {
+    const value = summary[key];
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    chips.push([operationLedgerChipLabel(key), operationLedgerChipValue(key, value)]);
+  }
+  return chips.slice(0, 6);
+}
+
+function operationLedgerChipLabel(key: string) {
+  return (
+    {
+      backup_file: "file",
+      health_check_passed: "health",
+      total_candidates: "candidates",
+      total_deleted: "deleted",
+      include_events: "events",
+      vacuum_performed: "vacuum",
+      size_bytes: "size",
+      page_count: "pages",
+      error_type: "error"
+    }[key] ?? key
+  );
+}
+
+function operationLedgerChipValue(key: string, value: JsonValue) {
+  if (key === "size_bytes" && typeof value === "number") {
+    return formatBytes(value);
+  }
+  return stringifyValue(value).slice(0, 160);
 }
 
 function RestoreDrillReportView({ report }: { report: SQLiteRestoreDrillReport }) {

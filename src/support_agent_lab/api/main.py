@@ -38,6 +38,7 @@ from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTEN
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import (
     EVAL_GATE_EVENT_TYPE,
+    EventStoreOperationRecord,
     EventStoreRetentionReport,
     FEEDBACK_EVENT_TYPE,
     FEEDBACK_REVIEW_EVENT_TYPE,
@@ -407,6 +408,10 @@ AUDIT_EXPORT_MEDIA_TYPE = "application/x-ndjson"
 EVENT_STORE_BACKUP_TOKEN_KIND = "event_store.backup.v1"
 EVENT_STORE_RESTORE_DRILL_TOKEN_KIND = "event_store.restore_drill.v1"
 EVENT_STORE_RETENTION_PREVIEW_TOKEN_KIND = "event_store.retention_preview.v1"
+EVENT_STORE_OPERATION_BACKUP = "backup"
+EVENT_STORE_OPERATION_RESTORE_DRILL = "restore_drill"
+EVENT_STORE_OPERATION_RETENTION_PREVIEW = "retention_preview"
+EVENT_STORE_OPERATION_RETENTION_APPLY = "retention_apply"
 
 
 class PromotionDecisionRequest(BaseModel):
@@ -2165,6 +2170,7 @@ def _audit_export_rows(
     deps: AppContainer,
     include_events: bool,
     include_tool_audit: bool,
+    include_event_store_operations: bool,
     event_type: str | None,
     created_after: str | None,
     created_before: str | None,
@@ -2190,6 +2196,17 @@ def _audit_export_rows(
         rows.extend(
             _audit_tool_row(record)
             for record in deps.event_store.list_tool_audit_records(
+                tenant_id=deps.settings.app_tenant_id,
+                created_after=created_after,
+                created_before=created_before,
+                limit=limit,
+                order=order,
+            )
+        )
+    if include_event_store_operations:
+        rows.extend(
+            _audit_event_store_operation_row(record)
+            for record in deps.event_store.list_event_store_operations(
                 tenant_id=deps.settings.app_tenant_id,
                 created_after=created_after,
                 created_before=created_before,
@@ -2242,6 +2259,24 @@ def _audit_tool_row(record: ToolAuditRecord) -> dict[str, Any]:
             run_id=record.trace_id,
             request_id=record.request_id,
         ),
+    }
+
+
+def _audit_event_store_operation_row(record: EventStoreOperationRecord) -> dict[str, Any]:
+    return {
+        "schema_version": "audit_export.v1",
+        "record_type": "event_store_operation",
+        "source": "event_store_operations",
+        "id": record.id,
+        "tenant_id": record.tenant_id,
+        "operation": record.operation,
+        "status": record.status,
+        "created_at": record.created_at,
+        "correlation": _audit_correlation(
+            tenant_id=record.tenant_id,
+            user_id=record.actor_user_id,
+        ),
+        "operation_summary": record.summary,
     }
 
 
@@ -4111,6 +4146,144 @@ def _event_store_retention_params(
     }
 
 
+def _append_event_store_operation_record(
+    *,
+    deps: AppContainer,
+    actor: RequestActor,
+    operation: str,
+    status: Literal["completed", "rejected", "failed"],
+    summary: dict[str, Any],
+) -> EventStoreOperationRecord | None:
+    if not deps.event_store:
+        return None
+    return deps.event_store.append_event_store_operation(
+        tenant_id=deps.settings.app_tenant_id,
+        actor_user_id=actor.user_id,
+        operation=operation,
+        status=status,
+        summary={
+            "schema_version": "event_store_operation_summary.v1",
+            **summary,
+        },
+    )
+
+
+def _operation_error_summary(exc: Exception) -> dict[str, Any]:
+    detail = getattr(exc, "detail", None)
+    if detail is None:
+        detail = str(exc)
+    return {
+        "error_type": exc.__class__.__name__,
+        "detail": str(detail)[:500],
+    }
+
+
+def _path_audit_summary(path_value: str | None) -> dict[str, Any]:
+    if not path_value:
+        return {"file": None, "path_hash": None}
+    return {
+        "file": Path(path_value).name,
+        "path_hash": _audit_hash(path_value),
+    }
+
+
+def _high_water_summary(high_water_mark: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        table_name: {
+            "row_count": values.get("row_count"),
+            "max_rowid": values.get("max_rowid"),
+            **{
+                key: value
+                for key, value in values.items()
+                if key.startswith("max_") and key != "max_rowid"
+            },
+        }
+        for table_name, values in high_water_mark.items()
+    }
+
+
+def _retention_tables_summary(report: EventStoreRetentionReport) -> list[dict[str, Any]]:
+    return [
+        {
+            "table_name": table.table_name,
+            "cutoff_at": table.cutoff_at.isoformat() if table.cutoff_at else None,
+            "candidate_count": table.candidate_count,
+            "deleted_count": table.deleted_count,
+            "action": table.action,
+            "reason": table.reason,
+        }
+        for table in report.tables
+    ]
+
+
+def _backup_operation_summary(
+    *,
+    report: SQLiteBackupReport,
+    label: str,
+    high_water_mark: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    backup_path = _path_audit_summary(report.backup_path)
+    source_path = _path_audit_summary(report.source_path)
+    return {
+        "label": label or None,
+        "backup_file": backup_path["file"],
+        "backup_path_hash": backup_path["path_hash"],
+        "source_path_hash": source_path["path_hash"],
+        "verified": report.verified,
+        "verification_detail": report.verification_detail,
+        "size_bytes": report.size_bytes,
+        "page_count": report.page_count,
+        "started_at": report.started_at.isoformat(),
+        "completed_at": report.completed_at.isoformat(),
+        "high_water_mark": _high_water_summary(high_water_mark),
+    }
+
+
+def _restore_drill_operation_summary(
+    *,
+    report: SQLiteRestoreDrillReport,
+    backup_token: str,
+) -> dict[str, Any]:
+    backup_path = _path_audit_summary(report.backup_path)
+    restore_path = _path_audit_summary(report.restore_path)
+    return {
+        "backup_file": backup_path["file"],
+        "backup_path_hash": backup_path["path_hash"],
+        "restore_path_hash": restore_path["path_hash"],
+        "restore_path_retained": report.restore_path_retained,
+        "verified": report.verified,
+        "health_check_passed": report.health_check_passed,
+        "verification_detail": report.verification_detail,
+        "size_bytes": report.size_bytes,
+        "page_count": report.page_count,
+        "started_at": report.started_at.isoformat(),
+        "completed_at": report.completed_at.isoformat(),
+        "table_counts": report.table_counts,
+        "high_water_mark": _high_water_summary(report.high_water_mark),
+        "backup_token_hash": _audit_hash(backup_token),
+    }
+
+
+def _retention_operation_summary(
+    *,
+    report: EventStoreRetentionReport,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "dry_run": report.dry_run,
+        "include_events": report.include_events,
+        "vacuum_requested": report.vacuum_requested,
+        "vacuum_performed": report.vacuum_performed,
+        "params": params,
+        "started_at": report.started_at.isoformat(),
+        "completed_at": report.completed_at.isoformat(),
+        "total_candidates": report.total_candidates,
+        "total_deleted": report.total_deleted,
+        "preview_token_issued": bool(report.preview_token),
+        "tables": _retention_tables_summary(report),
+    }
+
+
 def _retention_token_secret(settings: Settings) -> bytes:
     secret = (
         settings.app_actor_signature_secret
@@ -5802,13 +5975,14 @@ def create_app() -> FastAPI:
         created_before: Annotated[str | None, Query()] = None,
         include_events: Annotated[bool, Query()] = True,
         include_tool_audit: Annotated[bool, Query()] = True,
+        include_event_store_operations: Annotated[bool, Query()] = True,
         limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
         order: Annotated[Literal["asc", "desc"], Query()] = "asc",
     ) -> PlainTextResponse:
         require_admin(actor)
         require_scope(actor, "audit:read")
         require_scope(actor, "events:read")
-        if not include_events and not include_tool_audit:
+        if not include_events and not include_tool_audit and not include_event_store_operations:
             raise HTTPException(status_code=422, detail="At least one audit source must be included")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
@@ -5816,6 +5990,7 @@ def create_app() -> FastAPI:
             deps=deps,
             include_events=include_events,
             include_tool_audit=include_tool_audit,
+            include_event_store_operations=include_event_store_operations,
             event_type=event_type,
             created_after=created_after,
             created_before=created_before,
@@ -5829,6 +6004,33 @@ def create_app() -> FastAPI:
                 "Content-Disposition": "attachment; filename=support-agent-audit-export.ndjson",
                 "X-Audit-Export-Records": str(len(rows)),
             },
+        )
+
+    @app.get("/api/v1/admin/event-store/operations")
+    def list_event_store_operations(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        operation: Annotated[str | None, Query(max_length=80)] = None,
+        status: Annotated[str | None, Query(max_length=40)] = None,
+        created_after: Annotated[str | None, Query()] = None,
+        created_before: Annotated[str | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[EventStoreOperationRecord]:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return deps.event_store.list_event_store_operations(
+            tenant_id=deps.settings.app_tenant_id,
+            operation=operation,
+            status=status,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            order=order,
         )
 
     @app.post("/api/v1/admin/event-store/backups")
@@ -5867,11 +6069,58 @@ def create_app() -> FastAPI:
                     high_water_mark=high_water_mark,
                 ),
             )
-            return report.model_copy(update={"backup_token": backup_token})
+            response = report.model_copy(update={"backup_token": backup_token})
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_BACKUP,
+                status="completed",
+                summary=_backup_operation_summary(
+                    report=report,
+                    label=label,
+                    high_water_mark=high_water_mark,
+                ),
+            )
+            return response
         except FileExistsError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_BACKUP,
+                status="rejected",
+                summary={
+                    "label": label or None,
+                    "target_file": target_path.name,
+                    **_operation_error_summary(exc),
+                },
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_BACKUP,
+                status="rejected",
+                summary={
+                    "label": label or None,
+                    "target_file": target_path.name,
+                    **_operation_error_summary(exc),
+                },
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_BACKUP,
+                status="failed",
+                summary={
+                    "label": label or None,
+                    "target_file": target_path.name,
+                    **_operation_error_summary(exc),
+                },
+            )
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/v1/admin/event-store/restore-drills")
     def create_event_store_restore_drill(
@@ -5885,13 +6134,13 @@ def create_app() -> FastAPI:
         require_scope(actor, "events:read")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
-        backup_payload = _event_store_backup_payload_from_token(
-            token=body.backup_token,
-            deps=deps,
-            actor=actor,
-        )
-        backup_path = _event_store_backup_path_from_payload(backup_payload=backup_payload, deps=deps)
         try:
+            backup_payload = _event_store_backup_payload_from_token(
+                token=body.backup_token,
+                deps=deps,
+                actor=actor,
+            )
+            backup_path = _event_store_backup_path_from_payload(backup_payload=backup_payload, deps=deps)
             report = deps.event_store.restore_drill(
                 backup_path,
                 tenant_id=deps.settings.app_tenant_id,
@@ -5910,12 +6159,65 @@ def create_app() -> FastAPI:
                     backup_token=body.backup_token,
                 ),
             )
-            return report.model_copy(update={"restore_drill_token": restore_drill_token})
+            response = report.model_copy(update={"restore_drill_token": restore_drill_token})
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_RESTORE_DRILL,
+                status="completed",
+                summary=_restore_drill_operation_summary(
+                    report=report,
+                    backup_token=body.backup_token,
+                ),
+            )
+            return response
+        except HTTPException as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_RESTORE_DRILL,
+                status="rejected",
+                summary={
+                    "backup_token_hash": _audit_hash(body.backup_token),
+                    **_operation_error_summary(exc),
+                },
+            )
+            raise
         except FileNotFoundError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_RESTORE_DRILL,
+                status="failed",
+                summary={
+                    "backup_token_hash": _audit_hash(body.backup_token),
+                    **_operation_error_summary(exc),
+                },
+            )
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except RuntimeError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_RESTORE_DRILL,
+                status="failed",
+                summary={
+                    "backup_token_hash": _audit_hash(body.backup_token),
+                    **_operation_error_summary(exc),
+                },
+            )
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except ValueError as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=EVENT_STORE_OPERATION_RESTORE_DRILL,
+                status="rejected",
+                summary={
+                    "backup_token_hash": _audit_hash(body.backup_token),
+                    **_operation_error_summary(exc),
+                },
+            )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/v1/admin/event-store/retention")
@@ -5932,42 +6234,89 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Event store is not configured")
         params = _event_store_retention_params(body, deps.settings)
         apply_now: datetime | None = None
-        if not body.dry_run:
-            apply_now = _assert_retention_apply_is_guarded(
-                body=body,
+        operation = (
+            EVENT_STORE_OPERATION_RETENTION_PREVIEW
+            if body.dry_run
+            else EVENT_STORE_OPERATION_RETENTION_APPLY
+        )
+        try:
+            if not body.dry_run:
+                apply_now = _assert_retention_apply_is_guarded(
+                    body=body,
+                    deps=deps,
+                    actor=actor,
+                    params=params,
+                )
+            report = deps.event_store.apply_retention_policy(
+                tenant_id=deps.settings.app_tenant_id,
+                dry_run=body.dry_run,
+                include_events=params["include_events"],
+                vacuum=params["vacuum"],
+                event_retention_days=params["event_retention_days"],
+                tool_audit_retention_days=params["tool_audit_retention_days"],
+                idempotency_retention_days=params["idempotency_retention_days"],
+                alert_delivery_retention_days=params["alert_delivery_retention_days"],
+                now=apply_now,
+            )
+            if not body.dry_run:
+                _append_event_store_operation_record(
+                    deps=deps,
+                    actor=actor,
+                    operation=operation,
+                    status="completed",
+                    summary=_retention_operation_summary(report=report, params=params),
+                )
+                return report
+            high_water_mark = deps.event_store.retention_high_water_mark(
+                tenant_id=deps.settings.app_tenant_id,
+            )
+            preview_now = report.started_at.isoformat()
+            preview_token = _sign_event_store_operation_token(
+                deps.settings,
+                _event_store_preview_token_payload(
+                    report=report,
+                    settings=deps.settings,
+                    actor=actor,
+                    params=params,
+                    high_water_mark=high_water_mark,
+                    preview_now=preview_now,
+                ),
+            )
+            response = report.model_copy(update={"preview_token": preview_token})
+            _append_event_store_operation_record(
                 deps=deps,
                 actor=actor,
-                params=params,
+                operation=operation,
+                status="completed",
+                summary=_retention_operation_summary(report=response, params=params),
             )
-        report = deps.event_store.apply_retention_policy(
-            tenant_id=deps.settings.app_tenant_id,
-            dry_run=body.dry_run,
-            include_events=params["include_events"],
-            vacuum=params["vacuum"],
-            event_retention_days=params["event_retention_days"],
-            tool_audit_retention_days=params["tool_audit_retention_days"],
-            idempotency_retention_days=params["idempotency_retention_days"],
-            alert_delivery_retention_days=params["alert_delivery_retention_days"],
-            now=apply_now,
-        )
-        if not body.dry_run:
-            return report
-        high_water_mark = deps.event_store.retention_high_water_mark(
-            tenant_id=deps.settings.app_tenant_id,
-        )
-        preview_now = report.started_at.isoformat()
-        preview_token = _sign_event_store_operation_token(
-            deps.settings,
-            _event_store_preview_token_payload(
-                report=report,
-                settings=deps.settings,
+            return response
+        except HTTPException as exc:
+            _append_event_store_operation_record(
+                deps=deps,
                 actor=actor,
-                params=params,
-                high_water_mark=high_water_mark,
-                preview_now=preview_now,
-            ),
-        )
-        return report.model_copy(update={"preview_token": preview_token})
+                operation=operation,
+                status="rejected",
+                summary={
+                    "dry_run": body.dry_run,
+                    "params": params,
+                    **_operation_error_summary(exc),
+                },
+            )
+            raise
+        except Exception as exc:
+            _append_event_store_operation_record(
+                deps=deps,
+                actor=actor,
+                operation=operation,
+                status="failed",
+                summary={
+                    "dry_run": body.dry_run,
+                    "params": params,
+                    **_operation_error_summary(exc),
+                },
+            )
+            raise
 
     @app.get("/api/v1/admin/conversations/{conversation_id}/memory/replay")
     def replay_memory(

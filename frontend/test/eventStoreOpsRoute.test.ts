@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { POST as backupPost } from "../app/api/console/event-store/backups/route";
+import { GET as operationsGet } from "../app/api/console/event-store/operations/route";
 import { POST as restoreDrillPost } from "../app/api/console/event-store/restore-drills/route";
 import { POST as retentionPost } from "../app/api/console/event-store/retention/route";
 
@@ -12,6 +13,55 @@ afterEach(() => {
 });
 
 describe("event-store operations BFF routes", () => {
+  it("lists operation ledger rows with sanitized query filters", async () => {
+    process.env.AGENT_API_BASE_URL = "http://agent.internal";
+    process.env.FRONTEND_AUTH_MODE = "demo";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse([
+        {
+          id: "evt_op_1",
+          tenant_id: "demo_tenant",
+          actor_user_id: "operator",
+          operation: "backup",
+          status: "completed",
+          summary: { schema_version: "event_store_operation_summary.v1" },
+          created_at: "2026-07-05T00:00:00Z"
+        }
+      ])
+    );
+
+    const response = await operationsGet(
+      getRequest(
+        "/api/console/event-store/operations?operation=backup&status=completed&limit=9999&order=sideways&created_after=2026-07-05"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      records: [
+        {
+          id: "evt_op_1",
+          tenant_id: "demo_tenant",
+          actor_user_id: "operator",
+          operation: "backup",
+          status: "completed",
+          summary: { schema_version: "event_store_operation_summary.v1" },
+          created_at: "2026-07-05T00:00:00Z"
+        }
+      ],
+      limit: 500,
+      order: "desc"
+    });
+    const [target] = fetchMock.mock.calls[0];
+    const url = new URL(String(target));
+    expect(url.pathname).toBe("/api/v1/admin/event-store/operations");
+    expect(url.searchParams.get("operation")).toBe("backup");
+    expect(url.searchParams.get("status")).toBe("completed");
+    expect(url.searchParams.get("limit")).toBe("500");
+    expect(url.searchParams.get("order")).toBe("desc");
+    expect(url.searchParams.get("created_after")).toBe("2026-07-05");
+  });
+
   it("creates verified backups without forwarding arbitrary paths", async () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "demo";
@@ -220,6 +270,10 @@ function jsonRequest(path: string, body: unknown) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   }) as unknown as NextRequest;
+}
+
+function getRequest(path: string) {
+  return { nextUrl: new URL(`http://console.local${path}`) } as unknown as NextRequest;
 }
 
 function jsonResponse(body: unknown, status = 200) {

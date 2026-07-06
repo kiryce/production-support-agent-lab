@@ -57,7 +57,8 @@
 - SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA 和 alert delivery 计算服务目标与错误预算
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
 - operations automation plan：聚合 monitor、alert delivery、promotion gate、tool audit、feedback、eval 证据，返回可执行 endpoint、scope、guardrail 和是否可自动执行，适合接 cron、值班机器人或发布前检查
-- audit export：把脱敏后的 event/tool audit 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
+- audit export：把脱敏后的 event/tool audit/event-store operation 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
+- event-store operation ledger：备份、恢复演练、保留策略预览/应用，以及通过鉴权后的拒绝/失败尝试都会写入独立台账；它不参与 retention high-water mark，所以不会让自己的 guard token 过期
 - 从真实 monitor event 或 response feedback 生成 regression eval draft
 
 本地运行后打开：
@@ -425,6 +426,8 @@ python scripts/event_store_ops.py --database-url sqlite:///./data/production/sup
 
 `restore-drill` 会把备份复制到临时 SQLite 文件，执行 `quick_check`、schema 校验、健康写探针回滚、表计数和 tenant high-water mark 查询；默认不保留临时库，除非传 `--restore-output`。API 版本是 `POST /api/v1/admin/event-store/restore-drills`，需要 `admin:write`、`audit:read` 和 `events:read`，并且只接受备份接口返回的 `backup_token`，不会让调用方传任意文件路径。Console 的 Settings 页面也提供同一条链路：Create backup -> Run drill -> Preview retention -> Apply retention。`retention` 默认 dry-run，事件日志默认不会删除；只有显式加 `--include-events` 才会清理旧 message/run/monitor/eval 事件。API 版本是 `POST /api/v1/admin/event-store/retention`，需要同样的管理 scope。真正 apply 必须带服务端签发的 verified backup token、restore drill token、matching dry-run preview token 和显式确认；如果预演后 event store 有新写入或状态变化，后端会返回 `409 Conflict`，要求重新备份、恢复演练和预演。
 
+`GET /api/v1/admin/event-store/operations` 是独立的运维台账接口，需要 `admin:read`、`audit:read` 和 `events:read`。它记录已鉴权操作者、operation、status、时间和安全摘要：备份只暴露文件名与路径哈希，恢复演练只暴露 token 哈希、表计数和 high-water 摘要，retention 只暴露参数、候选/删除计数和表级动作；原始 token 与完整文件路径不会进入台账。台账表会被备份和恢复演练校验，但不会纳入 retention high-water mark，避免“写审计记录”让备份/预演 token 自己失效。
+
 ## Docker
 
 ```bash
@@ -503,7 +506,7 @@ Eval 不只看最终回答，还检查：
 
 `/api/v1/admin/promotion/decisions` 会重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
 
-`/api/v1/admin/audit/export` 会导出 `application/x-ndjson`，每行是 `audit_export.v1` 摘要记录。它只包含事件类型、状态、错误码、工具名、评分、发布决策、failure/policy code 和哈希化 correlation id，不包含用户原文、反馈 comment、eval answer、工具参数或知识库正文。控制台 Settings 可以直接下载这份 NDJSON。
+`/api/v1/admin/audit/export` 会导出 `application/x-ndjson`，每行是 `audit_export.v1` 摘要记录。它只包含事件类型、状态、错误码、工具名、评分、发布决策、event-store operation、failure/policy code 和哈希化 correlation id，不包含用户原文、反馈 comment、eval answer、工具参数、原始运维 token 或知识库正文。控制台 Settings 可以直接下载这份 NDJSON。
 
 `/api/v1/admin/incidents/runs/{run_id}/brief` 会基于同一个 incident bundle 生成 `incident_brief.v1`。它保留 run id、conversation id、intent、route、monitor failure、tool error code、citation 数量、tool audit 计数和 memory replay 计数，但不会输出用户消息原文、工具参数、工具 payload、工具错误明文、检索正文、memory facts 或反馈 comment。控制台 Brief 面板会优先使用这份后端 Markdown，并支持复制或下载 `.md`。
 

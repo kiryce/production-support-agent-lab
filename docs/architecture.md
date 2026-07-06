@@ -50,7 +50,9 @@ Do not expose `X-Demo-*` in production.
 
 `ConversationMemory` is short-term working state: recent messages, extracted facts, open questions, and a compact summary for the next turn.
 
-`SQLiteEventStore` is the local/production persistence boundary for the modular monolith: user messages, assistant messages, completed agent runs, response feedback, feedback review events, monitor reviews, monitor triage events, tool idempotency records, and tool audit records are persisted for audit, replay, offline eval, and analytics.
+`SQLiteEventStore` is the local/production persistence boundary for the modular monolith: user messages, assistant messages, completed agent runs, response feedback, feedback review events, monitor reviews, monitor triage events, tool idempotency records, tool audit records, alert-delivery rows, and event-store operation ledger rows are persisted for audit, replay, offline eval, and analytics.
+
+`event_store_operations` is separate from the append-only `events` stream. It records backup, restore-drill, retention-preview, and retention-apply operations with actor, status, timestamp, and safe summaries. The table is included in backup/restore verification, but excluded from retention high-water marks so audit writes do not invalidate the guarded backup/preview tokens they document.
 
 `/api/v1/admin/tools/audit` exposes those tool audit records through the same admin boundary as monitor and event-log APIs. It is intentionally hash-only for tool arguments and idempotency keys, so incident responders can correlate trace/request/tool failures without leaking raw parameters or PII. `/api/v1/admin/tools/audit/summary` uses the same filters and scope to return SLA/failure aggregates by tool and error code without returning arguments, tool payloads, or hashes.
 

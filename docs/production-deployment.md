@@ -184,6 +184,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/event-store/backups` | `admin:write`, `audit:read`, `events:read`; backend chooses the configured backup directory. |
 | `POST /api/v1/admin/event-store/restore-drills` | `admin:write`, `audit:read`, `events:read`; requires a server-issued `backup_token`, then copies the backup to a scratch database and verifies it without overwriting live data. |
 | `POST /api/v1/admin/event-store/retention` | `admin:write`, `audit:read`, `events:read`; dry-run by default. |
+| `GET /api/v1/admin/event-store/operations` | `admin:read`, `audit:read`, `events:read`; returns the durable event-store operation ledger without granting write access. |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read`; add `feedback:read` when `feedback_id` is supplied |
 | `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
 | `POST /api/v1/admin/evals/staging` | `eval:run`; local/staging only. Runs bundled golden/security/tool/memory/routing/monitor/retrieval suites and appends suite + aggregate gate records. Disabled when `APP_ENV=production`. |
@@ -277,12 +278,14 @@ event, then returns the stored record. Approval is rejected when the gate is
 deploy code, shift traffic, or call an external CD system.
 
 `GET /api/v1/admin/audit/export` exports NDJSON records with
-`schema_version=audit_export.v1`. It combines append-only event rows and durable
-tool-audit rows, keeps tenant and record metadata, hashes user/conversation/run
-correlation ids, and summarizes only safe machine fields such as event type,
-status, rating, decision, tool name, latency, error code, failure type, and
-policy code. It deliberately omits user text, feedback comments, tool
-arguments, knowledge snippets, and eval answer text.
+`schema_version=audit_export.v1`. It combines append-only event rows, durable
+tool-audit rows, and event-store operation ledger rows. It keeps tenant and
+record metadata, hashes user/conversation/run correlation ids, and summarizes
+only safe machine fields such as event type, status, rating, decision,
+operation name, tool name, latency, error code, failure type, and policy code.
+It deliberately omits user text, feedback comments, tool arguments, raw
+operation tokens, full filesystem paths, knowledge snippets, and eval answer
+text.
 
 ## Event Store Operations
 
@@ -364,6 +367,20 @@ restore drill was run against the same backup token, the backup file still
 exists under `APP_EVENT_STORE_BACKUP_DIR`, the retention parameters are
 unchanged, and the event-store high-water mark still matches the preview. Any
 mismatch returns `409 Conflict` without deleting rows.
+
+Every authenticated event-store operation writes a separate
+`event_store_operations` ledger row. Completed backups, restore drills,
+retention previews, and retention applies are recorded, as are guard rejections
+and execution failures after the caller has passed admin auth and scope checks.
+The row stores actor id, operation, status, timestamp, and a safe summary:
+backup file name plus path hash, restore-drill table counts and token hash,
+retention parameters and table-level candidate/deleted counts, or a short error
+detail. It never stores raw backup/restore/preview tokens or full filesystem
+paths. The table is included in backup and restore-drill schema verification,
+but it is intentionally excluded from `retention_high_water_mark`; otherwise
+the act of writing audit rows would invalidate the backup/preview guard tokens.
+Operators can review it through `GET /api/v1/admin/event-store/operations`, the
+Settings operation ledger, or the audit NDJSON export.
 
 Monitor summary, events, and drilldown endpoints support `source=event_store`,
 `created_after`, `created_before`, and `order=desc|asc` for durable production

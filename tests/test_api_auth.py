@@ -2411,6 +2411,19 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
             created_at=created_at,
         )
     )
+    event_store.append_event_store_operation(
+        tenant_id="demo_tenant",
+        actor_user_id="operator_sensitive_operation",
+        operation="backup",
+        status="completed",
+        summary={
+            "schema_version": "event_store_operation_summary.v1",
+            "backup_file": "support-agent-lab-demo.db",
+            "backup_path_hash": "hash_only",
+            "verified": True,
+        },
+        created_at=created_at,
+    )
     feedback = AgentFeedback(
         tenant_id="demo_tenant",
         conversation_id="conv_sensitive_export",
@@ -2447,21 +2460,23 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
-    assert response.headers["x-audit-export-records"] == "4"
+    assert response.headers["x-audit-export-records"] == "5"
     assert "4111" not in response.text
     assert "A1001" not in response.text
     assert "PRIVATE feedback comment should not leak" not in response.text
     assert "PRIVATE review note should not leak" not in response.text
     assert "user_sensitive_export" not in response.text
     assert "operator_sensitive_export" not in response.text
+    assert "operator_sensitive_operation" not in response.text
     assert "operator_sensitive_review" not in response.text
     assert "assignee_sensitive_review" not in response.text
     rows = [json.loads(line) for line in response.text.splitlines()]
-    assert {row["record_type"] for row in rows} == {"event", "tool_audit"}
+    assert {row["record_type"] for row in rows} == {"event", "tool_audit", "event_store_operation"}
     event_row = next(row for row in rows if row.get("event_type") == "message.user")
     feedback_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback")
     review_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback.reviewed")
     tool_row = next(row for row in rows if row["record_type"] == "tool_audit")
+    operation_row = next(row for row in rows if row["record_type"] == "event_store_operation")
     assert event_row["event_type"] == "message.user"
     assert "content" not in event_row["payload_summary"]
     assert event_row["correlation"]["user_hash"]
@@ -2475,6 +2490,10 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
     assert tool_row["tool_name"] == "order.get"
     assert tool_row["argument_hash"] == "argument_hash_only"
     assert tool_row["correlation"]["user_hash"]
+    assert operation_row["operation"] == "backup"
+    assert operation_row["status"] == "completed"
+    assert operation_row["operation_summary"]["backup_path_hash"] == "hash_only"
+    assert operation_row["correlation"]["user_hash"]
 
 
 def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monkeypatch):
@@ -2509,6 +2528,55 @@ def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monk
     assert missing_events.status_code == 403
     assert missing_events.json()["detail"] == "Missing required scope: events:read"
     assert allowed.status_code == 200
+
+
+def test_production_event_store_operations_requires_read_audit_and_events_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    assert app_container.event_store is not None
+    app_container.event_store.append_event_store_operation(
+        tenant_id="demo_tenant",
+        actor_user_id="operator",
+        operation="backup",
+        status="completed",
+        summary={"schema_version": "event_store_operation_summary.v1"},
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_admin_read = client.get(
+            "/api/v1/admin/event-store/operations",
+            headers=_production_headers(scopes="audit:read,events:read"),
+        )
+        missing_audit = client.get(
+            "/api/v1/admin/event-store/operations",
+            headers=_production_headers(scopes="admin:read,events:read"),
+        )
+        missing_events = client.get(
+            "/api/v1/admin/event-store/operations",
+            headers=_production_headers(scopes="admin:read,audit:read"),
+        )
+        allowed = client.get(
+            "/api/v1/admin/event-store/operations",
+            headers=_production_headers(scopes="admin:read,audit:read,events:read"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_admin_read.status_code == 403
+    assert missing_admin_read.json()["detail"] == "Missing required scope: admin:read"
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert missing_events.status_code == 403
+    assert missing_events.json()["detail"] == "Missing required scope: events:read"
+    assert allowed.status_code == 200
+    assert allowed.json()[0]["operation"] == "backup"
 
 
 def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch):
@@ -2637,6 +2705,22 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
                 "apply_confirmed": True,
             },
         )
+        operations = client.get(
+            "/api/v1/admin/event-store/operations",
+            headers={"X-Demo-Role": "admin"},
+            params={"order": "asc", "limit": 10},
+        )
+        operation_export = client.get(
+            "/api/v1/admin/audit/export",
+            headers={"X-Demo-Role": "admin"},
+            params={
+                "include_events": False,
+                "include_tool_audit": False,
+                "include_event_store_operations": True,
+                "order": "asc",
+                "limit": 10,
+            },
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -2669,6 +2753,34 @@ def test_admin_can_preview_and_apply_event_store_retention(tmp_path, monkeypatch
     assert applied_body["total_deleted"] == 2
     assert event_store.list_events(tenant_id="demo_tenant", conversation_id="conv_retention_api") == []
     assert event_store.list_tool_audit_records(trace_id="trace_retention_api") == []
+    assert operations.status_code == 200
+    operation_rows = operations.json()
+    rejected_rows = [row for row in operation_rows if row["status"] == "rejected"]
+    completed_rows = [row for row in operation_rows if row["status"] == "completed"]
+    assert [row["operation"] for row in completed_rows] == [
+        "backup",
+        "restore_drill",
+        "retention_preview",
+        "retention_apply",
+    ]
+    assert [row["operation"] for row in rejected_rows] == [
+        "retention_apply",
+        "retention_apply",
+        "retention_apply",
+    ]
+    assert completed_rows[0]["summary"]["backup_file"].startswith("support-agent-lab-demo_tenant-")
+    assert completed_rows[1]["summary"]["health_check_passed"] is True
+    assert completed_rows[2]["summary"]["total_candidates"] == 2
+    assert completed_rows[3]["summary"]["total_deleted"] == 2
+    assert any("restore drill" in row["summary"]["detail"].lower() for row in rejected_rows)
+    assert any("parameters changed" in row["summary"]["detail"] for row in rejected_rows)
+    operation_rows_json = json.dumps(operation_rows)
+    assert backup.json()["backup_token"] not in operation_rows_json
+    assert restore_drill.json()["restore_drill_token"] not in operation_rows_json
+    assert "psaevt." not in operation_rows_json
+    assert operation_export.status_code == 200
+    exported_operations = [json.loads(line) for line in operation_export.text.splitlines()]
+    assert {row["record_type"] for row in exported_operations} == {"event_store_operation"}
 
 
 def test_event_store_retention_apply_rejects_changed_store_after_preview(tmp_path, monkeypatch):

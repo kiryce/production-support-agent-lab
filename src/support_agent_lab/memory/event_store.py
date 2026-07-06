@@ -168,6 +168,16 @@ class EventStoreRetentionReport(BaseModel):
     preview_token: str | None = None
 
 
+class EventStoreOperationRecord(BaseModel):
+    id: str
+    tenant_id: str
+    actor_user_id: str
+    operation: str
+    status: str
+    summary: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+
+
 EVAL_GATE_EVENT_TYPE = "eval.gate.completed"
 ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
@@ -182,6 +192,7 @@ SQLITE_REQUIRED_TABLES = (
     "tool_audit_records",
     "api_request_nonces",
     "alert_delivery_outbox",
+    "event_store_operations",
 )
 SQLITE_EVENTS_REQUIRED_COLUMNS = {
     "id",
@@ -191,6 +202,15 @@ SQLITE_EVENTS_REQUIRED_COLUMNS = {
     "run_id",
     "event_type",
     "payload_json",
+    "created_at",
+}
+SQLITE_EVENT_STORE_OPERATIONS_REQUIRED_COLUMNS = {
+    "id",
+    "tenant_id",
+    "actor_user_id",
+    "operation",
+    "status",
+    "summary_json",
     "created_at",
 }
 
@@ -1272,23 +1292,24 @@ class SQLiteEventStore:
             try:
                 quick_check = conn.execute("pragma quick_check").fetchone()
                 page_count = int(conn.execute("pragma page_count").fetchone()[0])
+                placeholders = ", ".join("?" for _ in SQLITE_REQUIRED_TABLES)
                 table_rows = conn.execute(
-                    """
+                    f"""
                     select name
                     from sqlite_master
                     where type = 'table'
-                      and name in (
-                        'events',
-                        'tool_idempotency',
-                        'tool_audit_records',
-                        'api_request_nonces',
-                        'alert_delivery_outbox'
-                      )
-                    """
+                      and name in ({placeholders})
+                    """,
+                    SQLITE_REQUIRED_TABLES,
                 ).fetchall()
             finally:
                 conn.close()
-            verified = bool(quick_check and quick_check[0] == "ok" and len(table_rows) == 5)
+            present_tables = {row[0] for row in table_rows}
+            verified = bool(
+                quick_check
+                and quick_check[0] == "ok"
+                and set(SQLITE_REQUIRED_TABLES).issubset(present_tables)
+            )
             verification_detail = "quick_check=ok; required tables present" if verified else "backup verification failed"
             if not verified:
                 raise RuntimeError(verification_detail)
@@ -1528,6 +1549,100 @@ class SQLiteEventStore:
             total_candidates=sum(report.candidate_count for report in reports),
             total_deleted=total_deleted,
         )
+
+    def append_event_store_operation(
+        self,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        operation: str,
+        status: str,
+        summary: dict[str, Any],
+        created_at: str | None = None,
+    ) -> EventStoreOperationRecord:
+        record = EventStoreOperationRecord(
+            id=new_id("evt_op"),
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            operation=operation,
+            status=status,
+            summary=summary,
+            created_at=created_at or utc_now().isoformat(),
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into event_store_operations (
+                  id, tenant_id, actor_user_id, operation, status, summary_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.tenant_id,
+                    record.actor_user_id,
+                    record.operation,
+                    record.status,
+                    json.dumps(record.summary, ensure_ascii=False, sort_keys=True),
+                    record.created_at,
+                ),
+            )
+        return record
+
+    def list_event_store_operations(
+        self,
+        *,
+        tenant_id: str | None = None,
+        actor_user_id: str | None = None,
+        operation: str | None = None,
+        status: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 50,
+        order: str = "desc",
+    ) -> list[EventStoreOperationRecord]:
+        sql = """
+            select id, tenant_id, actor_user_id, operation, status, summary_json, created_at
+            from event_store_operations
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if actor_user_id:
+            clauses.append("actor_user_id = ?")
+            params.append(actor_user_id)
+        if operation:
+            clauses.append("operation = ?")
+            params.append(operation)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        direction = "asc" if order == "asc" else "desc"
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [
+            EventStoreOperationRecord(
+                id=row["id"],
+                tenant_id=row["tenant_id"],
+                actor_user_id=row["actor_user_id"],
+                operation=row["operation"],
+                status=row["status"],
+                summary=json.loads(row["summary_json"] or "{}"),
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
     def append_tool_audit(self, record: ToolAuditRecord) -> None:
         with self._connect() as conn:
@@ -2185,6 +2300,20 @@ class SQLiteEventStore:
             ).fetchone()
             if not alert_delivery_outbox:
                 raise RuntimeError("alert_delivery_outbox table is missing")
+            event_store_operations = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'event_store_operations'"
+            ).fetchone()
+            if not event_store_operations:
+                raise RuntimeError("event_store_operations table is missing")
+            operation_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(event_store_operations)").fetchall()
+            }
+            operation_missing = sorted(SQLITE_EVENT_STORE_OPERATIONS_REQUIRED_COLUMNS - operation_columns)
+            if operation_missing:
+                raise RuntimeError(
+                    f"event_store_operations table missing columns: {', '.join(operation_missing)}"
+                )
             conn.execute("begin immediate")
             conn.execute(
                 """
@@ -2235,6 +2364,15 @@ class SQLiteEventStore:
             missing_columns = sorted(SQLITE_EVENTS_REQUIRED_COLUMNS - event_columns)
             if missing_columns:
                 raise RuntimeError(f"events table missing columns: {', '.join(missing_columns)}")
+            operation_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(event_store_operations)").fetchall()
+            }
+            operation_missing = sorted(SQLITE_EVENT_STORE_OPERATIONS_REQUIRED_COLUMNS - operation_columns)
+            if operation_missing:
+                raise RuntimeError(
+                    f"event_store_operations table missing columns: {', '.join(operation_missing)}"
+                )
             table_counts = {
                 table_name: int(conn.execute(f"select count(*) from {table_name}").fetchone()[0])
                 for table_name in SQLITE_REQUIRED_TABLES
@@ -2458,6 +2596,41 @@ class SQLiteEventStore:
             )
             conn.execute(
                 "create index if not exists idx_tool_audit_tenant_error_created on tool_audit_records(tenant_id, error_code, created_at)"
+            )
+            conn.execute(
+                """
+                create table if not exists event_store_operations (
+                  id text primary key,
+                  tenant_id text not null,
+                  actor_user_id text not null,
+                  operation text not null,
+                  status text not null,
+                  summary_json text not null,
+                  created_at text not null
+                )
+                """
+            )
+            operation_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(event_store_operations)").fetchall()
+            }
+            for column_name, column_type in {
+                "actor_user_id": "text not null default ''",
+                "operation": "text not null default ''",
+                "status": "text not null default 'completed'",
+                "summary_json": "text not null default '{}'",
+                "created_at": "text not null default ''",
+            }.items():
+                if column_name not in operation_columns:
+                    conn.execute(f"alter table event_store_operations add column {column_name} {column_type}")
+            conn.execute(
+                "create index if not exists idx_event_store_operations_tenant_created on event_store_operations(tenant_id, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_event_store_operations_tenant_operation_created on event_store_operations(tenant_id, operation, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_event_store_operations_tenant_status_created on event_store_operations(tenant_id, status, created_at)"
             )
             conn.execute(
                 """

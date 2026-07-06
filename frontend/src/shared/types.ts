@@ -764,6 +764,16 @@ export type EventStoreRetentionReport = {
   preview_token: string | null;
 };
 
+export type EventStoreOperationRecord = {
+  id: string;
+  tenant_id: string;
+  actor_user_id: string;
+  operation: string;
+  status: "completed" | "rejected" | "failed" | string;
+  summary: JsonRecord;
+  created_at: string;
+};
+
 export type StoredEvent = {
   id: string;
   tenant_id: string;

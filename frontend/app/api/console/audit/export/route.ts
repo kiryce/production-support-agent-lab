@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
     created_before: clean(searchParams.get("created_before"), 80),
     include_events: searchParams.get("include_events") !== "false",
     include_tool_audit: searchParams.get("include_tool_audit") !== "false",
+    include_event_store_operations: searchParams.get("include_event_store_operations") !== "false",
     limit: clampNumber(searchParams.get("limit"), 1, 5000, 1000),
     order: searchParams.get("order") === "desc" ? "desc" : "asc"
   };

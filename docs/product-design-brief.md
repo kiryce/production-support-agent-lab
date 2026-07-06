@@ -46,6 +46,7 @@ The console should help an on-call operator or Agent beginner answer:
 | SLO report | `GET /api/v1/admin/operations/slo-report` | Service-objective status, observed aggregates, and error-budget remaining for on-call review. |
 | Operations automation | `GET /api/v1/admin/operations/automation-plan` | Prioritized next-action plan with runnable commands, scopes, guardrails, and auto-execution safety labels. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
+| Event-store operation ledger | `GET /api/v1/admin/event-store/operations` | Settings-visible backup, restore-drill, retention-preview/apply, and guard-rejection audit trail with safe summaries. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |
 | Feedback review queue | `GET /api/v1/admin/feedback/review-queue` | Compact backlog projection for unresolved, unassigned, stale, and reviewed response feedback. |
 | Feedback reviews | `GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` | Append-only operator review trail for response feedback. |

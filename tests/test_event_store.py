@@ -717,6 +717,52 @@ def test_event_store_creates_verified_online_backup(tmp_path):
         event_store.backup_to(tmp_path / "events.db", overwrite=True)
 
 
+def test_event_store_operation_ledger_is_queryable_and_does_not_change_retention_guard(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    before = event_store.retention_high_water_mark(tenant_id="demo_tenant")
+
+    record = event_store.append_event_store_operation(
+        tenant_id="demo_tenant",
+        actor_user_id="operator",
+        operation="backup",
+        status="completed",
+        summary={
+            "schema_version": "event_store_operation_summary.v1",
+            "backup_file": "support-agent-lab-demo.db",
+            "backup_path_hash": "path_hash_only",
+            "verified": True,
+        },
+    )
+    event_store.append_event_store_operation(
+        tenant_id="other_tenant",
+        actor_user_id="operator",
+        operation="backup",
+        status="completed",
+        summary={"schema_version": "event_store_operation_summary.v1"},
+    )
+    after = event_store.retention_high_water_mark(tenant_id="demo_tenant")
+    backup_path = tmp_path / "backups" / "events.backup.db"
+    event_store.backup_to(backup_path)
+    drill = event_store.restore_drill(backup_path, tenant_id="demo_tenant")
+    restored_store = SQLiteEventStore(backup_path)
+
+    records = event_store.list_event_store_operations(tenant_id="demo_tenant")
+    filtered = event_store.list_event_store_operations(
+        tenant_id="demo_tenant",
+        operation="backup",
+        status="completed",
+    )
+    missing = event_store.list_event_store_operations(tenant_id="demo_tenant", operation="retention_apply")
+
+    assert after == before
+    assert [item.id for item in records] == [record.id]
+    assert [item.id for item in filtered] == [record.id]
+    assert missing == []
+    assert records[0].summary["backup_file"] == "support-agent-lab-demo.db"
+    assert drill.table_counts["event_store_operations"] == 2
+    assert restored_store.list_event_store_operations(tenant_id="demo_tenant")[0].id == record.id
+
+
 def test_event_store_restore_drill_proves_backup_can_be_restored(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     event = event_store.append(
@@ -737,6 +783,7 @@ def test_event_store_restore_drill_proves_backup_can_be_restored(tmp_path):
     assert not (Path(report.restore_path)).exists()
     assert report.table_counts["events"] >= 1
     assert report.table_counts["tool_audit_records"] == 0
+    assert report.table_counts["event_store_operations"] == 0
     assert report.high_water_mark["events"]["row_count"] >= 1
     assert "restore health_check passed" in report.verification_detail
 

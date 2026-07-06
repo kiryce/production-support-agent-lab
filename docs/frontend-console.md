@@ -94,28 +94,31 @@ real local FastAPI endpoints:
    previews or applies the conservative retention policy. Apply calls include
    backend-issued backup, restore-drill, and preview tokens plus explicit
    confirmation; the BFF refuses tokenless apply requests before proxying.
-17. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
+17. `GET /api/v1/admin/event-store/operations` when `Settings` loads the
+   durable event-store operation ledger for backup, restore-drill, retention
+   preview, retention apply, and authenticated guard rejections.
+18. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
    the `Memory` workbench rebuilds a conversation from append-only events.
-18. `GET /api/v1/admin/feedback` and
+19. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
-19. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
+20. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
    shows unresolved, unassigned, stale, and reviewed backlog metrics.
-20. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
+21. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
    `POST /api/v1/admin/feedback/{feedback_id}/reviews` when the `Feedback`
    workbench loads or records the append-only operator review trail. Review
    writes send the current review-state fingerprint so stale tabs cannot
    append obsolete feedback decisions.
-21. `GET /api/v1/admin/promotion/decisions` and
+22. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-22. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+23. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
-23. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+24. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-24. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+25. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -240,7 +243,11 @@ machine.
   tokens, and operator confirmation. The backend also requires the restore
   drill token for direct API apply calls and rejects stale previews with
   `409 Conflict`; the browser never sends
-  filesystem paths to the backend.
+  filesystem paths to the backend. The same screen shows the durable
+  event-store operation ledger with operation/status filters and a refresh
+  control. Ledger rows are fetched from `GET /api/v1/admin/event-store/operations`
+  and contain safe summaries only: file names, path hashes, token hashes,
+  candidate/deleted counts, and short rejection/error details.
 - Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
   to display grounded rate, policy compliance, human-review pressure, active
   P0/P1 alerts, tool failure rate, negative feedback, eval freshness, MTTA, and
@@ -306,8 +313,9 @@ machine.
   `release.promotion.decision`, and rejects non-override approval while the gate
   is blocked.
 - Audit export via `GET /api/v1/admin/audit/export`. The BFF streams NDJSON
-  summary rows from events and tool audit records; raw messages, comments,
-  tool arguments, and eval answers are not included.
+  summary rows from events, tool audit records, and event-store operation
+  ledger rows; raw messages, comments, tool arguments, operation tokens, full
+  filesystem paths, and eval answers are not included.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,
@@ -358,5 +366,6 @@ memory, safety, monitoring, and incident response.
    snapshot; manual actions still require the normal operator workflow.
 17. Use `Settings` before manual cleanup: create a verified backup, run restore
    drill, preview retention, then apply only after reviewing the table-level
-   candidate counts.
+   candidate counts. After each step, refresh the `Operation Ledger` and confirm
+   the completed/rejected rows match the action you intended to take.
 18. Resolve only after the triage note explains customer impact and mitigation.

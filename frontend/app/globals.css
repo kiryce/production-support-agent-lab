@@ -1048,6 +1048,31 @@ textarea:disabled {
   min-width: 0;
 }
 
+.settings-workbench .settings-action-row,
+.settings-workbench .settings-command-row,
+.settings-workbench .promotion-override-grid {
+  grid-template-columns: 1fr;
+}
+
+.settings-workbench .settings-action-row .primary-button,
+.settings-workbench .settings-action-row .secondary-button,
+.settings-workbench .settings-command-row .primary-button,
+.settings-workbench .settings-command-row .secondary-button,
+.settings-workbench .promotion-override-grid .primary-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-workbench .slo-report-stats,
+.settings-workbench .automation-plan-stats {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-workbench .metric strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .settings-section,
 .event-op-result {
   display: grid;
@@ -1528,12 +1553,96 @@ textarea:disabled {
   justify-items: end;
 }
 
+.operations-ledger-section {
+  border-left: 4px solid #94a3b8;
+}
+
+.operations-ledger-controls {
+  align-items: end;
+  grid-template-columns: 1fr;
+}
+
+.operations-ledger-filter-grid {
+  grid-template-columns: 1fr;
+}
+
+.operations-ledger-controls .secondary-button {
+  width: 100%;
+  min-width: 0;
+}
+
+.operations-ledger-list {
+  display: grid;
+  gap: 8px;
+}
+
+.operations-ledger-row {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: #f8faf9;
+  padding: 8px;
+  min-width: 0;
+}
+
+.operations-ledger-row.state-success {
+  border-left-color: var(--green-700);
+}
+
+.operations-ledger-row.state-warn {
+  border-left-color: var(--orange);
+}
+
+.operations-ledger-row.state-danger {
+  border-left-color: var(--red);
+}
+
+.operations-ledger-copy,
+.operations-ledger-title {
+  min-width: 0;
+}
+
+.operations-ledger-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.operations-ledger-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.operations-ledger-title strong,
+.operations-ledger-copy span,
+.operations-ledger-copy time {
+  overflow-wrap: anywhere;
+}
+
+.operations-ledger-title strong {
+  color: #17231e;
+  font-size: 12px;
+}
+
+.operations-ledger-copy span,
+.operations-ledger-copy time {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.operations-ledger-evidence {
+  align-items: start;
+}
+
 .audit-export-section {
   border-left: 4px solid var(--green-700);
 }
 
 .audit-export-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .retention-table-list {
@@ -3286,6 +3395,8 @@ textarea {
   .settings-action-row,
   .settings-command-row,
   .settings-check-grid,
+  .audit-export-grid,
+  .operations-ledger-filter-grid,
   .promotion-override-grid,
   .promotion-decision-row,
   .slo-objective-row,
