@@ -321,6 +321,8 @@ export default function Home() {
   const [auditExportIncludeToolAudit, setAuditExportIncludeToolAudit] = useState(true);
   const [auditExportIncludeEventStoreOperations, setAuditExportIncludeEventStoreOperations] =
     useState(true);
+  const [auditExportIncludeAutomationExecutions, setAuditExportIncludeAutomationExecutions] =
+    useState(true);
   const [auditExportStatus, setAuditExportStatus] = useState<string | null>(null);
   const [severityFilter, setSeverityFilter] = useState(DEFAULT_CONSOLE_URL_STATE.severity);
   const [statusFilter, setStatusFilter] = useState<AlertStatusFilter>(DEFAULT_CONSOLE_URL_STATE.status);
@@ -1487,7 +1489,8 @@ export default function Home() {
         order: "asc",
         include_events: String(auditExportIncludeEvents),
         include_tool_audit: String(auditExportIncludeToolAudit),
-        include_event_store_operations: String(auditExportIncludeEventStoreOperations)
+        include_event_store_operations: String(auditExportIncludeEventStoreOperations),
+        include_operations_automation_executions: String(auditExportIncludeAutomationExecutions)
       });
       const response = await fetch(`/api/console/audit/export?${params.toString()}`, {
         cache: "no-store"
@@ -1542,7 +1545,11 @@ export default function Home() {
         throw new Error(data.detail ?? "Automation action failed");
       }
       const execution = data as OperationsAutomationExecutionResult;
-      setAutomationActionStatus(execution.result_summary);
+      setAutomationActionStatus(
+        execution.audit_recorded && execution.audit_record
+          ? `${execution.result_summary} Audit ${execution.audit_record.id}.`
+          : `${execution.result_summary} Audit record failed: ${execution.audit_error ?? "not recorded"}.`
+      );
       if (action.kind === "dispatch_alert_deliveries") {
         setAlertDeliveryDispatchReport(execution.result as unknown as AlertDispatchReport);
         await loadAlertDeliveries(deliveryStatusFilter);
@@ -2339,6 +2346,7 @@ export default function Home() {
               auditExportIncludeEvents={auditExportIncludeEvents}
               auditExportIncludeToolAudit={auditExportIncludeToolAudit}
               auditExportIncludeEventStoreOperations={auditExportIncludeEventStoreOperations}
+              auditExportIncludeAutomationExecutions={auditExportIncludeAutomationExecutions}
               auditExportStatus={auditExportStatus}
               eventRetentionDays={eventRetentionDays}
               toolAuditRetentionDays={toolAuditRetentionDays}
@@ -2362,6 +2370,7 @@ export default function Home() {
               onAuditExportIncludeEvents={setAuditExportIncludeEvents}
               onAuditExportIncludeToolAudit={setAuditExportIncludeToolAudit}
               onAuditExportIncludeEventStoreOperations={setAuditExportIncludeEventStoreOperations}
+              onAuditExportIncludeAutomationExecutions={setAuditExportIncludeAutomationExecutions}
               onEventStoreOperationFilter={setEventStoreOperationFilter}
               onEventStoreOperationStatusFilter={setEventStoreOperationStatusFilter}
               onIncludeEvents={setRetentionIncludeEvents}
@@ -3664,6 +3673,7 @@ function SettingsWorkbenchPanel({
   auditExportIncludeEvents,
   auditExportIncludeToolAudit,
   auditExportIncludeEventStoreOperations,
+  auditExportIncludeAutomationExecutions,
   auditExportStatus,
   eventRetentionDays,
   toolAuditRetentionDays,
@@ -3687,6 +3697,7 @@ function SettingsWorkbenchPanel({
   onAuditExportIncludeEvents,
   onAuditExportIncludeToolAudit,
   onAuditExportIncludeEventStoreOperations,
+  onAuditExportIncludeAutomationExecutions,
   onEventStoreOperationFilter,
   onEventStoreOperationStatusFilter,
   onIncludeEvents,
@@ -3727,6 +3738,7 @@ function SettingsWorkbenchPanel({
   auditExportIncludeEvents: boolean;
   auditExportIncludeToolAudit: boolean;
   auditExportIncludeEventStoreOperations: boolean;
+  auditExportIncludeAutomationExecutions: boolean;
   auditExportStatus: string | null;
   eventRetentionDays: string;
   toolAuditRetentionDays: string;
@@ -3750,6 +3762,7 @@ function SettingsWorkbenchPanel({
   onAuditExportIncludeEvents: (value: boolean) => void;
   onAuditExportIncludeToolAudit: (value: boolean) => void;
   onAuditExportIncludeEventStoreOperations: (value: boolean) => void;
+  onAuditExportIncludeAutomationExecutions: (value: boolean) => void;
   onEventStoreOperationFilter: (value: string) => void;
   onEventStoreOperationStatusFilter: (value: string) => void;
   onIncludeEvents: (value: boolean) => void;
@@ -4174,6 +4187,14 @@ function SettingsWorkbenchPanel({
               onChange={(event) => onAuditExportIncludeEventStoreOperations(event.target.checked)}
             />
             Operations
+          </label>
+          <label className="check-control">
+            <input
+              type="checkbox"
+              checked={auditExportIncludeAutomationExecutions}
+              onChange={(event) => onAuditExportIncludeAutomationExecutions(event.target.checked)}
+            />
+            Automation
           </label>
         </div>
         {auditExportStatus ? (

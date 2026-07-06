@@ -22,7 +22,7 @@ describe("audit export BFF route", () => {
 
     const response = await GET(
       getRequest(
-        "/api/console/audit/export?limit=999999&order=sideways&include_events=false&include_tool_audit=true&include_event_store_operations=false&event_type=message.user"
+        "/api/console/audit/export?limit=999999&order=sideways&include_events=false&include_tool_audit=true&include_event_store_operations=false&include_operations_automation_executions=false&event_type=message.user"
       )
     );
 
@@ -37,6 +37,7 @@ describe("audit export BFF route", () => {
     expect(url.searchParams.get("include_events")).toBe("false");
     expect(url.searchParams.get("include_tool_audit")).toBe("true");
     expect(url.searchParams.get("include_event_store_operations")).toBe("false");
+    expect(url.searchParams.get("include_operations_automation_executions")).toBe("false");
     expect(url.searchParams.get("event_type")).toBe("message.user");
   });
 });

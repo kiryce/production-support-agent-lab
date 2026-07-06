@@ -2610,6 +2610,24 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
         },
         created_at=created_at,
     )
+    event_store.append_operations_automation_execution(
+        tenant_id="demo_tenant",
+        actor_user_id="operator_sensitive_automation",
+        action_id="ops_run_retrieval_PRIVATE",
+        action_kind="run_retrieval_diagnostics",
+        title="Run retrieval diagnostics",
+        status="completed",
+        safe_to_auto_execute=True,
+        command_method="POST",
+        command_path="/api/v1/admin/knowledge/search",
+        command_query={},
+        command_body_keys=["limit", "query", "snippet_chars"],
+        command_body_hash="body_hash_only",
+        command_fingerprint="fingerprint_only",
+        result_summary="3 retrieval chunk(s) selected for diagnostics.",
+        source="console",
+        created_at=created_at,
+    )
     feedback = AgentFeedback(
         tenant_id="demo_tenant",
         conversation_id="conv_sensitive_export",
@@ -2646,23 +2664,31 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
-    assert response.headers["x-audit-export-records"] == "5"
+    assert response.headers["x-audit-export-records"] == "6"
     assert "4111" not in response.text
     assert "A1001" not in response.text
+    assert "PRIVATE" not in response.text
     assert "PRIVATE feedback comment should not leak" not in response.text
     assert "PRIVATE review note should not leak" not in response.text
     assert "user_sensitive_export" not in response.text
     assert "operator_sensitive_export" not in response.text
     assert "operator_sensitive_operation" not in response.text
+    assert "operator_sensitive_automation" not in response.text
     assert "operator_sensitive_review" not in response.text
     assert "assignee_sensitive_review" not in response.text
     rows = [json.loads(line) for line in response.text.splitlines()]
-    assert {row["record_type"] for row in rows} == {"event", "tool_audit", "event_store_operation"}
+    assert {row["record_type"] for row in rows} == {
+        "event",
+        "tool_audit",
+        "event_store_operation",
+        "operations_automation_execution",
+    }
     event_row = next(row for row in rows if row.get("event_type") == "message.user")
     feedback_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback")
     review_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback.reviewed")
     tool_row = next(row for row in rows if row["record_type"] == "tool_audit")
     operation_row = next(row for row in rows if row["record_type"] == "event_store_operation")
+    automation_row = next(row for row in rows if row["record_type"] == "operations_automation_execution")
     assert event_row["event_type"] == "message.user"
     assert "content" not in event_row["payload_summary"]
     assert event_row["correlation"]["user_hash"]
@@ -2680,6 +2706,12 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
     assert operation_row["status"] == "completed"
     assert operation_row["operation_summary"]["backup_path_hash"] == "hash_only"
     assert operation_row["correlation"]["user_hash"]
+    assert automation_row["action_kind"] == "run_retrieval_diagnostics"
+    assert automation_row["status"] == "completed"
+    assert automation_row["command_summary"]["body_keys"] == ["limit", "query", "snippet_chars"]
+    assert automation_row["command_summary"]["body_hash"] == "body_hash_only"
+    assert automation_row["command_summary"]["fingerprint"] == "fingerprint_only"
+    assert automation_row["correlation"]["user_hash"]
 
 
 def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monkeypatch):
@@ -4537,6 +4569,85 @@ def test_admin_operations_automation_plan_surfaces_alert_receipt_gaps(tmp_path, 
     assert body["evidence"]["alert_delivery"]["sent_without_receipt_count"] == 1
 
 
+def test_admin_can_record_and_export_operations_automation_executions(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    command_body_secret = "PRIVATE diagnostic text should be hashed only"
+    try:
+        client = TestClient(app)
+        recorded = client.post(
+            "/api/v1/admin/operations/automation-executions",
+            headers={"X-Demo-Role": "admin", "X-Demo-User": "operator_admin"},
+            json={
+                "action_id": "ops_run_retrieval_diagnostics_123",
+                "action_kind": "run_retrieval_diagnostics",
+                "title": "Run retrieval diagnostics",
+                "status": "completed",
+                "safe_to_auto_execute": True,
+                "command": {
+                    "method": "POST",
+                    "path": "/api/v1/admin/knowledge/search",
+                    "query": {},
+                    "body": {"query": command_body_secret, "limit": 6, "snippet_chars": 300},
+                },
+                "result_summary": "3 retrieval chunk(s) selected for diagnostics.",
+                "source": "console",
+            },
+        )
+        listed = client.get(
+            "/api/v1/admin/operations/automation-executions",
+            headers={"X-Demo-Role": "admin"},
+            params={"action_kind": "run_retrieval_diagnostics"},
+        )
+        exported = client.get(
+            "/api/v1/admin/audit/export",
+            headers={"X-Demo-Role": "admin"},
+            params={
+                "include_events": False,
+                "include_tool_audit": False,
+                "include_event_store_operations": False,
+                "include_operations_automation_executions": True,
+                "limit": 10,
+            },
+        )
+        excluded = client.get(
+            "/api/v1/admin/audit/export",
+            headers={"X-Demo-Role": "admin"},
+            params={
+                "include_events": False,
+                "include_tool_audit": False,
+                "include_event_store_operations": False,
+                "include_operations_automation_executions": False,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert recorded.status_code == 200
+    body = recorded.json()
+    assert body["actor_user_id"] == "operator_admin"
+    assert body["status"] == "completed"
+    assert body["command_body_keys"] == ["limit", "query", "snippet_chars"]
+    assert body["command_body_hash"]
+    assert command_body_secret not in recorded.text
+    assert listed.status_code == 200
+    assert [item["id"] for item in listed.json()] == [body["id"]]
+    assert exported.status_code == 200
+    assert exported.headers["x-audit-export-records"] == "1"
+    assert command_body_secret not in exported.text
+    rows = [json.loads(line) for line in exported.text.splitlines()]
+    assert rows[0]["record_type"] == "operations_automation_execution"
+    assert rows[0]["action_id_hash"]
+    assert "action_id" not in rows[0]
+    assert rows[0]["command_summary"]["body_keys"] == ["limit", "query", "snippet_chars"]
+    assert rows[0]["command_summary"]["body_hash"] == body["command_body_hash"]
+    assert excluded.status_code == 422
+    assert excluded.json()["detail"] == "At least one audit source must be included"
+
+
 def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     get_settings.cache_clear()
@@ -4870,6 +4981,76 @@ def test_production_operations_automation_plan_requires_read_scopes(tmp_path, mo
     assert missing_events.json()["detail"] == "Missing required scope: events:read"
     assert allowed.status_code == 200
     assert allowed.json()["schema_version"] == "ops_automation.v1"
+
+
+def test_production_operations_automation_executions_require_write_and_read_scopes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    body = {
+        "action_id": "ops_inspect_tool_audit_123",
+        "action_kind": "inspect_tool_audit",
+        "title": "Inspect elevated tool failure rate",
+        "status": "completed",
+        "safe_to_auto_execute": True,
+        "command": {
+            "method": "GET",
+            "path": "/api/v1/admin/tools/audit",
+            "query": {"status": "failed"},
+            "body": {},
+        },
+        "result_summary": "1 tool audit record(s) loaded.",
+        "source": "console",
+    }
+    try:
+        monkeypatch.setenv("APP_ENV", "production")
+        monkeypatch.setenv("APP_INTERNAL_API_KEY", "secret")
+        monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
+        get_settings.cache_clear()
+        client = TestClient(app)
+        missing_write = client.post(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="admin:read,audit:read,events:read"),
+            json=body,
+        )
+        write_allowed = client.post(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="admin:write"),
+            json=body,
+        )
+        missing_admin_read = client.get(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="audit:read,events:read"),
+        )
+        missing_audit = client.get(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="admin:read,events:read"),
+        )
+        missing_events = client.get(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="admin:read,audit:read"),
+        )
+        read_allowed = client.get(
+            "/api/v1/admin/operations/automation-executions",
+            headers=_production_headers(scopes="admin:read,audit:read,events:read"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_write.status_code == 403
+    assert missing_write.json()["detail"] == "Missing required scope: admin:write"
+    assert write_allowed.status_code == 200
+    assert write_allowed.json()["actor_user_id"] == "user_prod"
+    assert missing_admin_read.status_code == 403
+    assert missing_admin_read.json()["detail"] == "Missing required scope: admin:read"
+    assert missing_audit.status_code == 403
+    assert missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert missing_events.status_code == 403
+    assert missing_events.json()["detail"] == "Missing required scope: events:read"
+    assert read_allowed.status_code == 200
+    assert [record["id"] for record in read_allowed.json()] == [write_allowed.json()["id"]]
 
 
 def test_production_operations_slo_report_requires_read_scopes(tmp_path, monkeypatch):

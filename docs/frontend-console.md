@@ -121,7 +121,11 @@ real local FastAPI endpoints:
 25. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-26. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+26. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
+   records completed or failed auto-safe action execution, and
+   `GET /api/v1/admin/operations/automation-executions` for audit/history
+   integrations.
+27. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -324,15 +328,19 @@ machine.
   `POST /api/console/operations/automation-actions`: the BFF re-fetches the
   current plan, matches the action id, rejects manual actions, and checks the
   backend command against a small allowlist before forwarding it. Browser input
-  is never treated as an arbitrary admin proxy path.
+  is never treated as an arbitrary admin proxy path. Completed and failed
+  command executions are recorded through
+  `POST /api/v1/admin/operations/automation-executions`; the response shows the
+  audit record id when the ledger write succeeds.
 - Promotion decisions via `POST /api/v1/admin/promotion/decisions`. The backend
   recomputes the gate, stores the decision and gate snapshot as
   `release.promotion.decision`, and rejects non-override approval while the gate
   is blocked.
 - Audit export via `GET /api/v1/admin/audit/export`. The BFF streams NDJSON
-  summary rows from events, tool audit records, and event-store operation
-  ledger rows; raw messages, comments, tool arguments, operation tokens, full
-  filesystem paths, and eval answers are not included.
+  summary rows from events, tool audit records, event-store operation ledger
+  rows, and operations automation execution ledger rows; raw messages,
+  comments, tool arguments, automation command bodies, raw automation results,
+  operation tokens, full filesystem paths, and eval answers are not included.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

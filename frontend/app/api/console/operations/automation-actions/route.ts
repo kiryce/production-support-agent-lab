@@ -5,6 +5,7 @@ import type {
   JsonValue,
   OperationsAutomationAction,
   OperationsAutomationCommand,
+  OperationsAutomationExecutionRecord,
   OperationsAutomationExecutionResult,
   OperationsAutomationPlan
 } from "@/src/shared/types";
@@ -44,7 +45,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await executeAutomationCommand(action.command);
+    let result: JsonValue;
+    try {
+      result = await executeAutomationCommand(action.command);
+    } catch (error) {
+      const issue = issueFrom(error);
+      await recordAutomationExecution({
+        action,
+        command: action.command,
+        status: "failed",
+        resultSummary: "Automation action failed.",
+        errorDetail: issue.detail
+      });
+      return NextResponse.json({ detail: issue.detail }, { status: issue.status });
+    }
+    const resultSummary = summarizeResult(action, result);
+    const audit = await recordAutomationExecution({
+      action,
+      command: action.command,
+      status: "completed",
+      resultSummary,
+      errorDetail: null
+    });
     const response: OperationsAutomationExecutionResult = {
       schema_version: "ops_action_execution.v1",
       action_id: action.id,
@@ -53,7 +75,10 @@ export async function POST(request: NextRequest) {
       safe_to_auto_execute: action.safe_to_auto_execute,
       command: action.command,
       result,
-      result_summary: summarizeResult(action, result)
+      result_summary: resultSummary,
+      audit_recorded: Boolean(audit.record),
+      audit_record: audit.record,
+      audit_error: audit.error
     };
     return NextResponse.json(response);
   } catch (error) {
@@ -81,6 +106,38 @@ async function loadAutomationPlan(payload: JsonRecord): Promise<OperationsAutoma
       min_feedback_count: clampNumber(payload.min_feedback_count, 0, 10000, 5)
     }
   });
+}
+
+async function recordAutomationExecution(input: {
+  action: OperationsAutomationAction;
+  command: OperationsAutomationCommand;
+  status: "completed" | "failed" | "rejected";
+  resultSummary: string;
+  errorDetail: string | null;
+}): Promise<{ record: OperationsAutomationExecutionRecord | null; error: string | null }> {
+  try {
+    const record = await agentFetch<OperationsAutomationExecutionRecord>(
+      "/api/v1/admin/operations/automation-executions",
+      {
+        method: "POST",
+        body: {
+          action_id: input.action.id,
+          action_kind: input.action.kind,
+          title: input.action.title,
+          status: input.status,
+          safe_to_auto_execute: input.action.safe_to_auto_execute,
+          command: input.command,
+          result_summary: input.resultSummary.slice(0, 500),
+          error_detail: input.errorDetail ? input.errorDetail.slice(0, 500) : null,
+          source: "console"
+        }
+      }
+    );
+    return { record, error: null };
+  } catch (error) {
+    const issue = issueFrom(error);
+    return { record: null, error: issue.detail };
+  }
 }
 
 async function executeAutomationCommand(command: OperationsAutomationCommand): Promise<JsonValue> {

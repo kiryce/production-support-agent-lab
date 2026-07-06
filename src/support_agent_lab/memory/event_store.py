@@ -243,6 +243,27 @@ class EventStoreOperationRecord(BaseModel):
     created_at: str
 
 
+class OperationsAutomationExecutionRecord(BaseModel):
+    id: str
+    tenant_id: str
+    actor_user_id: str
+    action_id: str
+    action_kind: str
+    title: str
+    status: str
+    safe_to_auto_execute: bool
+    command_method: str
+    command_path: str
+    command_query: dict[str, Any] = Field(default_factory=dict)
+    command_body_keys: list[str] = Field(default_factory=list)
+    command_body_hash: str | None = None
+    command_fingerprint: str
+    result_summary: str
+    error_detail: str | None = None
+    source: str = "api"
+    created_at: str
+
+
 class EventStoreOperationLock(BaseModel):
     tenant_id: str
     lock_name: str
@@ -271,6 +292,7 @@ SQLITE_REQUIRED_TABLES = (
     "alert_dispatcher_heartbeats",
     "alert_webhook_receipts",
     "event_store_operations",
+    "operations_automation_executions",
     "event_store_operation_locks",
 )
 SQLITE_EVENTS_REQUIRED_COLUMNS = {
@@ -290,6 +312,26 @@ SQLITE_EVENT_STORE_OPERATIONS_REQUIRED_COLUMNS = {
     "operation",
     "status",
     "summary_json",
+    "created_at",
+}
+SQLITE_OPERATIONS_AUTOMATION_EXECUTIONS_REQUIRED_COLUMNS = {
+    "id",
+    "tenant_id",
+    "actor_user_id",
+    "action_id",
+    "action_kind",
+    "title",
+    "status",
+    "safe_to_auto_execute",
+    "command_method",
+    "command_path",
+    "command_query_json",
+    "command_body_keys_json",
+    "command_body_hash",
+    "command_fingerprint",
+    "result_summary",
+    "error_detail",
+    "source",
     "created_at",
 }
 SQLITE_EVENT_STORE_OPERATION_LOCKS_REQUIRED_COLUMNS = {
@@ -2298,6 +2340,133 @@ class SQLiteEventStore:
             for row in rows
         ]
 
+    def append_operations_automation_execution(
+        self,
+        *,
+        tenant_id: str,
+        actor_user_id: str,
+        action_id: str,
+        action_kind: str,
+        title: str,
+        status: str,
+        safe_to_auto_execute: bool,
+        command_method: str,
+        command_path: str,
+        command_query: dict[str, Any],
+        command_body_keys: list[str],
+        command_body_hash: str | None,
+        command_fingerprint: str,
+        result_summary: str,
+        error_detail: str | None = None,
+        source: str = "api",
+        created_at: str | None = None,
+    ) -> OperationsAutomationExecutionRecord:
+        record = OperationsAutomationExecutionRecord(
+            id=new_id("ops_exec"),
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            action_id=action_id,
+            action_kind=action_kind,
+            title=title,
+            status=status,
+            safe_to_auto_execute=safe_to_auto_execute,
+            command_method=command_method,
+            command_path=command_path,
+            command_query=command_query,
+            command_body_keys=command_body_keys,
+            command_body_hash=command_body_hash,
+            command_fingerprint=command_fingerprint,
+            result_summary=result_summary,
+            error_detail=error_detail,
+            source=source,
+            created_at=created_at or utc_now().isoformat(),
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into operations_automation_executions (
+                  id, tenant_id, actor_user_id, action_id, action_kind, title, status,
+                  safe_to_auto_execute, command_method, command_path, command_query_json,
+                  command_body_keys_json, command_body_hash, command_fingerprint,
+                  result_summary, error_detail, source, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.id,
+                    record.tenant_id,
+                    record.actor_user_id,
+                    record.action_id,
+                    record.action_kind,
+                    record.title,
+                    record.status,
+                    1 if record.safe_to_auto_execute else 0,
+                    record.command_method,
+                    record.command_path,
+                    json.dumps(record.command_query, ensure_ascii=False, sort_keys=True),
+                    json.dumps(record.command_body_keys, ensure_ascii=False, sort_keys=True),
+                    record.command_body_hash,
+                    record.command_fingerprint,
+                    record.result_summary,
+                    record.error_detail,
+                    record.source,
+                    record.created_at,
+                ),
+            )
+        return record
+
+    def list_operations_automation_executions(
+        self,
+        *,
+        tenant_id: str | None = None,
+        actor_user_id: str | None = None,
+        action_kind: str | None = None,
+        status: str | None = None,
+        source: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 50,
+        order: str = "desc",
+    ) -> list[OperationsAutomationExecutionRecord]:
+        sql = """
+            select
+              id, tenant_id, actor_user_id, action_id, action_kind, title, status,
+              safe_to_auto_execute, command_method, command_path, command_query_json,
+              command_body_keys_json, command_body_hash, command_fingerprint,
+              result_summary, error_detail, source, created_at
+            from operations_automation_executions
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if actor_user_id:
+            clauses.append("actor_user_id = ?")
+            params.append(actor_user_id)
+        if action_kind:
+            clauses.append("action_kind = ?")
+            params.append(action_kind)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        direction = "asc" if order == "asc" else "desc"
+        sql += f" order by created_at {direction}, rowid {direction} limit ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._operations_automation_execution_from_row(row) for row in rows]
+
     @contextmanager
     def event_store_operation_lock(
         self,
@@ -3110,6 +3279,23 @@ class SQLiteEventStore:
                 raise RuntimeError(
                     f"event_store_operations table missing columns: {', '.join(operation_missing)}"
                 )
+            automation_executions = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'operations_automation_executions'"
+            ).fetchone()
+            if not automation_executions:
+                raise RuntimeError("operations_automation_executions table is missing")
+            automation_execution_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(operations_automation_executions)").fetchall()
+            }
+            automation_execution_missing = sorted(
+                SQLITE_OPERATIONS_AUTOMATION_EXECUTIONS_REQUIRED_COLUMNS - automation_execution_columns
+            )
+            if automation_execution_missing:
+                raise RuntimeError(
+                    "operations_automation_executions table missing columns: "
+                    f"{', '.join(automation_execution_missing)}"
+                )
             operation_locks = conn.execute(
                 "select name from sqlite_master where type = 'table' and name = 'event_store_operation_locks'"
             ).fetchone()
@@ -3182,6 +3368,18 @@ class SQLiteEventStore:
             if operation_missing:
                 raise RuntimeError(
                     f"event_store_operations table missing columns: {', '.join(operation_missing)}"
+                )
+            automation_execution_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(operations_automation_executions)").fetchall()
+            }
+            automation_execution_missing = sorted(
+                SQLITE_OPERATIONS_AUTOMATION_EXECUTIONS_REQUIRED_COLUMNS - automation_execution_columns
+            )
+            if automation_execution_missing:
+                raise RuntimeError(
+                    "operations_automation_executions table missing columns: "
+                    f"{', '.join(automation_execution_missing)}"
                 )
             lock_columns = {
                 item["name"]
@@ -3296,6 +3494,30 @@ class SQLiteEventStore:
             operation=row["operation"],
             acquired_at=row["acquired_at"],
             expires_at=row["expires_at"],
+        )
+
+    def _operations_automation_execution_from_row(
+        self, row: sqlite3.Row
+    ) -> OperationsAutomationExecutionRecord:
+        return OperationsAutomationExecutionRecord(
+            id=row["id"],
+            tenant_id=row["tenant_id"],
+            actor_user_id=row["actor_user_id"],
+            action_id=row["action_id"],
+            action_kind=row["action_kind"],
+            title=row["title"],
+            status=row["status"],
+            safe_to_auto_execute=bool(row["safe_to_auto_execute"]),
+            command_method=row["command_method"],
+            command_path=row["command_path"],
+            command_query=json.loads(row["command_query_json"] or "{}"),
+            command_body_keys=json.loads(row["command_body_keys_json"] or "[]"),
+            command_body_hash=row["command_body_hash"],
+            command_fingerprint=row["command_fingerprint"],
+            result_summary=row["result_summary"],
+            error_detail=row["error_detail"],
+            source=row["source"],
+            created_at=row["created_at"],
         )
 
     def _connect(self) -> sqlite3.Connection:
@@ -3526,6 +3748,68 @@ class SQLiteEventStore:
             )
             conn.execute(
                 "create index if not exists idx_event_store_operations_tenant_status_created on event_store_operations(tenant_id, status, created_at)"
+            )
+            conn.execute(
+                """
+                create table if not exists operations_automation_executions (
+                  id text primary key,
+                  tenant_id text not null,
+                  actor_user_id text not null,
+                  action_id text not null,
+                  action_kind text not null,
+                  title text not null,
+                  status text not null,
+                  safe_to_auto_execute integer not null,
+                  command_method text not null,
+                  command_path text not null,
+                  command_query_json text not null,
+                  command_body_keys_json text not null,
+                  command_body_hash text,
+                  command_fingerprint text not null,
+                  result_summary text not null,
+                  error_detail text,
+                  source text not null,
+                  created_at text not null
+                )
+                """
+            )
+            execution_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(operations_automation_executions)").fetchall()
+            }
+            for column_name, column_type in {
+                "actor_user_id": "text not null default ''",
+                "action_id": "text not null default ''",
+                "action_kind": "text not null default ''",
+                "title": "text not null default ''",
+                "status": "text not null default 'completed'",
+                "safe_to_auto_execute": "integer not null default 0",
+                "command_method": "text not null default ''",
+                "command_path": "text not null default ''",
+                "command_query_json": "text not null default '{}'",
+                "command_body_keys_json": "text not null default '[]'",
+                "command_body_hash": "text",
+                "command_fingerprint": "text not null default ''",
+                "result_summary": "text not null default ''",
+                "error_detail": "text",
+                "source": "text not null default 'api'",
+                "created_at": "text not null default ''",
+            }.items():
+                if column_name not in execution_columns:
+                    conn.execute(
+                        f"alter table operations_automation_executions add column {column_name} {column_type}"
+                    )
+            conn.execute(
+                "create index if not exists idx_ops_automation_exec_tenant_created on operations_automation_executions(tenant_id, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_ops_automation_exec_tenant_kind_created on operations_automation_executions(tenant_id, action_kind, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_ops_automation_exec_tenant_status_created on operations_automation_executions(tenant_id, status, created_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_ops_automation_exec_tenant_actor_created on operations_automation_executions(tenant_id, actor_user_id, created_at)"
             )
             conn.execute(
                 """

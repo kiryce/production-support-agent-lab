@@ -611,6 +611,27 @@ export type OperationsAutomationPlan = {
   guardrails: string[];
 };
 
+export type OperationsAutomationExecutionRecord = {
+  id: string;
+  tenant_id: string;
+  actor_user_id: string;
+  action_id: string;
+  action_kind: OperationsAutomationAction["kind"];
+  title: string;
+  status: "completed" | "failed" | "rejected";
+  safe_to_auto_execute: boolean;
+  command_method: "GET" | "POST";
+  command_path: string;
+  command_query: JsonRecord;
+  command_body_keys: string[];
+  command_body_hash: string | null;
+  command_fingerprint: string;
+  result_summary: string;
+  error_detail: string | null;
+  source: "console" | "cron" | "on_call_bot" | "api";
+  created_at: string;
+};
+
 export type OperationsAutomationExecutionResult = {
   schema_version: "ops_action_execution.v1";
   action_id: string;
@@ -620,6 +641,9 @@ export type OperationsAutomationExecutionResult = {
   command: OperationsAutomationCommand;
   result: JsonValue;
   result_summary: string;
+  audit_recorded: boolean;
+  audit_record: OperationsAutomationExecutionRecord | null;
+  audit_error: string | null;
 };
 
 export type SloObjectiveResult = {

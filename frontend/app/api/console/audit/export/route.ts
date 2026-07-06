@@ -12,6 +12,8 @@ export async function GET(request: NextRequest) {
     include_events: searchParams.get("include_events") !== "false",
     include_tool_audit: searchParams.get("include_tool_audit") !== "false",
     include_event_store_operations: searchParams.get("include_event_store_operations") !== "false",
+    include_operations_automation_executions:
+      searchParams.get("include_operations_automation_executions") !== "false",
     limit: clampNumber(searchParams.get("limit"), 1, 5000, 1000),
     order: searchParams.get("order") === "desc" ? "desc" : "asc"
   };

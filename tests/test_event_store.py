@@ -888,6 +888,73 @@ def test_event_store_operation_ledger_is_queryable_and_does_not_change_retention
     assert restored_store.list_event_store_operations(tenant_id="demo_tenant")[0].id == record.id
 
 
+def test_operations_automation_execution_ledger_is_queryable_and_backup_verified(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    before = event_store.retention_high_water_mark(tenant_id="demo_tenant")
+
+    record = event_store.append_operations_automation_execution(
+        tenant_id="demo_tenant",
+        actor_user_id="operator",
+        action_id="ops_inspect_tool_audit_123",
+        action_kind="inspect_tool_audit",
+        title="Inspect elevated tool failure rate",
+        status="completed",
+        safe_to_auto_execute=True,
+        command_method="GET",
+        command_path="/api/v1/admin/tools/audit",
+        command_query={"status": "failed", "limit": 100},
+        command_body_keys=[],
+        command_body_hash=None,
+        command_fingerprint="fingerprint_audit_only",
+        result_summary="1 tool audit record(s) loaded.",
+        source="console",
+    )
+    event_store.append_operations_automation_execution(
+        tenant_id="other_tenant",
+        actor_user_id="operator",
+        action_id="ops_other",
+        action_kind="review_feedback",
+        title="Review feedback",
+        status="failed",
+        safe_to_auto_execute=True,
+        command_method="GET",
+        command_path="/api/v1/admin/feedback",
+        command_query={},
+        command_body_keys=[],
+        command_body_hash=None,
+        command_fingerprint="fingerprint_other",
+        result_summary="Automation action failed: unavailable",
+        error_detail="unavailable",
+        source="console",
+    )
+    after = event_store.retention_high_water_mark(tenant_id="demo_tenant")
+    backup_path = tmp_path / "backups" / "events.backup.db"
+    event_store.backup_to(backup_path)
+    drill = event_store.restore_drill(backup_path, tenant_id="demo_tenant")
+    restored_store = SQLiteEventStore(backup_path)
+
+    records = event_store.list_operations_automation_executions(tenant_id="demo_tenant")
+    filtered = event_store.list_operations_automation_executions(
+        tenant_id="demo_tenant",
+        action_kind="inspect_tool_audit",
+        status="completed",
+        source="console",
+    )
+    missing = event_store.list_operations_automation_executions(
+        tenant_id="demo_tenant",
+        action_kind="review_feedback",
+    )
+
+    assert after == before
+    assert [item.id for item in records] == [record.id]
+    assert [item.id for item in filtered] == [record.id]
+    assert missing == []
+    assert records[0].command_query == {"status": "failed", "limit": 100}
+    assert records[0].command_body_hash is None
+    assert drill.table_counts["operations_automation_executions"] == 2
+    assert restored_store.list_operations_automation_executions(tenant_id="demo_tenant")[0].id == record.id
+
+
 def test_event_store_restore_drill_proves_backup_can_be_restored(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     event = event_store.append(

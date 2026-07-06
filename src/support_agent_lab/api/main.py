@@ -52,6 +52,7 @@ from support_agent_lab.memory.event_store import (
     AlertWebhookReceiptRecord,
     FeedbackReviewQueueResponse,
     FeedbackSummary,
+    OperationsAutomationExecutionRecord,
     SQLiteBackupReport,
     SQLiteRestoreDrillReport,
     StoredEvent,
@@ -394,6 +395,18 @@ class OperationsAutomationPlan(BaseModel):
     actions: list[OperationsAutomationAction]
     evidence: dict[str, Any] = Field(default_factory=dict)
     guardrails: list[str] = Field(default_factory=list)
+
+
+class OperationsAutomationExecutionRequest(BaseModel):
+    action_id: str = Field(min_length=1, max_length=160)
+    action_kind: str = Field(min_length=1, max_length=80)
+    title: str = Field(default="", max_length=240)
+    status: Literal["completed", "failed", "rejected"]
+    safe_to_auto_execute: bool = False
+    command: OperationsAutomationCommand
+    result_summary: str = Field(default="", max_length=500)
+    error_detail: str | None = Field(default=None, max_length=500)
+    source: Literal["console", "cron", "on_call_bot", "api"] = "api"
 
 
 class SloObjectiveResult(BaseModel):
@@ -2295,12 +2308,63 @@ def _promotion_decision_from_event(event: StoredEvent) -> PromotionDecisionRecor
     return PromotionDecisionRecord.model_validate(event.payload)
 
 
+def _known_operations_automation_action_kinds() -> set[str]:
+    annotation = OperationsAutomationAction.model_fields["kind"].annotation
+    return {str(item) for item in get_args(annotation)}
+
+
+def _ops_automation_execution_command_summary(
+    command: OperationsAutomationCommand,
+) -> dict[str, Any]:
+    query: dict[str, Any] = {}
+    for key, value in command.query.items():
+        key_text = str(key)[:80]
+        if isinstance(value, str) and key_text in {
+            "action_kind",
+            "deep",
+            "include_memory",
+            "limit",
+            "order",
+            "rating",
+            "source",
+            "status",
+            "window_hours",
+        }:
+            query[key_text] = value[:80]
+        elif isinstance(value, str):
+            query[key_text] = _hash_json(value)
+        elif isinstance(value, (int, float, bool)) or value is None:
+            query[key_text] = value
+        else:
+            query[key_text] = _hash_json(value)
+    body_keys = sorted(str(key)[:80] for key in command.body.keys())[:50]
+    body_hash = _hash_json(command.body) if command.body else None
+    fingerprint_payload = {
+        "method": command.method,
+        "path": command.path,
+        "query": query,
+        "body_hash": body_hash,
+    }
+    return {
+        "command_query": query,
+        "command_body_keys": body_keys,
+        "command_body_hash": body_hash,
+        "command_fingerprint": _hash_json(fingerprint_payload),
+    }
+
+
+def _hash_json(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
 def _audit_export_rows(
     *,
     deps: AppContainer,
     include_events: bool,
     include_tool_audit: bool,
     include_event_store_operations: bool,
+    include_operations_automation_executions: bool,
     event_type: str | None,
     created_after: str | None,
     created_before: str | None,
@@ -2337,6 +2401,17 @@ def _audit_export_rows(
         rows.extend(
             _audit_event_store_operation_row(record)
             for record in deps.event_store.list_event_store_operations(
+                tenant_id=deps.settings.app_tenant_id,
+                created_after=created_after,
+                created_before=created_before,
+                limit=limit,
+                order=order,
+            )
+        )
+    if include_operations_automation_executions:
+        rows.extend(
+            _audit_operations_automation_execution_row(record)
+            for record in deps.event_store.list_operations_automation_executions(
                 tenant_id=deps.settings.app_tenant_id,
                 created_after=created_after,
                 created_before=created_before,
@@ -2407,6 +2482,36 @@ def _audit_event_store_operation_row(record: EventStoreOperationRecord) -> dict[
             user_id=record.actor_user_id,
         ),
         "operation_summary": record.summary,
+    }
+
+
+def _audit_operations_automation_execution_row(record: OperationsAutomationExecutionRecord) -> dict[str, Any]:
+    return {
+        "schema_version": "audit_export.v1",
+        "record_type": "operations_automation_execution",
+        "source": "operations_automation_executions",
+        "id": record.id,
+        "tenant_id": record.tenant_id,
+        "action_id_hash": _audit_hash(record.action_id),
+        "action_kind": record.action_kind,
+        "status": record.status,
+        "safe_to_auto_execute": record.safe_to_auto_execute,
+        "created_at": record.created_at,
+        "correlation": _audit_correlation(
+            tenant_id=record.tenant_id,
+            user_id=record.actor_user_id,
+        ),
+        "command_summary": {
+            "method": record.command_method,
+            "path": record.command_path,
+            "query": record.command_query,
+            "body_keys": record.command_body_keys,
+            "body_hash": record.command_body_hash,
+            "fingerprint": record.command_fingerprint,
+        },
+        "result_summary": record.result_summary,
+        "error_detail_hash": _audit_hash(record.error_detail),
+        "execution_source": record.source,
     }
 
 
@@ -5020,6 +5125,69 @@ def create_app() -> FastAPI:
             min_feedback_count=min_feedback_count,
         )
 
+    @app.post("/api/v1/admin/operations/automation-executions")
+    def record_operations_automation_execution(
+        body: OperationsAutomationExecutionRequest,
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> OperationsAutomationExecutionRecord:
+        require_admin(actor)
+        require_scope(actor, "admin:write")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        if body.action_kind not in _known_operations_automation_action_kinds():
+            raise HTTPException(status_code=422, detail="Unknown automation action kind")
+        command_summary = _ops_automation_execution_command_summary(body.command)
+        return deps.event_store.append_operations_automation_execution(
+            tenant_id=deps.settings.app_tenant_id,
+            actor_user_id=actor.user_id,
+            action_id=body.action_id,
+            action_kind=body.action_kind,
+            title=body.title,
+            status=body.status,
+            safe_to_auto_execute=body.safe_to_auto_execute,
+            command_method=body.command.method,
+            command_path=body.command.path,
+            command_query=command_summary["command_query"],
+            command_body_keys=command_summary["command_body_keys"],
+            command_body_hash=command_summary["command_body_hash"],
+            command_fingerprint=command_summary["command_fingerprint"],
+            result_summary=body.result_summary,
+            error_detail=body.error_detail,
+            source=body.source,
+        )
+
+    @app.get("/api/v1/admin/operations/automation-executions")
+    def list_operations_automation_executions(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        action_kind: Annotated[str | None, Query(max_length=80)] = None,
+        status: Annotated[Literal["completed", "failed", "rejected"] | None, Query()] = None,
+        source: Annotated[Literal["console", "cron", "on_call_bot", "api"] | None, Query()] = None,
+        actor_user_id: Annotated[str | None, Query(max_length=128)] = None,
+        created_after: Annotated[str | None, Query()] = None,
+        created_before: Annotated[str | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[OperationsAutomationExecutionRecord]:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return deps.event_store.list_operations_automation_executions(
+            tenant_id=deps.settings.app_tenant_id,
+            actor_user_id=actor_user_id,
+            action_kind=action_kind,
+            status=status,
+            source=source,
+            created_after=created_after,
+            created_before=created_before,
+            limit=limit,
+            order=order,
+        )
+
     @app.get("/api/v1/admin/operations/slo-report")
     async def operations_slo_report(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -6309,13 +6477,19 @@ def create_app() -> FastAPI:
         include_events: Annotated[bool, Query()] = True,
         include_tool_audit: Annotated[bool, Query()] = True,
         include_event_store_operations: Annotated[bool, Query()] = True,
+        include_operations_automation_executions: Annotated[bool, Query()] = True,
         limit: Annotated[int, Query(ge=1, le=5000)] = 1000,
         order: Annotated[Literal["asc", "desc"], Query()] = "asc",
     ) -> PlainTextResponse:
         require_admin(actor)
         require_scope(actor, "audit:read")
         require_scope(actor, "events:read")
-        if not include_events and not include_tool_audit and not include_event_store_operations:
+        if (
+            not include_events
+            and not include_tool_audit
+            and not include_event_store_operations
+            and not include_operations_automation_executions
+        ):
             raise HTTPException(status_code=422, detail="At least one audit source must be included")
         if not deps.event_store:
             raise HTTPException(status_code=404, detail="Event store is not configured")
@@ -6324,6 +6498,7 @@ def create_app() -> FastAPI:
             include_events=include_events,
             include_tool_audit=include_tool_audit,
             include_event_store_operations=include_event_store_operations,
+            include_operations_automation_executions=include_operations_automation_executions,
             event_type=event_type,
             created_after=created_after,
             created_before=created_before,

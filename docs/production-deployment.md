@@ -45,7 +45,7 @@ APP_IDEMPOTENCY_RETENTION_DAYS=30
 APP_ALERT_DELIVERY_RETENTION_DAYS=90
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, and inbound alert webhook receipt summaries. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, inbound alert webhook receipt summaries, event-store operation ledger rows, and operations automation execution ledger rows. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
 Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, terminal alert-delivery rows, and alert webhook receipt summaries. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
 
@@ -208,6 +208,8 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
 | `GET /api/v1/admin/operations/slo-report` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only service objectives and error-budget report. |
 | `GET /api/v1/admin/operations/automation-plan` | `admin:read`, `monitor:read`, `audit:read`, `events:read`, `eval:read`, `feedback:read`. Read-only next-action plan with runnable commands and guardrails. |
+| `POST /api/v1/admin/operations/automation-executions` | `admin:write`. Records a sanitized automation action execution ledger row. |
+| `GET /api/v1/admin/operations/automation-executions` | `admin:read`, `audit:read`, `events:read`. Lists sanitized automation action execution ledger rows. |
 | `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
 | `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes the release preflight and writes an append-only decision event. |
 | `GET /api/v1/admin/audit/export` | `audit:read`, `events:read`. Returns sanitized `application/x-ndjson` for SIEM or warehouse ingestion. |
@@ -280,6 +282,12 @@ required scopes, an optional method/path/query/body command, evidence, and
 guardrails. The endpoint itself never dispatches webhooks, changes triage,
 requeues deliveries, records release decisions, or runs evals; a cron job or
 on-call bot must explicitly call a returned command with the listed scope.
+When the console BFF executes an `auto-safe` action, it also records
+`POST /api/v1/admin/operations/automation-executions`. The ledger stores the
+authenticated actor, action kind, status, command method/path/query summary,
+body key list, body hash, result summary, and error hash; it does not store raw
+command body, raw result payload, browser-supplied actor fields, signatures,
+tokens, tool arguments, or customer text.
 
 `POST /api/v1/admin/promotion/decisions` is the mutable release audit action.
 It recalculates the promotion gate, stores the resulting gate snapshot with the
@@ -291,12 +299,14 @@ deploy code, shift traffic, or call an external CD system.
 
 `GET /api/v1/admin/audit/export` exports NDJSON records with
 `schema_version=audit_export.v1`. It combines append-only event rows, durable
-tool-audit rows, and event-store operation ledger rows. It keeps tenant and
-record metadata, hashes user/conversation/run correlation ids, and summarizes
-only safe machine fields such as event type, status, rating, decision,
-operation name, tool name, latency, error code, failure type, and policy code.
-It deliberately omits user text, feedback comments, tool arguments, raw
-operation tokens, full filesystem paths, knowledge snippets, and eval answer
+tool-audit rows, event-store operation ledger rows, and operations automation
+execution ledger rows. It keeps tenant and record metadata, hashes
+user/conversation/run/action correlation ids, and summarizes only safe machine
+fields such as event type, status, rating, decision, operation name, action
+kind, command fingerprint, tool name, latency, error code, failure type, and
+policy code. It deliberately omits user text, feedback comments, tool
+arguments, raw operation tokens, raw automation command body, raw automation
+result payload, full filesystem paths, knowledge snippets, and eval answer
 text.
 
 ## Event Store Operations

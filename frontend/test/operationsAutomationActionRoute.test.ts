@@ -13,7 +13,7 @@ describe("operations automation action BFF route", () => {
   it("executes the backend-plan command instead of trusting a client supplied path", async () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "demo";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target, init) => {
       const url = new URL(String(target));
       if (url.pathname === "/api/v1/admin/operations/automation-plan") {
         return Response.json(planWithAction({
@@ -31,6 +31,17 @@ describe("operations automation action BFF route", () => {
       if (url.pathname === "/api/v1/admin/tools/audit") {
         return Response.json([{ id: "audit_1", tool_name: "order.get" }]);
       }
+      if (url.pathname === "/api/v1/admin/operations/automation-executions") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.command.path).toBe("/api/v1/admin/tools/audit");
+        expect(body.command.path).not.toBe("/api/v1/admin/events");
+        return Response.json(executionRecord({
+          action_id: body.action_id,
+          action_kind: body.action_kind,
+          status: body.status,
+          result_summary: body.result_summary
+        }));
+      }
       return Response.json({ detail: `unexpected ${url.pathname}` }, { status: 500 });
     });
 
@@ -45,9 +56,14 @@ describe("operations automation action BFF route", () => {
     const body = await response.json();
     expect(body.schema_version).toBe("ops_action_execution.v1");
     expect(body.result_summary).toBe("1 tool audit record(s) loaded.");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(body.audit_recorded).toBe(true);
+    expect(body.audit_record.status).toBe("completed");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(new URL(String(fetchMock.mock.calls[1][0])).pathname).toBe("/api/v1/admin/tools/audit");
     expect(new URL(String(fetchMock.mock.calls[1][0])).searchParams.get("status")).toBe("failed");
+    expect(new URL(String(fetchMock.mock.calls[2][0])).pathname).toBe(
+      "/api/v1/admin/operations/automation-executions"
+    );
   });
 
   it("rejects manual actions even when the backend plan includes a command", async () => {
@@ -83,7 +99,7 @@ describe("operations automation action BFF route", () => {
   it("executes the read-only missing receipt inspection command", async () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "demo";
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target, init) => {
       const url = new URL(String(target));
       if (url.pathname === "/api/v1/admin/operations/automation-plan") {
         return Response.json(planWithAction({
@@ -101,6 +117,15 @@ describe("operations automation action BFF route", () => {
       if (url.pathname === "/api/v1/admin/monitor/alert-deliveries/receipt-gaps") {
         return Response.json([{ id: "deliv_missing", status: "sent" }]);
       }
+      if (url.pathname === "/api/v1/admin/operations/automation-executions") {
+        const body = JSON.parse(String(init?.body));
+        return Response.json(executionRecord({
+          action_id: body.action_id,
+          action_kind: body.action_kind,
+          status: body.status,
+          result_summary: body.result_summary
+        }));
+      }
       return Response.json({ detail: `unexpected ${url.pathname}` }, { status: 500 });
     });
 
@@ -113,10 +138,57 @@ describe("operations automation action BFF route", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.result_summary).toBe("1 sent delivery receipt gap(s) loaded.");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(body.audit_recorded).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const executedUrl = new URL(String(fetchMock.mock.calls[1][0]));
     expect(executedUrl.pathname).toBe("/api/v1/admin/monitor/alert-deliveries/receipt-gaps");
     expect(executedUrl.searchParams.get("order")).toBe("asc");
+  });
+
+  it("records failed backend command execution before returning the error", async () => {
+    process.env.AGENT_API_BASE_URL = "http://agent.internal";
+    process.env.FRONTEND_AUTH_MODE = "demo";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target, init) => {
+      const url = new URL(String(target));
+      if (url.pathname === "/api/v1/admin/operations/automation-plan") {
+        return Response.json(planWithAction({
+          id: "ops_inspect_tool_audit_failed",
+          kind: "inspect_tool_audit",
+          safe_to_auto_execute: true,
+          command: {
+            method: "GET",
+            path: "/api/v1/admin/tools/audit",
+            query: { status: "failed", limit: 100, order: "desc" },
+            body: {}
+          }
+        }));
+      }
+      if (url.pathname === "/api/v1/admin/tools/audit") {
+        return Response.json({ detail: "tool audit backend unavailable" }, { status: 503 });
+      }
+      if (url.pathname === "/api/v1/admin/operations/automation-executions") {
+        const body = JSON.parse(String(init?.body));
+        expect(body.status).toBe("failed");
+        expect(body.error_detail).toBe("tool audit backend unavailable");
+        return Response.json(executionRecord({
+          action_id: body.action_id,
+          action_kind: body.action_kind,
+          status: body.status,
+          result_summary: body.result_summary
+        }));
+      }
+      return Response.json({ detail: `unexpected ${url.pathname}` }, { status: 500 });
+    });
+
+    const response = await POST(
+      jsonRequest("/api/console/operations/automation-actions", {
+        actionId: "ops_inspect_tool_audit_failed"
+      })
+    );
+
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ detail: "tool audit backend unavailable" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects auto-safe actions whose generated command is outside the allowlist", async () => {
@@ -182,6 +254,31 @@ function planWithAction(action: {
     ],
     evidence: {},
     guardrails: ["Server-generated plan."]
+  };
+}
+
+function executionRecord(input: {
+  action_id: string;
+  action_kind: string;
+  status: string;
+  result_summary: string;
+}) {
+  return {
+    id: "ops_exec_123",
+    tenant_id: "demo_tenant",
+    actor_user_id: "console_operator",
+    title: "Inspect elevated tool failure rate",
+    safe_to_auto_execute: true,
+    command_method: "GET",
+    command_path: "/api/v1/admin/tools/audit",
+    command_query: {},
+    command_body_keys: [],
+    command_body_hash: null,
+    command_fingerprint: "fingerprint",
+    error_detail: null,
+    source: "console",
+    created_at: "2026-07-05T00:00:01.000Z",
+    ...input
   };
 }
 
