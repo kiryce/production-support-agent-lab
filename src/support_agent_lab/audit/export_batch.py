@@ -11,7 +11,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from support_agent_lab.audit.export import audit_export_rows, audit_hash, ndjson
+from support_agent_lab.audit.export import (
+    AuditExportCursor,
+    audit_export_cursor_from_rows,
+    audit_export_rows,
+    audit_hash,
+    coerce_audit_export_cursor,
+    ndjson,
+)
 from support_agent_lab.memory.event_store import EventStoreOperationLockConflict, SQLiteEventStore
 from support_agent_lab.models import new_id, utc_now
 
@@ -41,6 +48,10 @@ class AuditExportBatchReport(BaseModel):
     first_record_created_at: str | None = None
     latest_record_created_at: str | None = None
     partial: bool = False
+    incremental: bool = False
+    previous_cursor: dict[str, str] | None = None
+    high_water_cursor: dict[str, str] | None = None
+    cursor_advance_allowed: bool = False
     operation_id: str | None = None
     error_type: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -62,6 +73,8 @@ class AuditExportBatchSummary(BaseModel):
     last_manifest_file: str | None = None
     last_content_sha256: str | None = None
     last_partial: bool = False
+    last_high_water_cursor: dict[str, str] | None = None
+    last_cursor_advance_allowed: bool = False
     last_error_type: str | None = None
 
 
@@ -76,6 +89,7 @@ class AuditExportBatchOptions:
     created_before: str | None = None
     limit: int = 1000
     order: Literal["asc", "desc"] = "asc"
+    incremental: bool = True
 
 
 def run_audit_export_batch(
@@ -102,6 +116,11 @@ def run_audit_export_batch(
             ttl_seconds=lock_ttl_seconds,
             now=effective_now,
         ):
+            previous_cursor = _latest_completed_export_cursor(
+                event_store=event_store,
+                tenant_id=tenant_id,
+                options=opts,
+            )
             report = _write_audit_export_batch(
                 event_store=event_store,
                 tenant_id=tenant_id,
@@ -109,6 +128,7 @@ def run_audit_export_batch(
                 options=opts,
                 started_at=effective_now,
                 batch_id=batch_id,
+                previous_cursor=previous_cursor,
             )
             operation = event_store.append_event_store_operation(
                 tenant_id=tenant_id,
@@ -126,6 +146,7 @@ def run_audit_export_batch(
             tenant_id=tenant_id,
             started_at=effective_now,
             exported_at=effective_now,
+            incremental=_incremental_enabled(opts),
             error_type=exc.__class__.__name__,
         )
         operation = event_store.append_event_store_operation(
@@ -148,6 +169,7 @@ def run_audit_export_batch(
             started_at=effective_now,
             exported_at=effective_now,
             output_path_hash=audit_hash(_safe_resolved_path(output_root)),
+            incremental=_incremental_enabled(opts),
             error_type=exc.__class__.__name__,
         )
         operation = event_store.append_event_store_operation(
@@ -211,6 +233,8 @@ def summarize_audit_export_batches(
         last_manifest_file=_optional_text(latest_summary.get("manifest_file")),
         last_content_sha256=_optional_text(latest_summary.get("content_sha256")),
         last_partial=bool(latest_summary.get("partial")),
+        last_high_water_cursor=_optional_cursor_dict(latest_summary.get("high_water_cursor")),
+        last_cursor_advance_allowed=bool(latest_summary.get("cursor_advance_allowed")),
         last_error_type=_optional_text(latest_summary.get("error_type")),
     )
 
@@ -234,6 +258,10 @@ def sanitize_audit_export_batch_report(report: AuditExportBatchReport) -> dict[s
         "first_record_created_at": report.first_record_created_at,
         "latest_record_created_at": report.latest_record_created_at,
         "partial": report.partial,
+        "incremental": report.incremental,
+        "previous_cursor": report.previous_cursor,
+        "high_water_cursor": report.high_water_cursor,
+        "cursor_advance_allowed": report.cursor_advance_allowed,
         "operation_id": report.operation_id,
         "error_type": report.error_type,
         "warnings": report.warnings,
@@ -248,10 +276,12 @@ def _write_audit_export_batch(
     options: AuditExportBatchOptions,
     started_at: datetime,
     batch_id: str,
+    previous_cursor: AuditExportCursor | None,
 ) -> AuditExportBatchReport:
     _validate_options(options)
     output_root.mkdir(parents=True, exist_ok=True)
     resolved_root = output_root.resolve()
+    incremental = _incremental_enabled(options)
     rows = audit_export_rows(
         event_store=event_store,
         tenant_id=tenant_id,
@@ -262,16 +292,21 @@ def _write_audit_export_batch(
         event_type=options.event_type,
         created_after=options.created_after,
         created_before=options.created_before,
-        limit=options.limit,
+        after_cursor=previous_cursor if incremental else None,
+        limit=options.limit + 1,
         order=options.order,
     )
-    payload = ndjson(rows).encode("utf-8")
+    partial = len(rows) > options.limit
+    source_rows = rows[: options.limit]
+    payload_rows = list(source_rows)
+    candidate_high_water = audit_export_cursor_from_rows(source_rows)
+    high_water_cursor = candidate_high_water if candidate_high_water and not partial else None
+    payload = ndjson(payload_rows).encode("utf-8")
     content_sha256 = hashlib.sha256(payload).hexdigest()
     exported_at = utc_now()
-    record_type_counts = _record_type_counts(rows)
-    partial = len(rows) >= options.limit
+    record_type_counts = _record_type_counts(payload_rows)
     if partial:
-        rows.append(
+        payload_rows.append(
             {
                 "schema_version": AUDIT_EXPORT_BATCH_SCHEMA_VERSION,
                 "record_type": "export_control",
@@ -282,9 +317,9 @@ def _write_audit_export_batch(
                 "detail": "Export reached limit; rerun with a narrower window or higher limit before advancing downstream watermarks.",
             }
         )
-        payload = ndjson(rows).encode("utf-8")
+        payload = ndjson(payload_rows).encode("utf-8")
         content_sha256 = hashlib.sha256(payload).hexdigest()
-        record_type_counts = _record_type_counts(rows)
+        record_type_counts = _record_type_counts(payload_rows)
     stem = _batch_stem(tenant_id=tenant_id, exported_at=exported_at)
     output_path = resolved_root / f"{stem}.ndjson"
     manifest_path = resolved_root / f"{stem}.manifest.json"
@@ -301,13 +336,17 @@ def _write_audit_export_batch(
         "output_path_hash": output_path_hash,
         "manifest_file": manifest_path.name,
         "manifest_path_hash": manifest_path_hash,
-        "record_count": len(rows),
+        "record_count": len(payload_rows),
         "record_type_counts": record_type_counts,
         "bytes_written": len(payload),
         "content_sha256": content_sha256,
-        "first_record_created_at": _first_record_created_at(rows),
-        "latest_record_created_at": _latest_record_created_at(rows),
+        "first_record_created_at": _first_record_created_at(source_rows),
+        "latest_record_created_at": _latest_record_created_at(source_rows),
         "partial": partial,
+        "incremental": incremental,
+        "previous_cursor": previous_cursor.as_dict() if previous_cursor else None,
+        "high_water_cursor": high_water_cursor.as_dict() if high_water_cursor else None,
+        "cursor_advance_allowed": bool(high_water_cursor),
         "options": _options_summary(options),
         "lock_name": AUDIT_EXPORT_BATCH_LOCK_NAME,
         "worker_source": "worker",
@@ -322,13 +361,17 @@ def _write_audit_export_batch(
         output_path_hash=output_path_hash,
         manifest_file=manifest_path.name,
         manifest_path_hash=manifest_path_hash,
-        record_count=len(rows),
+        record_count=len(payload_rows),
         record_type_counts=record_type_counts,
         bytes_written=len(payload),
         content_sha256=content_sha256,
         first_record_created_at=manifest["first_record_created_at"],
         latest_record_created_at=manifest["latest_record_created_at"],
         partial=partial,
+        incremental=incremental,
+        previous_cursor=manifest["previous_cursor"],
+        high_water_cursor=manifest["high_water_cursor"],
+        cursor_advance_allowed=manifest["cursor_advance_allowed"],
     )
 
 
@@ -356,6 +399,10 @@ def _operation_summary(
         "first_record_created_at": report.first_record_created_at,
         "latest_record_created_at": report.latest_record_created_at,
         "partial": report.partial,
+        "incremental": report.incremental,
+        "previous_cursor": report.previous_cursor,
+        "high_water_cursor": report.high_water_cursor,
+        "cursor_advance_allowed": report.cursor_advance_allowed,
         "lock_name": AUDIT_EXPORT_BATCH_LOCK_NAME,
         "error_type": report.error_type,
         "options": _options_summary(options),
@@ -373,7 +420,61 @@ def _options_summary(options: AuditExportBatchOptions) -> dict[str, Any]:
         "created_before": options.created_before,
         "limit": options.limit,
         "order": options.order,
+        "incremental": options.incremental,
     }
+
+
+def _latest_completed_export_cursor(
+    *,
+    event_store: SQLiteEventStore,
+    tenant_id: str,
+    options: AuditExportBatchOptions,
+) -> AuditExportCursor | None:
+    if not _incremental_enabled(options):
+        return None
+    records = event_store.list_event_store_operations(
+        tenant_id=tenant_id,
+        operation=AUDIT_EXPORT_BATCH_OPERATION,
+        status="completed",
+        limit=100,
+        order="desc",
+    )
+    for record in records:
+        summary = record.summary if isinstance(record.summary, dict) else {}
+        if summary.get("partial"):
+            continue
+        if not summary.get("cursor_advance_allowed"):
+            continue
+        if not _previous_options_are_cursor_compatible(summary.get("options"), options):
+            continue
+        cursor = coerce_audit_export_cursor(summary.get("high_water_cursor"))
+        if cursor:
+            return cursor
+    return None
+
+
+def _incremental_enabled(options: AuditExportBatchOptions) -> bool:
+    return bool(options.incremental and options.created_after is None)
+
+
+def _previous_options_are_cursor_compatible(
+    previous_options: Any,
+    current_options: AuditExportBatchOptions,
+) -> bool:
+    if not isinstance(previous_options, dict):
+        return False
+    for key in (
+        "include_events",
+        "include_tool_audit",
+        "include_event_store_operations",
+        "include_operations_automation_executions",
+        "event_type",
+    ):
+        if previous_options.get(key) != getattr(current_options, key):
+            return False
+    if previous_options.get("created_after") is not None:
+        return False
+    return True
 
 
 def _lock_conflict_summary(exc: EventStoreOperationLockConflict) -> dict[str, Any]:
@@ -471,6 +572,11 @@ def _optional_text(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _optional_cursor_dict(value: Any) -> dict[str, str] | None:
+    cursor = coerce_audit_export_cursor(value)
+    return cursor.as_dict() if cursor else None
 
 
 def _dict_of_ints(value: Any) -> dict[str, int]:

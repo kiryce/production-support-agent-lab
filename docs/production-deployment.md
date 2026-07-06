@@ -341,13 +341,19 @@ sanitized export rows, writes `.ndjson` plus `.manifest.json` under
 `APP_AUDIT_EXPORT_DIR`, and records `operation=audit_export_batch` in
 `event_store_operations`. The manifest contains batch id, tenant id, file
 names, path hashes, SHA-256, byte count, record count, record-type counts,
-window/options, and `partial`. It never stores full local paths, actor ids,
-user text, tool arguments, raw automation command bodies/results, or eval
-answers. `GET /api/v1/admin/audit/export-batches/summary`, the console
+window/options, `previous_cursor`, `high_water_cursor`,
+`cursor_advance_allowed`, and `partial`. It never stores full local paths,
+actor ids, user text, tool arguments, raw automation command bodies/results,
+or eval answers. By default, the next cycle reuses the latest compatible
+completed non-partial batch cursor and exports only rows whose stable
+`(created_at, record_type, id)` key is greater than that cursor. Use
+`--no-incremental` for an intentional full or manual-window rerun.
+`GET /api/v1/admin/audit/export-batches/summary`, the console
 Overview/Settings surfaces, `/metrics`, and the bundled Prometheus rules read
 the operation ledger to report fresh/stale/missing/failed and partial status.
-If `partial=true`, downstream consumers should not advance watermarks from
-that manifest; rerun with a narrower time window or higher `--limit`.
+If `partial=true` or `cursor_advance_allowed=false`, downstream consumers
+should not advance watermarks from that manifest; rerun with a narrower time
+window or higher `--limit`.
 
 ## Event Store Operations
 
@@ -530,11 +536,14 @@ Compose `audit` profile. Each cycle acquires the same
 retention, then writes an NDJSON file, a manifest, and an
 `audit_export_batch` operation ledger row. Lock conflicts are rejected and
 audited without creating partial files; failures write a safe error type and
-path hash. `GET /api/v1/admin/audit/export-batches/summary` returns recent
-batch health, last file names, counts, size, checksum, and partial status, but
-not full paths, actor ids, worker ids, customer text, or tool arguments. The
-stale threshold is `APP_AUDIT_EXPORT_BATCH_STALE_SECONDS`, defaulting to 86400
-seconds.
+path hash. Completed non-partial cycles advance a stable high-water cursor;
+partial cycles do not, so the next incremental run falls back to the last
+complete compatible cursor instead of silently skipping rows. `GET
+/api/v1/admin/audit/export-batches/summary` returns recent batch health, last
+file names, counts, size, checksum, high-water cursor, cursor advance flag,
+and partial status, but not full paths, actor ids, worker ids, customer text,
+or tool arguments. The stale threshold is
+`APP_AUDIT_EXPORT_BATCH_STALE_SECONDS`, defaulting to 86400 seconds.
 
 `POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox
 dispatcher for proactive alert notification. It projects active P0/P1 alerts

@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--event-type", help="Optional event type filter for event rows.")
     parser.add_argument("--created-after", help="Only export records created at or after this ISO timestamp.")
     parser.add_argument("--created-before", help="Only export records created at or before this ISO timestamp.")
+    parser.add_argument(
+        "--no-incremental",
+        action="store_true",
+        help="Disable operation-ledger cursor reuse and run the requested window from scratch.",
+    )
     parser.add_argument("--exclude-events", action="store_true")
     parser.add_argument("--exclude-tool-audit", action="store_true")
     parser.add_argument("--exclude-event-store-operations", action="store_true")
@@ -59,6 +64,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             created_before=args.created_before,
             limit=args.limit,
             order=args.order,
+            incremental=not args.no_incremental,
         )
     except Exception as exc:
         _emit_error(str(exc), json_output=args.json)

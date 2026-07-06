@@ -52,6 +52,11 @@ def test_audit_export_batch_writes_sanitized_ndjson_manifest_and_ledger(tmp_path
     assert manifest["manifest_file"] == report.manifest_file
     assert manifest["manifest_path_hash"] == report.manifest_path_hash
     assert manifest["lock_name"] == AUDIT_EXPORT_BATCH_LOCK_NAME
+    assert manifest["incremental"] is True
+    assert manifest["previous_cursor"] is None
+    assert manifest["high_water_cursor"] == report.high_water_cursor
+    assert manifest["cursor_advance_allowed"] is True
+    assert report.high_water_cursor is not None
     assert {row["record_type"] for row in rows} == {
         "event",
         "tool_audit",
@@ -61,6 +66,8 @@ def test_audit_export_batch_writes_sanitized_ndjson_manifest_and_ledger(tmp_path
     assert ledger.status == "completed"
     assert ledger.summary["output_file"] == report.output_file
     assert ledger.summary["output_path_hash"] == report.output_path_hash
+    assert ledger.summary["high_water_cursor"] == report.high_water_cursor
+    assert ledger.summary["cursor_advance_allowed"] is True
     assert "output_path" not in ledger.summary
 
     combined = payload.decode("utf-8") + manifest_path.read_text(encoding="utf-8") + json.dumps(ledger.summary)
@@ -86,6 +93,14 @@ def test_audit_export_batch_marks_partial_exports_with_control_row(tmp_path):
         event_type="message.user",
         payload={"role": "user", "content": "PRIVATE partial content"},
     )
+    event_store.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_partial_2",
+        user_id="user_partial_2",
+        run_id="run_partial_2",
+        event_type="message.user",
+        payload={"role": "user", "content": "PRIVATE partial content 2"},
+    )
 
     report = run_audit_export_batch(
         event_store=event_store,
@@ -104,12 +119,98 @@ def test_audit_export_batch_marks_partial_exports_with_control_row(tmp_path):
     rows = [json.loads(line) for line in export_path.read_text(encoding="utf-8").splitlines()]
 
     assert report.partial is True
+    assert report.high_water_cursor is None
+    assert report.cursor_advance_allowed is False
     assert manifest["partial"] is True
+    assert manifest["high_water_cursor"] is None
+    assert manifest["cursor_advance_allowed"] is False
     assert manifest["record_count"] == 2
     assert manifest["record_type_counts"]["event"] == 1
     assert manifest["record_type_counts"]["export_control"] == 1
     assert rows[-1]["record_type"] == "export_control"
     assert rows[-1]["partial"] is True
+
+
+def test_audit_export_batch_uses_stable_cursor_for_incremental_runs(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    created_at = "2026-07-06T10:00:00+00:00"
+    _append_tool_audit(event_store, "audit_cursor_a", created_at)
+    _append_tool_audit(event_store, "audit_cursor_b", created_at)
+    options = AuditExportBatchOptions(
+        include_events=False,
+        include_event_store_operations=False,
+        include_operations_automation_executions=False,
+        limit=20,
+    )
+
+    first = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=options,
+    )
+    _append_tool_audit(event_store, "audit_cursor_c", created_at)
+    second = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=options,
+    )
+
+    rows = _read_export_rows(tmp_path / "exports" / second.output_file)
+
+    assert first.high_water_cursor == {
+        "created_at": created_at,
+        "record_type": "tool_audit",
+        "id": "audit_cursor_b",
+    }
+    assert second.previous_cursor == first.high_water_cursor
+    assert second.high_water_cursor == {
+        "created_at": created_at,
+        "record_type": "tool_audit",
+        "id": "audit_cursor_c",
+    }
+    assert [row["id"] for row in rows] == ["audit_cursor_c"]
+    assert second.partial is False
+
+
+def test_audit_export_batch_does_not_advance_cursor_from_partial_batch(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    created_at = "2026-07-06T10:00:00+00:00"
+    _append_tool_audit(event_store, "audit_partial_a", created_at)
+    _append_tool_audit(event_store, "audit_partial_b", created_at)
+    partial_options = AuditExportBatchOptions(
+        include_events=False,
+        include_event_store_operations=False,
+        include_operations_automation_executions=False,
+        limit=1,
+    )
+
+    partial = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=partial_options,
+    )
+    full = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=AuditExportBatchOptions(
+            include_events=False,
+            include_event_store_operations=False,
+            include_operations_automation_executions=False,
+            limit=20,
+        ),
+    )
+
+    rows = _read_export_rows(tmp_path / "exports" / full.output_file)
+
+    assert partial.partial is True
+    assert partial.high_water_cursor is None
+    assert partial.cursor_advance_allowed is False
+    assert full.previous_cursor is None
+    assert [row["id"] for row in rows] == ["audit_partial_a", "audit_partial_b"]
 
 
 def test_audit_export_batch_rejects_when_maintenance_lock_is_held(tmp_path):
@@ -174,6 +275,8 @@ def test_audit_export_batch_summary_reports_fresh_failed_and_stale_states(tmp_pa
     assert fresh.last_record_count == report.record_count
     assert fresh.last_output_file == report.output_file
     assert fresh.last_manifest_file == report.manifest_file
+    assert fresh.last_high_water_cursor == report.high_water_cursor
+    assert fresh.last_cursor_advance_allowed is True
     assert stale.status == "stale"
 
 
@@ -209,6 +312,8 @@ def test_audit_export_worker_cli_outputs_sanitized_json(tmp_path, capsys, monkey
     assert payload["status"] == "completed"
     assert payload["output_file"].endswith(".ndjson")
     assert payload["manifest_file"].endswith(".manifest.json")
+    assert payload["cursor_advance_allowed"] is True
+    assert payload["high_water_cursor"]
     assert str(output_dir) not in captured.out
     assert "4111" not in captured.out
     assert "A1001" not in captured.out
@@ -276,3 +381,25 @@ def _seed_audit_rows(event_store: SQLiteEventStore) -> None:
         source="console",
         created_at=created_at,
     )
+
+
+def _append_tool_audit(event_store: SQLiteEventStore, record_id: str, created_at: str) -> None:
+    event_store.append_tool_audit(
+        ToolAuditRecord(
+            id=record_id,
+            tenant_id="demo_tenant",
+            actor_user_id="operator_cursor_sensitive",
+            request_id=f"req_{record_id}",
+            trace_id=f"run_{record_id}",
+            tool_name="order.get",
+            argument_hash=f"argument_hash_{record_id}",
+            status=ToolStatus.success,
+            latency_ms=25,
+            error_code=None,
+            created_at=created_at,
+        )
+    )
+
+
+def _read_export_rows(path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]

@@ -226,8 +226,8 @@ First response:
 - Check `/api/v1/admin/audit/export-batches/summary` and the `event_store_operations` ledger for `operation=audit_export_batch`.
 - If status is `failed`, inspect worker logs for the sanitized `error_type`, then verify database URL, output directory permissions, and available disk.
 - If status is `rejected`, another event-store maintenance operation held the lock. Wait for retention, backup, or restore-drill work to finish, then rerun the worker.
-- If the latest batch is partial, do not advance SIEM or warehouse watermarks from that manifest. Rerun with a narrower `created_after` / `created_before` window or a higher `--limit`, then verify `content_sha256`, `record_count`, and `record_type_counts` in the manifest.
-- Keep the generated `.ndjson` and `.manifest.json` together; the manifest stores file names, path hashes, SHA-256, byte count, record counts, and the partial flag without exposing full local paths.
+- If the latest batch is partial or `cursor_advance_allowed=false`, do not advance SIEM or warehouse watermarks from that manifest. Rerun with a narrower `created_after` / `created_before` window or a higher `--limit`, then verify `content_sha256`, `record_count`, `record_type_counts`, and `high_water_cursor` in the manifest.
+- Keep the generated `.ndjson` and `.manifest.json` together; the manifest stores file names, path hashes, SHA-256, byte count, record counts, `previous_cursor`, `high_water_cursor`, the cursor advance flag, and the partial flag without exposing full local paths.
 
 Escalate when: failed or partial batches repeat across two attempts or block compliance export delivery.
 
