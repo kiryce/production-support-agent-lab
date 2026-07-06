@@ -485,7 +485,12 @@ with Basic Auth using `FRONTEND_CONSOLE_USERNAME` and
 `FRONTEND_CONSOLE_PASSWORD`. Missing credentials, placeholder values, or
 passwords shorter than 16 characters fail closed with `401`, so the BFF cannot
 silently expose its high-scope `FRONTEND_ACTOR_*` backend identity to any browser
-that can reach port `3000`.
+that can reach port `3000`. The BFF signing layer also fails closed before
+calling the Agent API unless `AGENT_API_BASE_URL`, `APP_TENANT_ID`,
+`APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`, `FRONTEND_ACTOR_USER_ID`,
+`FRONTEND_ACTOR_ROLES`, and `FRONTEND_ACTOR_SCOPES` are all explicit
+non-placeholder values. `APP_TENANT_ID=demo_tenant` is rejected in production
+frontend auth, and `FRONTEND_ACTOR_SCOPES` has no default high-scope fallback.
 Alert triage writes add a second server-side guard: `POST
 /api/v1/admin/monitor/alerts/{alert_key}/triage` may include `expected_alert`
 with the status, assignee, count, `last_seen_at`, `last_triage_event_id`, and

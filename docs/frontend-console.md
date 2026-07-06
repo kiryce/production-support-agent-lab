@@ -14,6 +14,12 @@ and the BFF calls the real Agent API:
   `FRONTEND_CONSOLE_USERNAME` or `FRONTEND_CONSOLE_PASSWORD` fails closed with
   `401`. Placeholder values are rejected, and the password must be at least 16
   characters.
+- Production BFF signing also fails closed when any backend actor setting is
+  missing or placeholder-shaped. `AGENT_API_BASE_URL`, `APP_TENANT_ID`,
+  `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`,
+  `FRONTEND_ACTOR_USER_ID`, `FRONTEND_ACTOR_ROLES`, and
+  `FRONTEND_ACTOR_SCOPES` must be explicit; there is no default admin-scope
+  fallback in production mode.
 - No fake incident, alert, citation, memory, or tool-audit data is hardcoded in
   the UI. Empty screens mean the backend returned no events.
 
@@ -159,7 +165,9 @@ Do not prefix secrets with `NEXT_PUBLIC_`. Next.js only needs them in middleware
 or route handlers on the server side. `FRONTEND_CONSOLE_*` credentials are the
 browser entry guard for the console; replace the sample password with a rotated
 secret of at least 16 characters. `FRONTEND_ACTOR_*` is the backend actor the BFF
-uses after the browser has been authenticated.
+uses after the browser has been authenticated. Production mode rejects missing
+actor values, placeholder secrets, `APP_TENANT_ID=demo_tenant`, and short actor
+signature secrets before it calls the Agent API.
 
 With Docker Compose:
 

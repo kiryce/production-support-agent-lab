@@ -11,25 +11,7 @@ import {
 type AgentMethod = "GET" | "POST";
 type QueryValue = string | number | boolean | null | undefined;
 
-const ADMIN_SCOPES = [
-  "crm:read",
-  "order:read",
-  "shipping:read",
-  "ticket:write",
-  "kb:read",
-  "feedback:write",
-  "admin:read",
-  "admin:write",
-  "audit:read",
-  "eval:read",
-  "events:read",
-  "eval:run",
-  "feedback:read",
-  "knowledge:diagnose",
-  "memory:replay",
-  "monitor:read",
-  "monitor:write"
-].join(",");
+const PLACEHOLDER_MARKERS = ["replace_with", "your_", "example", "..."];
 
 export class AgentApiError extends Error {
   constructor(
@@ -54,19 +36,20 @@ export function getAuthMode(): "demo" | "production" {
 
 export function getConsoleConnection() {
   const authMode = getAuthMode();
+  if (authMode === "production") {
+    const config = productionFrontendConfig();
+    return {
+      label: process.env.FRONTEND_CONNECTION_LABEL ?? "Production API",
+      authMode,
+      actorUserId: config.userId,
+      actorRole: config.rolesHeader
+    };
+  }
   return {
-    label:
-      process.env.FRONTEND_CONNECTION_LABEL ??
-      (authMode === "demo" ? "Local API" : "Production API"),
+    label: process.env.FRONTEND_CONNECTION_LABEL ?? "Local API",
     authMode,
-    actorUserId:
-      authMode === "demo"
-        ? process.env.DEMO_ACTOR_USER_ID ?? "user_demo"
-        : process.env.FRONTEND_ACTOR_USER_ID ?? "console_operator",
-    actorRole:
-      authMode === "demo"
-        ? process.env.DEMO_ACTOR_ROLE ?? "admin"
-        : process.env.FRONTEND_ACTOR_ROLES ?? "admin"
+    actorUserId: process.env.DEMO_ACTOR_USER_ID ?? "user_demo",
+    actorRole: process.env.DEMO_ACTOR_ROLE ?? "admin"
   };
 }
 
@@ -80,7 +63,10 @@ export async function agentFetch<T>(
   } = {}
 ): Promise<T> {
   const method = options.method ?? "GET";
-  const baseUrl = process.env.AGENT_API_BASE_URL ?? "http://127.0.0.1:8000";
+  const authMode = getAuthMode();
+  const productionConfig = authMode === "production" ? productionFrontendConfig() : null;
+  const baseUrl =
+    productionConfig?.baseUrl ?? process.env.AGENT_API_BASE_URL ?? "http://127.0.0.1:8000";
   const target = new URL(path, baseUrl);
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== null && value !== undefined) {
@@ -131,26 +117,21 @@ function buildHeaders(method: AgentMethod, pathWithQuery: string, bodyText: stri
     return headers;
   }
 
-  const internalApiKey = requireEnv("APP_INTERNAL_API_KEY");
-  const signatureSecret = requireEnv("APP_ACTOR_SIGNATURE_SECRET");
-  const tenantId = process.env.APP_TENANT_ID ?? "demo_tenant";
-  const userId = process.env.FRONTEND_ACTOR_USER_ID ?? "console_operator";
-  const rolesHeader = canonicalCsv(process.env.FRONTEND_ACTOR_ROLES ?? "admin", "admin");
-  const scopesHeader = canonicalCsv(process.env.FRONTEND_ACTOR_SCOPES ?? ADMIN_SCOPES);
+  const config = productionFrontendConfig();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const actorDigest = signActorClaims({
-    secret: signatureSecret,
-    tenantId,
-    userId,
-    rolesHeader,
-    scopesHeader,
+    secret: config.signatureSecret,
+    tenantId: config.tenantId,
+    userId: config.userId,
+    rolesHeader: config.rolesHeader,
+    scopesHeader: config.scopesHeader,
     timestamp
   });
 
-  headers["X-Internal-Auth"] = internalApiKey;
-  headers["X-Actor-User-Id"] = userId;
-  headers["X-Actor-Roles"] = rolesHeader;
-  headers["X-Actor-Scopes"] = scopesHeader;
+  headers["X-Internal-Auth"] = config.internalApiKey;
+  headers["X-Actor-User-Id"] = config.userId;
+  headers["X-Actor-Roles"] = config.rolesHeader;
+  headers["X-Actor-Scopes"] = config.scopesHeader;
   headers["X-Actor-Timestamp"] = timestamp;
   headers["X-Actor-Signature"] = formatSignature(actorDigest);
 
@@ -158,11 +139,11 @@ function buildHeaders(method: AgentMethod, pathWithQuery: string, bodyText: stri
     const requestNonce = nonce();
     const bodyHash = sha256Hex(bodyText);
     const requestDigest = signRequestClaims({
-      secret: signatureSecret,
-      tenantId,
-      userId,
-      rolesHeader,
-      scopesHeader,
+      secret: config.signatureSecret,
+      tenantId: config.tenantId,
+      userId: config.userId,
+      rolesHeader: config.rolesHeader,
+      scopesHeader: config.scopesHeader,
       timestamp,
       nonce: requestNonce,
       method,
@@ -177,12 +158,60 @@ function buildHeaders(method: AgentMethod, pathWithQuery: string, bodyText: stri
   return headers;
 }
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
+function productionFrontendConfig() {
+  return {
+    baseUrl: requireProductionEnv("AGENT_API_BASE_URL"),
+    tenantId: requireProductionTenantId(),
+    internalApiKey: requireProductionEnv("APP_INTERNAL_API_KEY"),
+    signatureSecret: requireProductionEnv("APP_ACTOR_SIGNATURE_SECRET", { minLength: 32 }),
+    userId: requireProductionEnv("FRONTEND_ACTOR_USER_ID"),
+    rolesHeader: requireProductionCsv("FRONTEND_ACTOR_ROLES"),
+    scopesHeader: requireProductionCsv("FRONTEND_ACTOR_SCOPES")
+  };
+}
+
+function requireProductionEnv(name: string, options: { minLength?: number } = {}): string {
+  const value = process.env[name]?.trim();
   if (!value) {
     throw new AgentApiError(`${name} is required for production frontend auth`, 500, name);
   }
+  if (looksLikePlaceholder(value)) {
+    throw new AgentApiError(`${name} must not be a placeholder`, 500, name);
+  }
+  if (options.minLength && value.length < options.minLength) {
+    throw new AgentApiError(
+      `${name} must be at least ${options.minLength} characters`,
+      500,
+      name
+    );
+  }
   return value;
+}
+
+function requireProductionTenantId(): string {
+  const tenantId = requireProductionEnv("APP_TENANT_ID");
+  if (tenantId === "demo_tenant") {
+    throw new AgentApiError(
+      "APP_TENANT_ID must not be demo_tenant in production frontend auth",
+      500,
+      "APP_TENANT_ID"
+    );
+  }
+  return tenantId;
+}
+
+function requireProductionCsv(name: string): string {
+  const value = requireProductionEnv(name);
+  const canonical = canonicalCsv(value);
+  if (!canonical) {
+    throw new AgentApiError(`${name} must include at least one value`, 500, name);
+  }
+  return canonical;
+}
+
+function looksLikePlaceholder(value: string) {
+  const lowered = value.toLowerCase();
+  return PLACEHOLDER_MARKERS.some((marker) => lowered.includes(marker));
 }
 
 function parsePayload(text: string): unknown {
