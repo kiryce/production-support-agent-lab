@@ -9,6 +9,11 @@ and the BFF calls the real Agent API:
 - Local learning mode sends `X-Demo-User` and `X-Demo-Role`.
 - Production mode injects `X-Internal-Auth`, signed `X-Actor-*` claims, and
   request signatures when `FRONTEND_REQUEST_SIGNATURE_REQUIRED=true`.
+- Production mode also protects `/` and `/api/console/*` with browser Basic Auth
+  before any BFF route can sign a backend request. Missing
+  `FRONTEND_CONSOLE_USERNAME` or `FRONTEND_CONSOLE_PASSWORD` fails closed with
+  `401`. Placeholder values are rejected, and the password must be at least 16
+  characters.
 - No fake incident, alert, citation, memory, or tool-audit data is hardcoded in
   the UI. Empty screens mean the backend returned no events.
 
@@ -116,6 +121,8 @@ Use the console as a trusted server-side gateway:
 ```text
 AGENT_API_BASE_URL=http://app:8000
 FRONTEND_AUTH_MODE=production
+FRONTEND_CONSOLE_USERNAME=operator
+FRONTEND_CONSOLE_PASSWORD=replace_with_real_console_password_min_16_chars
 FRONTEND_ACTOR_USER_ID=console_operator
 FRONTEND_ACTOR_ROLES=admin
 FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write,admin:read,admin:write,audit:read,events:read,eval:read,eval:run,feedback:read,knowledge:diagnose,memory:replay,monitor:read,monitor:write
@@ -125,8 +132,11 @@ APP_INTERNAL_API_KEY=your_internal_gateway_secret
 APP_ACTOR_SIGNATURE_SECRET=your_actor_signature_secret_min_32_chars
 ```
 
-Do not prefix secrets with `NEXT_PUBLIC_`. Next.js only needs them in route
-handlers on the server side.
+Do not prefix secrets with `NEXT_PUBLIC_`. Next.js only needs them in middleware
+or route handlers on the server side. `FRONTEND_CONSOLE_*` credentials are the
+browser entry guard for the console; replace the sample password with a rotated
+secret of at least 16 characters. `FRONTEND_ACTOR_*` is the backend actor the BFF
+uses after the browser has been authenticated.
 
 With Docker Compose:
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +32,7 @@ async def check_readiness(container: AppContainer, deep: bool | None = None) -> 
     checks = [
         _check_config(container),
         _check_event_store(container),
+        _check_event_store_backup_dir(container),
     ]
     if use_deep_checks:
         checks.extend(
@@ -82,6 +85,44 @@ def _check_event_store(container: AppContainer) -> ReadinessCheck:
     except Exception as exc:
         return ReadinessCheck(name="event_store", status="failed", detail=str(exc))
     return ReadinessCheck(name="event_store", status="ok", detail="sqlite schema and write probe passed")
+
+
+def _check_event_store_backup_dir(container: AppContainer) -> ReadinessCheck:
+    if not container.settings.is_production:
+        return ReadinessCheck(
+            name="event_store_backup_dir",
+            status="skipped",
+            detail="production-only backup directory probe skipped",
+        )
+    if not container.event_store:
+        return ReadinessCheck(
+            name="event_store_backup_dir",
+            status="skipped",
+            detail="event store is not configured",
+        )
+    try:
+        backup_dir = Path(container.settings.app_event_store_backup_dir)
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        if not backup_dir.is_dir():
+            raise RuntimeError("configured path is not a directory")
+        probe_path = backup_dir / f".readiness-probe-{uuid4().hex}.tmp"
+        try:
+            probe_path.write_text("ok", encoding="utf-8")
+            if probe_path.read_text(encoding="utf-8") != "ok":
+                raise RuntimeError("write probe could not be read back")
+        finally:
+            probe_path.unlink(missing_ok=True)
+    except Exception as exc:
+        return ReadinessCheck(
+            name="event_store_backup_dir",
+            status="failed",
+            detail=f"backup directory probe failed: {type(exc).__name__}",
+        )
+    return ReadinessCheck(
+        name="event_store_backup_dir",
+        status="ok",
+        detail="configured backup directory write probe passed",
+    )
 
 
 async def _check_llm(container: AppContainer) -> ReadinessCheck:

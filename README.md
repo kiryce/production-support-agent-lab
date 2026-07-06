@@ -66,6 +66,8 @@
 http://127.0.0.1:3000
 ```
 
+Production console mode protects `/` and `/api/console/*` with server-side Basic Auth before the BFF can sign high-scope backend requests; configure `FRONTEND_CONSOLE_USERNAME` and `FRONTEND_CONSOLE_PASSWORD`.
+
 详细说明见 `docs/frontend-console.md`。视觉和交互设计说明见 `docs/product-design-brief.md`。
 
 ## 快速开始
@@ -154,7 +156,7 @@ http://127.0.0.1:8000/api/v1/ready
 http://127.0.0.1:8000/metrics
 ```
 
-`/health` 只表示进程活着。`/ready` 会检查配置和 event store；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
+`/health` 只表示进程活着。`/ready` 会检查配置、event store，以及生产模式下的备份目录写探针；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
 `/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、feedback review backlog、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、工具参数或知识库正文。
 
 ### 4. 启动前端控制台

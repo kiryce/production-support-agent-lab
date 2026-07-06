@@ -303,6 +303,9 @@ label plus `overwrite` / `verify` flags; the backend writes under
 `APP_EVENT_STORE_BACKUP_DIR` so operators cannot choose arbitrary filesystem
 paths through the console. The HTTP API always performs verification before
 issuing a backup token, even if a caller asks to skip verification.
+Production readiness also probes this directory: `/api/v1/ready` creates it if
+needed, writes and reads a temporary probe file, and deletes the probe before
+returning. A mis-mounted or read-only backup volume returns `not_ready`.
 
 Preview retention first:
 
@@ -355,6 +358,12 @@ stale or a refresh fails, the console keeps read-only search, filtering, and
 export available but blocks alert triage and alert-delivery mutations until a
 fresh snapshot is loaded. This guard is read-only: it does not write triage
 events, dispatch outbox rows, or change promotion-gate evidence by itself.
+In production, the Next.js middleware also protects `/` and `/api/console/*`
+with Basic Auth using `FRONTEND_CONSOLE_USERNAME` and
+`FRONTEND_CONSOLE_PASSWORD`. Missing credentials, placeholder values, or
+passwords shorter than 16 characters fail closed with `401`, so the BFF cannot
+silently expose its high-scope `FRONTEND_ACTOR_*` backend identity to any browser
+that can reach port `3000`.
 Alert triage writes add a second server-side guard: `POST
 /api/v1/admin/monitor/alerts/{alert_key}/triage` may include `expected_alert`
 with the status, assignee, count, `last_seen_at`, `last_triage_event_id`, and
@@ -532,10 +541,10 @@ The service exposes two health endpoints:
 | Endpoint | Purpose | Dependency checks |
 | --- | --- | --- |
 | `/api/v1/health` | Liveness: the FastAPI process is running. | None. |
-| `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
+| `/api/v1/ready` | Readiness: the service can take traffic. | Config, event store, production backup-directory write probe, and, when deep checks are enabled, OpenAI model access, business API `/health`, and knowledge API `/health`. |
 | `/metrics` | Prometheus-style scrape endpoint for production dashboards and alerts. | No active dependency probes; it reads local aggregate state and event-store summaries. |
 
-In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable.
+In production, deep readiness checks are enabled by default when `APP_READINESS_DEEP_CHECKS` is unset. `.env.example` sets it explicitly to `true`. Docker `HEALTHCHECK` targets `/api/v1/ready`, not `/api/v1/health`, so a container is not marked healthy while core dependencies are unavailable. The `event_store_backup_dir` check is not a deep external call; it runs for every production readiness request because backup creation is required before guarded retention apply.
 
 The `business_api` and `knowledge_api` readiness details include adapter circuit
 state, failure count, threshold, and retry attempts. Use that detail during

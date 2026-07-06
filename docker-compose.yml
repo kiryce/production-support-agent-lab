@@ -17,6 +17,8 @@ services:
       AGENT_API_BASE_URL: http://app:8000
       FRONTEND_CONNECTION_LABEL: Production API
       FRONTEND_AUTH_MODE: ${FRONTEND_AUTH_MODE:-production}
+      FRONTEND_CONSOLE_USERNAME: ${FRONTEND_CONSOLE_USERNAME}
+      FRONTEND_CONSOLE_PASSWORD: ${FRONTEND_CONSOLE_PASSWORD}
       FRONTEND_ACTOR_USER_ID: ${FRONTEND_ACTOR_USER_ID:-console_operator}
       FRONTEND_ACTOR_ROLES: ${FRONTEND_ACTOR_ROLES:-admin}
       FRONTEND_ACTOR_SCOPES: ${FRONTEND_ACTOR_SCOPES:-crm:read,order:read,shipping:read,ticket:write,kb:read,admin:read,admin:write,audit:read,events:read,eval:read,eval:run,knowledge:diagnose,memory:replay,monitor:read,monitor:write}

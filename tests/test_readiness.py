@@ -28,10 +28,15 @@ def test_ready_endpoint_local_shallow_ok():
     assert {check["name"] for check in body["checks"]} >= {
         "config",
         "event_store",
+        "event_store_backup_dir",
         "llm",
         "business_api",
         "knowledge_api",
     }
+    assert any(
+        check["name"] == "event_store_backup_dir" and check["status"] == "skipped"
+        for check in body["checks"]
+    )
     assert any(check["name"] == "business_api" and check["status"] == "skipped" for check in body["checks"])
 
 
@@ -93,6 +98,7 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         app_internal_api_key="internal-test-key",
         app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
         app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
+        app_event_store_backup_dir=str(tmp_path / "backups"),
     )
     container = AppContainer(
         settings=settings,
@@ -122,6 +128,7 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
     assert {check.name: check.status for check in report.checks} == {
         "config": "ok",
         "event_store": "ok",
+        "event_store_backup_dir": "ok",
         "llm": "ok",
         "business_api": "ok",
         "knowledge_api": "ok",
@@ -135,6 +142,51 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
     assert "retry_attempts=2" in business_detail
     assert "circuit=closed" in knowledge_detail
     assert "retry_attempts=2" in knowledge_detail
+
+
+@pytest.mark.asyncio
+async def test_production_readiness_fails_when_backup_directory_is_not_writable(tmp_path):
+    class HealthyLocalGateway:
+        provider = LocalDeterministicProvider()
+
+        async def health_check(self) -> None:
+            return None
+
+    backup_path = tmp_path / "backups"
+    backup_path.write_text("not a directory", encoding="utf-8")
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="internal-test-key",
+        app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
+        app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
+        app_event_store_backup_dir=str(backup_path),
+    )
+    container = AppContainer(
+        settings=settings,
+        store=None,
+        business_client=None,
+        memory=ConversationMemory(),
+        knowledge=KnowledgeIndex(),
+        monitor=OnlineMonitorAgent(),
+        tools=ToolBroker(registry=ToolRegistry(), idempotency_store={}),
+        llm=HealthyLocalGateway(),
+        event_store=SQLiteEventStore.from_url(settings.app_database_url),
+        orchestrator=None,
+    )
+
+    report = await check_readiness(container, deep=False)
+
+    checks = {check.name: check for check in report.checks}
+    assert report.status == "not_ready"
+    assert checks["event_store_backup_dir"].status == "failed"
+    assert "backup directory probe failed" in checks["event_store_backup_dir"].detail
 
 
 def test_ready_endpoint_returns_503_when_dependency_fails():
