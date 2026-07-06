@@ -270,6 +270,33 @@ def test_prometheus_metrics_exports_operations_automation_execution_health(tmp_p
     assert "PRIVATE" not in body
 
 
+def test_prometheus_metrics_exports_monitor_review_worker_health_without_worker_ids(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    event_store.record_monitor_review_worker_heartbeat(
+        tenant_id="demo_tenant",
+        worker_id="monitor-review-private-host-123",
+        status="idle",
+        cycle_status="success",
+        last_cycle_completed_at=utc_now(),
+        inspected_count=3,
+        reviewed_count=2,
+        skipped_existing_count=1,
+    )
+    container = _metrics_container(event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert "support_agent_monitor_review_worker_configured 1" in body
+    assert 'support_agent_monitor_review_worker_health_status{status="active"} 1' in body
+    assert 'support_agent_monitor_review_worker_workers{status="active"} 1' in body
+    assert "support_agent_monitor_review_worker_last_inspected_runs 3" in body
+    assert "support_agent_monitor_review_worker_last_reviewed_runs 2" in body
+    assert "support_agent_monitor_review_worker_last_skipped_existing_runs 1" in body
+    assert "support_agent_monitor_review_worker_last_heartbeat_timestamp_seconds" in body
+    assert "support_agent_monitor_review_worker_heartbeat_age_seconds" in body
+    assert "monitor-review-private-host-123" not in body
+
+
 def test_prometheus_metrics_degrades_alert_delivery_when_receiver_misses_receipt(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")

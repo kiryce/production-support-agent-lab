@@ -107,6 +107,7 @@ import type {
   MonitorAlert,
   MonitorDrilldownResponse,
   MonitorEvent,
+  MonitorReviewWorkerSummary,
   OperationsAutomationAction,
   OperationsAutomationExecutionRecord,
   OperationsAutomationExecutionSummary,
@@ -2734,6 +2735,7 @@ function OpsOverview({
   const latestEvalGate = snapshot?.evalGateLatest ?? null;
   const promotionGate = snapshot?.promotionGate ?? null;
   const sloReport = snapshot?.sloReport ?? null;
+  const monitorReviewWorker = snapshot?.monitorReviewWorker ?? null;
   return (
     <section className="ops-strip" aria-label="Operations overview">
       <div className="ops-tile">
@@ -2775,6 +2777,14 @@ function OpsOverview({
         <Rocket size={16} />
         <span>Promotion</span>
         <strong>{promotionGate?.status ?? "unknown"}</strong>
+      </div>
+      <div
+        className={`ops-tile ${monitorReviewWorkerTileClass(monitorReviewWorker)}`}
+        title={monitorReviewWorker ? `Last heartbeat ${ageLabel(monitorReviewWorker.last_seen_at)}` : "Review worker unavailable"}
+      >
+        <RefreshCw size={16} />
+        <span>Review Worker</span>
+        <strong>{monitorReviewWorker?.status ?? "unknown"}</strong>
       </div>
       <div className={`ops-tile ${metrics.readinessFailed ? "is-bad" : ""}`}>
         <Activity size={16} />
@@ -7532,6 +7542,19 @@ function promotionGateTileClass(status: "passed" | "warn" | "blocked" | null) {
     return "is-bad";
   }
   if (status === "warn") {
+    return "is-warn";
+  }
+  return "";
+}
+
+function monitorReviewWorkerTileClass(summary: MonitorReviewWorkerSummary | null) {
+  if (!summary) {
+    return "is-warn";
+  }
+  if (summary.status === "missing" || summary.status === "stale") {
+    return "is-bad";
+  }
+  if (summary.last_failed_count > 0 || summary.status === "unknown") {
     return "is-warn";
   }
   return "";

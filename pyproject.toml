@@ -44,6 +44,7 @@ support-agent-sign-headers = "support_agent_lab.scripts.sign_actor_headers:main"
 support-agent-release-check = "support_agent_lab.scripts.release_check:main"
 support-agent-event-store = "support_agent_lab.scripts.event_store_ops:main"
 support-agent-alert-dispatcher = "support_agent_lab.scripts.alert_dispatcher_worker:main"
+support-agent-monitor-review-worker = "support_agent_lab.scripts.monitor_review_worker:main"
 
 [project.urls]
 Homepage = "https://github.com/kiryce/production-support-agent-lab"

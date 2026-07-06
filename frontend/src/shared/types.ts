@@ -292,6 +292,22 @@ export type MonitorTriageMetricsResponse = {
   latest_triage_at: string | null;
 };
 
+export type MonitorReviewWorkerSummary = {
+  status: "active" | "stale" | "missing" | "unknown" | string;
+  stale_after_seconds: number;
+  total_worker_count: number;
+  active_worker_count: number;
+  stale_worker_count: number;
+  last_seen_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  last_inspected_count: number;
+  last_reviewed_count: number;
+  last_skipped_existing_count: number;
+  last_skipped_unreviewable_count: number;
+  last_failed_count: number;
+};
+
 export type EvalCaseDraft = {
   case_id: string;
   scenario: string;
@@ -936,6 +952,7 @@ export type ConsoleSnapshot = {
   incidentBrief: IncidentBriefResponse | null;
   incidentTimeline: IncidentTimelineResponse | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
+  monitorReviewWorker: MonitorReviewWorkerSummary | null;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;

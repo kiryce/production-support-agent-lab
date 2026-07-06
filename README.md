@@ -43,6 +43,7 @@
 - monitor alert queue、状态筛选、搜索、排序
 - triage health、MTTA、MTTR、stale alert、new-after-triage
 - alert delivery：读取 durable outbox 和 dispatcher heartbeat，显示 webhook 是否禁用、排队、backoff、claimed、失败、dead-letter、worker 是否 stale/missing，并可由值班人员 replay/close
+- monitor review worker：后台补齐已完成 run 的 `monitor.reviewed` 事件，控制台显示 heartbeat active/stale/missing 和最新 cycle 计数
 - live snapshot freshness：自动刷新真实 `/api/console/snapshot`，显示 fresh/stale 状态，标记新增或更新的 alert 卡片，并在快照过期时阻止 alert / delivery 写操作
 - monitor drilldown 和 failure/intent/risk buckets
 - persisted run search
@@ -54,7 +55,7 @@
 - response feedback workbench：读取真实 run 的好评/差评、reason 分布、用户评论和复核积压指标，记录 append-only review trail，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
-- SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA、alert delivery 和 automation execution failure rate 计算服务目标与错误预算
+- SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA、alert delivery、monitor review worker 和 automation execution failure rate 计算服务目标与错误预算
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
 - operations automation plan：聚合 monitor、alert delivery、promotion gate、tool audit、feedback、eval 证据，返回可执行 endpoint、scope、guardrail 和是否可自动执行，适合接 cron、值班机器人或发布前检查；控制台执行 auto-safe 动作后会写入 automation execution ledger，并能在 Settings 里按 action kind、status、source 和 actor 查询执行历史
 - audit export：把脱敏后的 event/tool audit/event-store operation/automation execution 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
@@ -158,7 +159,7 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置、event store，以及生产模式下的备份目录写探针；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
-`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、alert dispatcher heartbeat、feedback review backlog、automation execution health、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、自动化 action id、工具参数、worker id 或知识库正文。
+`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、monitor review worker heartbeat、alert delivery outbox、alert dispatcher heartbeat、feedback review backlog、automation execution health、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、自动化 action id、工具参数、worker id 或知识库正文。
 
 ### 4. 启动前端控制台
 
@@ -445,7 +446,7 @@ docker compose up --build
 docker compose --profile observability up --build
 ```
 
-带常驻告警投递 worker 一起启动：
+带常驻告警投递和异步 monitor review worker 一起启动：
 
 ```bash
 docker compose --profile alerts up --build
@@ -504,7 +505,7 @@ Eval 不只看最终回答，还检查：
 `/api/v1/admin/feedback/review-queue` 是只读反馈复核队列：它从 append-only feedback/review 事件投影当前状态、未解决数、未分配数、过期未处理数、最新 assignee 和复核次数。它不输出用户 comment、operator note 或 raw payload，适合控制台首页、值班队列、自动化计划和报表使用；只有打开单条反馈时才读取 review trail。
 反馈复核写入也会发送 expected review state；如果另一位操作者已经追加了 review event，后端会返回 `409 Conflict`，不会把旧页面上的复核结论写进 append-only review trail。
 
-`/api/v1/admin/operations/slo-report` 是只读服务目标报告：它复用同一套生产证据，返回 `slo_report.v1`，逐项说明 grounded rate、policy compliance、human review rate、active P0/P1、tool failure rate、feedback negative rate、staging eval freshness、triage MTTA、alert delivery health 和 automation execution failure rate 是否 `met`、`at_risk`、`breached` 或 `no_data`，并给出 `error_budget_remaining`。它只输出聚合证据，不输出用户原文、工具参数、检索正文、memory facts、自动化 action id 或反馈 comment。控制台 Overview 会显示 SLO 总状态，Settings 会列出每个 objective。
+`/api/v1/admin/operations/slo-report` 是只读服务目标报告：它复用同一套生产证据，返回 `slo_report.v1`，逐项说明 grounded rate、policy compliance、human review rate、active P0/P1、tool failure rate、feedback negative rate、staging eval freshness、triage MTTA、alert delivery health、monitor review worker health 和 automation execution failure rate 是否 `met`、`at_risk`、`breached` 或 `no_data`，并给出 `error_budget_remaining`。它只输出聚合证据，不输出用户原文、工具参数、检索正文、memory facts、自动化 action id 或反馈 comment。控制台 Overview 会显示 SLO 总状态，Settings 会列出每个 objective。
 
 `/api/v1/admin/operations/automation-plan` 是只读运营自动化计划：它在同一个证据窗口里汇总 active P0/P1 alert、webhook/outbox 状态、dead-letter delivery、缺回执 sent delivery、incident brief、regression draft、promotion gate、tool audit、feedback、retrieval grounding 和 staging eval gate，然后返回 `ops_automation.v1`。每条 action 都包含 title、detail、priority、`safe_to_auto_execute`、所需 scope、可调用的 method/path/query/body，以及不含用户原文的 evidence。它不会自己改 triage、不会发 webhook、不会跑 eval；真正执行必须由有 scope 的控制台、cron 或值班机器人显式调用返回的 command。控制台执行 auto-safe action 后会调用 `/api/v1/admin/operations/automation-executions` 写入执行台账，只保存 action kind、状态、command 指纹、body key/hash 和结果摘要，不保存 raw command body 或 raw result。`/api/v1/admin/operations/automation-executions/summary` 会按时间窗口聚合 completed/failed/rejected、source 和 failure rate；Settings 会展示 24h execution health，并支持按 action kind、status、source、actor 查询执行历史，方便排查 cron、值班机器人、API 和控制台自动化动作。
 
@@ -518,9 +519,11 @@ Every HTTP response carries bounded `X-Request-Id` and `X-Trace-Id` correlation 
 
 `/api/v1/admin/incidents/runs/{run_id}/timeline` 返回 `incident_timeline.v1`，把 append-only event、tool audit、response feedback、triage、alert delivery、alert webhook receipt 和 eval gate 按时间合成一条脱敏调查线。它只输出事件类型、状态、错误码、计数、哈希化 correlation id 和紧凑 evidence，不输出用户原文、工具参数、工具 payload、检索正文、memory facts、feedback comment、feedback review note、triage note、delivery error text、webhook body 或 webhook headers。控制台 Brief 面板会显示这条时间线，帮助值班人员先理解事故顺序，再进入 trace 细节。
 
-`/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。它也会导出 alert dispatcher heartbeat 和 feedback review backlog 的聚合指标，例如 `support_agent_alert_dispatcher_health_status{status="stale"}`、`support_agent_feedback_review_queue_stale_unresolved` 和 `support_agent_feedback_review_queue_unassigned_unresolved`，但不会输出用户 comment、review note、run id、worker id 或 assignee。控制台仍然负责展示具体 alert、run、事件和处置备注。
+`/metrics` 会把同一套 monitor triage 投影导出成低基数机器指标，例如 `support_agent_monitor_triage_active_alerts`、`support_agent_monitor_triage_new_events_since_triage`、`support_agent_monitor_triage_health_status{status="critical"}`、`support_agent_monitor_triage_active_alerts_by_severity{severity="P0"}` 和 `support_agent_monitor_triage_mtta_seconds`。它也会导出 monitor review worker、alert dispatcher heartbeat 和 feedback review backlog 的聚合指标，例如 `support_agent_monitor_review_worker_health_status{status="stale"}`、`support_agent_monitor_review_worker_last_reviewed_runs`、`support_agent_alert_dispatcher_health_status{status="stale"}`、`support_agent_feedback_review_queue_stale_unresolved` 和 `support_agent_feedback_review_queue_unassigned_unresolved`，但不会输出用户 comment、review note、run id、worker id 或 assignee。控制台仍然负责展示具体 alert、run、事件和处置备注。
 
-Prometheus 示例配置在 `deploy/prometheus/prometheus.yml`，生产告警规则在 `deploy/prometheus/support-agent-alerts.yml`，对应 runbook 在 `docs/alerting-runbook.md`。`docker compose --profile observability up --build` 会把配置和规则只读挂载进 Prometheus，把 UI 绑定到 `127.0.0.1:9090`，并保留 Prometheus lifecycle endpoint 关闭状态；默认 `docker compose up --build` 仍只启动 backend + console。规则覆盖 API down、5xx、限流、P0/P1 monitor alert、new-after-triage、stale alert、alert delivery dead-letter/backlog、alert delivery receipt missing、alert dispatcher stale/missing、feedback review stale/unassigned backlog、tool failure、LLM fallback 和 circuit breaker。
+Prometheus 示例配置在 `deploy/prometheus/prometheus.yml`，生产告警规则在 `deploy/prometheus/support-agent-alerts.yml`，对应 runbook 在 `docs/alerting-runbook.md`。`docker compose --profile observability up --build` 会把配置和规则只读挂载进 Prometheus，把 UI 绑定到 `127.0.0.1:9090`，并保留 Prometheus lifecycle endpoint 关闭状态；默认 `docker compose up --build` 仍只启动 backend + console。规则覆盖 API down、5xx、限流、P0/P1 monitor alert、new-after-triage、stale alert、alert delivery dead-letter/backlog、alert delivery receipt missing、alert dispatcher stale/missing、monitor review worker stale/failure、feedback review stale/unassigned backlog、tool failure、LLM fallback 和 circuit breaker。
+
+`support-agent-monitor-review-worker` 会读取持久化 `agent.run.completed` 事件，用和线上同步 monitor 相同的规则补写缺失的 `monitor.reviewed`，并用 tenant 级 operation lock 避免多个 worker 抢同一批 run。它每个 cycle 会写入 `monitor_review_worker_heartbeats`，`APP_MONITOR_REVIEW_WORKER_HEARTBEAT_STALE_SECONDS` 控制 stale 阈值；`GET /api/v1/admin/monitor/review-worker/summary`、SLO report、控制台 Overview 和 `/metrics` 都只暴露 active/stale/missing、最新 inspected/reviewed/skipped/failed 计数和时间戳，不暴露 run id、用户原文、工具参数或 worker id。它适合放进 `docker compose --profile alerts up --build`、systemd、Supervisor、Kubernetes CronJob/Deployment 或值班平台里常驻运行。
 
 `/api/v1/admin/monitor/alert-deliveries/dispatch` 和 `support-agent-alert-dispatcher` 会从持久化 monitor events 派生 P0/P1 active alerts，写入 `alert_delivery_outbox`，再 claim 到期可发送的 delivery。生产里建议用 `docker compose --profile alerts up --build` 或独立 supervisor 常驻运行 CLI；控制台的 `Dispatch now` 保留为人工补救按钮。worker 每个 cycle 会写入 `alert_dispatcher_heartbeats`，`APP_MONITOR_ALERT_DISPATCHER_HEARTBEAT_STALE_SECONDS` 控制 stale 阈值。dispatcher 在每条 webhook 发送前都会原子重验并续租当前 delivery，避免慢 webhook 或多 worker 竞争导致过期 claim 被重复通知。失败会按指数 backoff 设置 `next_attempt_at`；超过 `APP_MONITOR_ALERT_MAX_ATTEMPTS` 后进入 dead-letter，不再自动重试。控制台 Delivery ledger 可以对 `dead` row 做 replay/requeue 或 close，动作会写入 append-only audit event。它不会把用户原文、工具参数或 eval answer 放进通知 payload，只发送 alert key、severity、reason、sample run/event ids 和时间窗口。要做端到端本地/内网演示，可以启用 `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true`，把 `APP_MONITOR_ALERT_WEBHOOK_URL` 指向同服务的 `/api/v1/webhooks/monitor/alerts`；receiver 会用同一个 `APP_MONITOR_ALERT_WEBHOOK_SECRET` 验证 `X-PSA-*` HMAC 签名，并把 receipt 幂等写入 `alert_webhook_receipts`，只保存 hash、计数和时间，不保存 raw body/header。`GET /api/v1/admin/monitor/alert-deliveries/summary` 给控制台展示 webhook 是 disabled、queued、failed 还是 ok，并返回 dispatcher active/stale/missing、in-progress/dead-letter/closed 计数；控制台 Receipts tab 通过 `GET /api/v1/admin/monitor/alert-webhook-receipts` 查看接收端 receipt 摘要，并在 BFF 层只返回 delivery id、alert key、severity、body hash、计数和时间；`/metrics` 会把同一个 durable outbox 和 dispatcher heartbeat 聚合成低基数指标，例如 `support_agent_alert_delivery_records{status="dead"}`、`support_agent_alert_delivery_records_by_severity{severity="P0"}`、`support_agent_alert_delivery_health_status{status="failed"}` 和 `support_agent_alert_dispatcher_health_status{status="stale"}`。
 
@@ -593,7 +596,7 @@ python -m support_agent_lab.mcp.server
 - Postgres/Kafka event store
 - Redis/Postgres request nonce store
 - OpenTelemetry exporter
-- 异步 monitor worker
+- 分布式 monitor/review worker 队列和 OLAP sink
 - SIEM/warehouse 批量同步和托管 connector
 - 多模型 fallback 和成本预算
 - 更强 PII detector 和合规审批流

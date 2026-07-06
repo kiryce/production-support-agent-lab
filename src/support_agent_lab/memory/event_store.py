@@ -92,6 +92,41 @@ class AlertDispatcherHeartbeatSummary(BaseModel):
     last_error: str | None = None
 
 
+class MonitorReviewWorkerHeartbeatRecord(BaseModel):
+    tenant_id: str
+    worker_id: str
+    status: str
+    last_seen_at: datetime
+    last_cycle_started_at: datetime | None = None
+    last_cycle_completed_at: datetime | None = None
+    last_cycle_status: str | None = None
+    last_error: str | None = None
+    cycle_count: int = 0
+    inspected_count: int = 0
+    reviewed_count: int = 0
+    skipped_existing_count: int = 0
+    skipped_unreviewable_count: int = 0
+    failed_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class MonitorReviewWorkerHeartbeatSummary(BaseModel):
+    status: str
+    stale_after_seconds: int
+    total_worker_count: int = 0
+    active_worker_count: int = 0
+    stale_worker_count: int = 0
+    last_seen_at: datetime | None = None
+    last_success_at: datetime | None = None
+    last_error: str | None = None
+    last_inspected_count: int = 0
+    last_reviewed_count: int = 0
+    last_skipped_existing_count: int = 0
+    last_skipped_unreviewable_count: int = 0
+    last_failed_count: int = 0
+
+
 class AlertWebhookReceiptRecord(BaseModel):
     tenant_id: str
     delivery_id: str
@@ -308,6 +343,7 @@ SQLITE_REQUIRED_TABLES = (
     "api_rate_limits",
     "alert_delivery_outbox",
     "alert_dispatcher_heartbeats",
+    "monitor_review_worker_heartbeats",
     "alert_webhook_receipts",
     "event_store_operations",
     "operations_automation_executions",
@@ -378,6 +414,24 @@ SQLITE_ALERT_DISPATCHER_HEARTBEATS_REQUIRED_COLUMNS = {
     "created_at",
     "updated_at",
 }
+SQLITE_MONITOR_REVIEW_WORKER_HEARTBEATS_REQUIRED_COLUMNS = {
+    "tenant_id",
+    "worker_id",
+    "status",
+    "last_seen_at",
+    "last_cycle_started_at",
+    "last_cycle_completed_at",
+    "last_cycle_status",
+    "last_error",
+    "cycle_count",
+    "inspected_count",
+    "reviewed_count",
+    "skipped_existing_count",
+    "skipped_unreviewable_count",
+    "failed_count",
+    "created_at",
+    "updated_at",
+}
 SQLITE_ALERT_WEBHOOK_RECEIPTS_REQUIRED_COLUMNS = {
     "tenant_id",
     "delivery_id",
@@ -428,6 +482,10 @@ def _parse_optional_datetime(value: Any) -> datetime | None:
     if not value:
         return None
     return datetime.fromisoformat(str(value))
+
+
+def _parse_datetime_or_now(value: Any) -> datetime:
+    return _parse_optional_datetime(value) or utc_now()
 
 
 class SQLiteEventStore:
@@ -482,6 +540,57 @@ class SQLiteEventStore:
             event_type="monitor.reviewed",
             payload=event.model_dump(mode="json"),
         )
+
+    def append_monitor_event_if_absent(
+        self,
+        event: MonitorEvent,
+        *,
+        tenant_id: str = "demo_tenant",
+    ) -> tuple[StoredEvent | None, bool]:
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            existing = conn.execute(
+                """
+                select id
+                from events
+                where tenant_id = ?
+                  and run_id = ?
+                  and event_type = ?
+                order by created_at desc, rowid desc
+                limit 1
+                """,
+                (tenant_id, event.run_id, "monitor.reviewed"),
+            ).fetchone()
+            if existing:
+                return None, False
+            stored = StoredEvent(
+                id=new_id("evt"),
+                tenant_id=tenant_id,
+                conversation_id=event.conversation_id,
+                user_id=None,
+                run_id=event.run_id,
+                event_type="monitor.reviewed",
+                payload=event.model_dump(mode="json"),
+                created_at=utc_now().isoformat(),
+            )
+            conn.execute(
+                """
+                insert into events (
+                  id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored.id,
+                    stored.tenant_id,
+                    stored.conversation_id,
+                    stored.user_id,
+                    stored.run_id,
+                    stored.event_type,
+                    json.dumps(stored.payload, ensure_ascii=False, sort_keys=True),
+                    stored.created_at,
+                ),
+            )
+        return stored, True
 
     def append_monitor_alert_triage(
         self,
@@ -1365,6 +1474,146 @@ class SQLiteEventStore:
             last_seen_at=max((record.last_seen_at for record in records), default=None),
             last_success_at=max(success_times) if success_times else None,
             last_error=errors[0] if errors else None,
+        )
+
+    def record_monitor_review_worker_heartbeat(
+        self,
+        *,
+        tenant_id: str,
+        worker_id: str,
+        status: str,
+        cycle_status: str | None = None,
+        last_error: str | None = None,
+        last_cycle_started_at: datetime | None = None,
+        last_cycle_completed_at: datetime | None = None,
+        inspected_count: int = 0,
+        reviewed_count: int = 0,
+        skipped_existing_count: int = 0,
+        skipped_unreviewable_count: int = 0,
+        failed_count: int = 0,
+        now: datetime | None = None,
+    ) -> MonitorReviewWorkerHeartbeatRecord:
+        effective_now = now or utc_now()
+        if effective_now.tzinfo is None:
+            effective_now = effective_now.replace(tzinfo=timezone.utc)
+        cycle_increment = 1 if last_cycle_completed_at is not None or cycle_status is not None else 0
+        sanitized_error = last_error[:500] if last_error else None
+        with self._connect() as conn:
+            conn.execute(
+                """
+                insert into monitor_review_worker_heartbeats (
+                  tenant_id, worker_id, status, last_seen_at,
+                  last_cycle_started_at, last_cycle_completed_at, last_cycle_status, last_error,
+                  cycle_count, inspected_count, reviewed_count, skipped_existing_count,
+                  skipped_unreviewable_count, failed_count, created_at, updated_at
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                on conflict(tenant_id, worker_id) do update set
+                  status = excluded.status,
+                  last_seen_at = excluded.last_seen_at,
+                  last_cycle_started_at = coalesce(excluded.last_cycle_started_at, monitor_review_worker_heartbeats.last_cycle_started_at),
+                  last_cycle_completed_at = coalesce(excluded.last_cycle_completed_at, monitor_review_worker_heartbeats.last_cycle_completed_at),
+                  last_cycle_status = coalesce(excluded.last_cycle_status, monitor_review_worker_heartbeats.last_cycle_status),
+                  last_error = excluded.last_error,
+                  cycle_count = monitor_review_worker_heartbeats.cycle_count + ?,
+                  inspected_count = excluded.inspected_count,
+                  reviewed_count = excluded.reviewed_count,
+                  skipped_existing_count = excluded.skipped_existing_count,
+                  skipped_unreviewable_count = excluded.skipped_unreviewable_count,
+                  failed_count = excluded.failed_count,
+                  updated_at = excluded.updated_at
+                """,
+                (
+                    tenant_id,
+                    worker_id,
+                    status,
+                    effective_now.isoformat(),
+                    last_cycle_started_at.isoformat() if last_cycle_started_at else None,
+                    last_cycle_completed_at.isoformat() if last_cycle_completed_at else None,
+                    cycle_status,
+                    sanitized_error,
+                    cycle_increment,
+                    inspected_count,
+                    reviewed_count,
+                    skipped_existing_count,
+                    skipped_unreviewable_count,
+                    failed_count,
+                    effective_now.isoformat(),
+                    effective_now.isoformat(),
+                    cycle_increment,
+                ),
+            )
+            row = conn.execute(
+                """
+                select *
+                from monitor_review_worker_heartbeats
+                where tenant_id = ? and worker_id = ?
+                """,
+                (tenant_id, worker_id),
+            ).fetchone()
+        return self._monitor_review_worker_heartbeat_from_row(row)
+
+    def list_monitor_review_worker_heartbeats(
+        self,
+        *,
+        tenant_id: str,
+        limit: int = 100,
+        order: str = "desc",
+    ) -> list[MonitorReviewWorkerHeartbeatRecord]:
+        direction = "asc" if order == "asc" else "desc"
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from monitor_review_worker_heartbeats
+                where tenant_id = ?
+                order by last_seen_at {direction}, rowid {direction}
+                limit ?
+                """,
+                (tenant_id, limit),
+            ).fetchall()
+        return [self._monitor_review_worker_heartbeat_from_row(row) for row in rows]
+
+    def summarize_monitor_review_worker_heartbeats(
+        self,
+        *,
+        tenant_id: str,
+        stale_after_seconds: int,
+        now: datetime | None = None,
+    ) -> MonitorReviewWorkerHeartbeatSummary:
+        effective_now = now or utc_now()
+        if effective_now.tzinfo is None:
+            effective_now = effective_now.replace(tzinfo=timezone.utc)
+        stale_cutoff = effective_now - timedelta(seconds=max(1, stale_after_seconds))
+        records = self.list_monitor_review_worker_heartbeats(tenant_id=tenant_id, limit=1000)
+        active = [record for record in records if record.last_seen_at >= stale_cutoff]
+        stale = [record for record in records if record.last_seen_at < stale_cutoff]
+        if not records:
+            status = "missing"
+        elif active:
+            status = "active"
+        else:
+            status = "stale"
+        latest = max(records, key=lambda record: record.last_seen_at, default=None)
+        success_times = [
+            record.last_cycle_completed_at
+            for record in records
+            if record.last_cycle_status == "success" and record.last_cycle_completed_at is not None
+        ]
+        errors = [record.last_error for record in records if record.last_error]
+        return MonitorReviewWorkerHeartbeatSummary(
+            status=status,
+            stale_after_seconds=stale_after_seconds,
+            total_worker_count=len(records),
+            active_worker_count=len(active),
+            stale_worker_count=len(stale),
+            last_seen_at=max((record.last_seen_at for record in records), default=None),
+            last_success_at=max(success_times) if success_times else None,
+            last_error=errors[0] if errors else None,
+            last_inspected_count=latest.inspected_count if latest else 0,
+            last_reviewed_count=latest.reviewed_count if latest else 0,
+            last_skipped_existing_count=latest.skipped_existing_count if latest else 0,
+            last_skipped_unreviewable_count=latest.skipped_unreviewable_count if latest else 0,
+            last_failed_count=latest.failed_count if latest else 0,
         )
 
     def record_alert_webhook_receipt(
@@ -3187,6 +3436,44 @@ class SQLiteEventStore:
         traces = [AgentRunTrace.model_validate(json.loads(row["payload_json"])) for row in rows]
         return traces, total
 
+    def list_unreviewed_agent_runs(
+        self,
+        *,
+        tenant_id: str,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 100,
+        order: str = "asc",
+    ) -> list[AgentRunTrace]:
+        sql = """
+            select runs.payload_json
+            from events as runs
+            where runs.tenant_id = ?
+              and runs.event_type = ?
+              and runs.run_id is not null
+              and json_extract(runs.payload_json, '$.status') = ?
+              and not exists (
+                select 1
+                from events as reviews
+                where reviews.tenant_id = runs.tenant_id
+                  and reviews.run_id = runs.run_id
+                  and reviews.event_type = ?
+              )
+        """
+        params: list[Any] = [tenant_id, "agent.run.completed", "completed", "monitor.reviewed"]
+        if created_after:
+            sql += " and runs.created_at >= ?"
+            params.append(created_after)
+        if created_before:
+            sql += " and runs.created_at <= ?"
+            params.append(created_before)
+        direction = "asc" if order == "asc" else "desc"
+        sql += f" order by runs.created_at {direction}, runs.rowid {direction} limit ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [AgentRunTrace.model_validate(json.loads(row["payload_json"])) for row in rows]
+
     def list_monitor_events(
         self,
         *,
@@ -3497,6 +3784,18 @@ class SQLiteEventStore:
                 raise RuntimeError(
                     f"alert_dispatcher_heartbeats table missing columns: {', '.join(heartbeat_missing)}"
                 )
+            monitor_review_heartbeat_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(monitor_review_worker_heartbeats)").fetchall()
+            }
+            monitor_review_heartbeat_missing = sorted(
+                SQLITE_MONITOR_REVIEW_WORKER_HEARTBEATS_REQUIRED_COLUMNS - monitor_review_heartbeat_columns
+            )
+            if monitor_review_heartbeat_missing:
+                raise RuntimeError(
+                    "monitor_review_worker_heartbeats table missing columns: "
+                    f"{', '.join(monitor_review_heartbeat_missing)}"
+                )
             receipt_columns = {
                 item["name"]
                 for item in conn.execute("pragma table_info(alert_webhook_receipts)").fetchall()
@@ -3707,6 +4006,34 @@ class SQLiteEventStore:
             dead_count=int(row["dead_count"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def _monitor_review_worker_heartbeat_from_row(self, row: sqlite3.Row) -> MonitorReviewWorkerHeartbeatRecord:
+        return MonitorReviewWorkerHeartbeatRecord(
+            tenant_id=row["tenant_id"],
+            worker_id=row["worker_id"],
+            status=row["status"],
+            last_seen_at=_parse_datetime_or_now(row["last_seen_at"]),
+            last_cycle_started_at=(
+                datetime.fromisoformat(row["last_cycle_started_at"])
+                if row["last_cycle_started_at"]
+                else None
+            ),
+            last_cycle_completed_at=(
+                datetime.fromisoformat(row["last_cycle_completed_at"])
+                if row["last_cycle_completed_at"]
+                else None
+            ),
+            last_cycle_status=row["last_cycle_status"],
+            last_error=row["last_error"],
+            cycle_count=int(row["cycle_count"]),
+            inspected_count=int(row["inspected_count"]),
+            reviewed_count=int(row["reviewed_count"]),
+            skipped_existing_count=int(row["skipped_existing_count"]),
+            skipped_unreviewable_count=int(row["skipped_unreviewable_count"]),
+            failed_count=int(row["failed_count"]),
+            created_at=_parse_datetime_or_now(row["created_at"]),
+            updated_at=_parse_datetime_or_now(row["updated_at"]),
         )
 
     def _alert_webhook_receipt_from_row(self, row: sqlite3.Row) -> AlertWebhookReceiptRecord:
@@ -4073,6 +4400,55 @@ class SQLiteEventStore:
                     conn.execute(f"alter table alert_dispatcher_heartbeats add column {column_name} {column_type}")
             conn.execute(
                 "create index if not exists idx_alert_dispatcher_heartbeats_tenant_seen on alert_dispatcher_heartbeats(tenant_id, last_seen_at)"
+            )
+            conn.execute(
+                """
+                create table if not exists monitor_review_worker_heartbeats (
+                  tenant_id text not null,
+                  worker_id text not null,
+                  status text not null,
+                  last_seen_at text not null,
+                  last_cycle_started_at text,
+                  last_cycle_completed_at text,
+                  last_cycle_status text,
+                  last_error text,
+                  cycle_count integer not null default 0,
+                  inspected_count integer not null default 0,
+                  reviewed_count integer not null default 0,
+                  skipped_existing_count integer not null default 0,
+                  skipped_unreviewable_count integer not null default 0,
+                  failed_count integer not null default 0,
+                  created_at text not null,
+                  updated_at text not null,
+                  primary key (tenant_id, worker_id)
+                )
+                """
+            )
+            monitor_review_heartbeat_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(monitor_review_worker_heartbeats)").fetchall()
+            }
+            monitor_review_heartbeat_missing_columns = {
+                "status": "text not null default 'unknown'",
+                "last_seen_at": "text not null default ''",
+                "last_cycle_started_at": "text",
+                "last_cycle_completed_at": "text",
+                "last_cycle_status": "text",
+                "last_error": "text",
+                "cycle_count": "integer not null default 0",
+                "inspected_count": "integer not null default 0",
+                "reviewed_count": "integer not null default 0",
+                "skipped_existing_count": "integer not null default 0",
+                "skipped_unreviewable_count": "integer not null default 0",
+                "failed_count": "integer not null default 0",
+                "created_at": "text not null default ''",
+                "updated_at": "text not null default ''",
+            }
+            for column_name, column_type in monitor_review_heartbeat_missing_columns.items():
+                if column_name not in monitor_review_heartbeat_columns:
+                    conn.execute(f"alter table monitor_review_worker_heartbeats add column {column_name} {column_type}")
+            conn.execute(
+                "create index if not exists idx_monitor_review_worker_heartbeats_tenant_seen on monitor_review_worker_heartbeats(tenant_id, last_seen_at)"
             )
             conn.execute(
                 """

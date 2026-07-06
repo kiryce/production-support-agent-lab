@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     app_monitor_alert_backoff_max_seconds: int = Field(default=900, ge=1, le=86400)
     app_monitor_alert_claim_lease_seconds: int = Field(default=120, ge=10, le=3600)
     app_monitor_alert_dispatcher_heartbeat_stale_seconds: int = Field(default=180, ge=30, le=86400)
+    app_monitor_review_worker_heartbeat_stale_seconds: int = Field(default=180, ge=30, le=86400)
     app_event_retention_days: int = Field(default=365, ge=30, le=3650)
     app_tool_audit_retention_days: int = Field(default=180, ge=30, le=3650)
     app_idempotency_retention_days: int = Field(default=30, ge=1, le=3650)

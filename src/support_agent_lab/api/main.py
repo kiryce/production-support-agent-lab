@@ -52,6 +52,7 @@ from support_agent_lab.memory.event_store import (
     AlertWebhookReceiptRecord,
     FeedbackReviewQueueResponse,
     FeedbackSummary,
+    MonitorReviewWorkerHeartbeatSummary,
     OperationsAutomationExecutionRecord,
     OperationsAutomationExecutionSummary,
     SQLiteBackupReport,
@@ -736,6 +737,7 @@ async def _slo_report_response(
         min_feedback_count=min_feedback_count,
     )
     delivery_summary = _safe_monitor_alert_delivery_summary(deps, limit=200)
+    monitor_review_worker = _safe_monitor_review_worker_summary(deps)
     created_after = promotion.generated_at - timedelta(hours=window_hours)
     automation_summary = _operations_automation_execution_summary(
         deps,
@@ -843,6 +845,7 @@ async def _slo_report_response(
             max_dead_count=max_alert_delivery_dead_count,
             observed_dead_count=len(dead_delivery_records),
         ),
+        _slo_monitor_review_worker(summary=monitor_review_worker),
         _slo_maximum_rate(
             name="automation_execution_failure_rate",
             observed_rate=automation_summary.failure_rate,
@@ -879,6 +882,7 @@ async def _slo_report_response(
             "monitor_health_status": promotion.monitor.health_status,
             "promotion_gate_status": promotion.status,
             "alert_delivery_status": delivery_summary.status if delivery_summary else None,
+            "monitor_review_worker_status": monitor_review_worker.status if monitor_review_worker else None,
             "automation_execution_failure_rate": automation_summary.failure_rate,
             "latest_eval_gate_id": promotion.latest_eval_gate.id if promotion.latest_eval_gate else None,
         },
@@ -1120,6 +1124,57 @@ def _slo_alert_delivery(
         detail=(
             f"Alert delivery is {summary.status}; {observed_dead_count} dead-letter row(s), "
             f"{summary.pending_count} pending row(s), dispatcher is {summary.dispatcher_status}."
+        ),
+        evidence=observed,
+    )
+
+
+def _slo_monitor_review_worker(
+    *,
+    summary: MonitorReviewWorkerHeartbeatSummary | None,
+) -> SloObjectiveResult:
+    target = {"required_status": "active", "max_failed_runs_per_cycle": 0}
+    if summary is None:
+        return SloObjectiveResult(
+            name="monitor_review_worker_health",
+            status="no_data",
+            target_type="state",
+            target=target,
+            detail="Async monitor review worker heartbeat is not configured.",
+        )
+    observed = {
+        "status": summary.status,
+        "active_worker_count": summary.active_worker_count,
+        "stale_worker_count": summary.stale_worker_count,
+        "stale_after_seconds": summary.stale_after_seconds,
+        "last_seen_at": summary.last_seen_at,
+        "last_success_at": summary.last_success_at,
+        "last_inspected_count": summary.last_inspected_count,
+        "last_reviewed_count": summary.last_reviewed_count,
+        "last_skipped_existing_count": summary.last_skipped_existing_count,
+        "last_skipped_unreviewable_count": summary.last_skipped_unreviewable_count,
+        "last_failed_count": summary.last_failed_count,
+        "last_error": summary.last_error,
+    }
+    status: Literal["met", "at_risk", "breached", "no_data"]
+    if summary.status in {"missing", "stale"}:
+        status = "breached"
+    elif summary.status == "active" and summary.last_failed_count == 0:
+        status = "met"
+    elif summary.status == "active":
+        status = "at_risk"
+    else:
+        status = "no_data"
+    return SloObjectiveResult(
+        name="monitor_review_worker_health",
+        status=status,
+        target_type="state",
+        target=target,
+        observed=observed,
+        error_budget_remaining=1.0 if status == "met" else 0.25 if status == "at_risk" else 0.0,
+        detail=(
+            f"Async monitor review worker is {summary.status}; "
+            f"latest cycle reviewed {summary.last_reviewed_count} run(s) and failed {summary.last_failed_count}."
         ),
         evidence=observed,
     )
@@ -1758,6 +1813,12 @@ def _safe_monitor_alert_delivery_summary(deps: AppContainer, limit: int) -> Aler
     if not deps.event_store:
         return None
     return _monitor_alert_delivery_summary(deps, limit=limit)
+
+
+def _safe_monitor_review_worker_summary(deps: AppContainer) -> MonitorReviewWorkerHeartbeatSummary | None:
+    if not deps.event_store:
+        return None
+    return _monitor_review_worker_summary(deps)
 
 
 def _list_ops_delivery_records(
@@ -3593,6 +3654,15 @@ def _monitor_alert_delivery_summary(deps: AppContainer, limit: int) -> AlertDeli
         dispatcher_heartbeat=dispatcher_heartbeat,
         receipt_summary=receipt_summary,
         receipt_tracking_enabled=deps.settings.app_monitor_alert_webhook_receiver_enabled,
+    )
+
+
+def _monitor_review_worker_summary(deps: AppContainer) -> MonitorReviewWorkerHeartbeatSummary:
+    if not deps.event_store:
+        raise HTTPException(status_code=404, detail="Event store is not configured")
+    return deps.event_store.summarize_monitor_review_worker_heartbeats(
+        tenant_id=deps.settings.app_tenant_id,
+        stale_after_seconds=deps.settings.app_monitor_review_worker_heartbeat_stale_seconds,
     )
 
 
@@ -6066,6 +6136,15 @@ def create_app() -> FastAPI:
             order=order,
             stale_after=timedelta(minutes=stale_after_minutes),
         )
+
+    @app.get("/api/v1/admin/monitor/review-worker/summary")
+    def monitor_review_worker_summary(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> MonitorReviewWorkerHeartbeatSummary:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        return _monitor_review_worker_summary(deps)
 
     @app.get("/api/v1/admin/monitor/alert-deliveries/summary")
     def monitor_alert_delivery_summary(

@@ -123,6 +123,28 @@ groups:
           description: "Proactive alert delivery is enabled, but no active dispatcher heartbeat has been observed."
           runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentalertdispatcherstale"
 
+      - alert: SupportAgentMonitorReviewWorkerStale
+        expr: support_agent_monitor_review_worker_health_status{status=~"missing|stale"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Async monitor review worker heartbeat is stale"
+          description: "Completed agent runs may not be backfilled into durable monitor.reviewed events."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentmonitorreviewworkerstale"
+
+      - alert: SupportAgentMonitorReviewWorkerFailures
+        expr: support_agent_monitor_review_worker_last_failed_runs > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Async monitor review worker cycle has failed runs"
+          description: "The latest worker cycle could not review one or more completed agent runs."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentmonitorreviewworkerfailures"
+
       - alert: SupportAgentAlertDeliveryReceiptMissing
         expr: support_agent_alert_webhook_receiver_enabled == 1 and support_agent_alert_delivery_sent_without_receipt > 0
         for: 10m

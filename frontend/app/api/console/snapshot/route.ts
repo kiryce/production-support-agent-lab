@@ -10,6 +10,7 @@ import type {
   MonitorAlert,
   MonitorAlertDeliverySummary,
   MonitorAlertTriageEvent,
+  MonitorReviewWorkerSummary,
   MonitorSummary,
   MonitorTriageMetricsResponse,
   OperationsAutomationExecutionSummary,
@@ -56,6 +57,10 @@ export async function GET(request: NextRequest) {
       agentFetch("/api/v1/admin/monitor/triage/metrics", {
         query: { source: monitorSource, limit: 500 }
       }),
+    issues
+  );
+  const monitorReviewWorker = await optional<MonitorReviewWorkerSummary>(
+    () => agentFetch("/api/v1/admin/monitor/review-worker/summary"),
     issues
   );
   const promotionGate = await optional<PromotionGateResponse>(
@@ -209,6 +214,7 @@ export async function GET(request: NextRequest) {
     incidentBrief,
     incidentTimeline,
     triageMetrics,
+    monitorReviewWorker,
     promotionGate,
     promotionDecisions: promotionDecisions ?? [],
     operationsAutomation,

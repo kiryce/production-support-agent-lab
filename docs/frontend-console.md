@@ -66,68 +66,70 @@ real local FastAPI endpoints:
    The snapshot BFF retries monitor summary and triage reads with `source=live`
    only when persisted event-store reads are unavailable, so local development
    still shows current process events without inventing console data.
-5. `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true`
-6. `GET /api/v1/admin/incidents/runs/{run_id}/brief` when the `Brief`
+5. `GET /api/v1/admin/monitor/review-worker/summary` when `Overview` shows
+   async monitor review worker heartbeat status and the latest cycle counts.
+6. `GET /api/v1/admin/incidents/runs/{run_id}?include_memory=true`
+7. `GET /api/v1/admin/incidents/runs/{run_id}/brief` when the `Brief`
    panel copies or downloads a backend-generated sanitized Markdown handoff.
-7. `GET /api/v1/admin/incidents/runs/{run_id}/timeline` when the `Brief`
+8. `GET /api/v1/admin/incidents/runs/{run_id}/timeline` when the `Brief`
    panel renders the sanitized investigation timeline.
-8. `GET /api/v1/admin/runs` when the `Runs` workbench searches persisted
+9. `GET /api/v1/admin/runs` when the `Runs` workbench searches persisted
    history.
-9. `GET /api/v1/admin/tools/audit` and
+10. `GET /api/v1/admin/tools/audit` and
    `GET /api/v1/admin/tools/audit/summary` when the `Tools` workbench searches
    persisted tool calls and SLA/failure aggregates.
-10. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
+11. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
    a retrieval diagnostic query.
-11. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
+12. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
    tab runs `Dispatch now` against the durable alert outbox.
-12. `GET /api/v1/admin/monitor/alert-webhook-receipts` when the `Receipts`
+13. `GET /api/v1/admin/monitor/alert-webhook-receipts` when the `Receipts`
    tab inspects signed inbound webhook receipt summaries by alert key or
    delivery id.
-13. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
+14. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
    from queue triage to event-level investigation by alert key, intent, risk,
    failure type, grounding, policy status, and human-review state.
-14. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
+15. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
    selected monitor event or response-feedback record into a copyable eval-case
    draft.
-15. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
+16. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
    creates a verified SQLite backup.
-16. `POST /api/v1/admin/event-store/restore-drills` when the `Settings`
+17. `POST /api/v1/admin/event-store/restore-drills` when the `Settings`
    workbench proves the latest verified backup can be opened and health-checked.
-17. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
+18. `POST /api/v1/admin/event-store/retention` when the `Settings` workbench
    previews or applies the conservative retention policy. Apply calls include
    backend-issued backup, restore-drill, and preview tokens plus explicit
    confirmation; the BFF refuses tokenless apply requests before proxying.
-18. `GET /api/v1/admin/event-store/operations` when `Settings` loads the
+19. `GET /api/v1/admin/event-store/operations` when `Settings` loads the
    durable event-store operation ledger for backup, restore-drill, retention
    preview, retention apply, and authenticated guard rejections.
-19. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
+20. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
    the `Memory` workbench rebuilds a conversation from append-only events.
-20. `GET /api/v1/admin/feedback` and
+21. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
-21. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
+22. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
    shows unresolved, unassigned, stale, and reviewed backlog metrics.
-22. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
+23. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
    `POST /api/v1/admin/feedback/{feedback_id}/reviews` when the `Feedback`
    workbench loads or records the append-only operator review trail. Review
    writes send the current review-state fingerprint so stale tabs cannot
    append obsolete feedback decisions.
-23. `GET /api/v1/admin/promotion/decisions` and
+24. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-24. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+25. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
-25. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+26. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-26. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
+27. `POST /api/v1/admin/operations/automation-executions` when the Settings BFF
    records completed or failed auto-safe action execution, and
    `GET /api/v1/admin/operations/automation-executions` when the Settings
    history panel or external audit/history integrations list sanitized
    execution records. `GET /api/v1/admin/operations/automation-executions/summary`
    feeds the Settings execution-health strip and SLO evidence.
-27. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+28. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -172,6 +174,17 @@ Prometheus then listens on `9090` and scrapes the backend container at
 a protected network path or SSH tunnel when you are not running on your own
 machine.
 
+To start the background alert dispatcher and async monitor review worker with
+the same SQLite event store, run:
+
+```bash
+docker compose --profile alerts up --build
+```
+
+That profile starts `support-agent-alert-dispatcher` and
+`support-agent-monitor-review-worker`; the console stays a trusted operator
+surface rather than the only process responsible for durable monitoring work.
+
 ## What The Console Shows
 
 - Monitor alert queue from `MonitorSummary`.
@@ -212,6 +225,12 @@ machine.
   metric shows covered eligible sent deliveries such as `3/4`; deliveries still
   inside `APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS` are shown as pending
   receipt evidence, while older sent rows without receipts degrade the strip.
+- Monitor review worker health from `GET /api/v1/admin/monitor/review-worker/summary`.
+  The Overview strip shows whether the async worker is `active`, `stale`,
+  `missing`, or unavailable, using durable heartbeat rows rather than browser
+  state. The backend summary includes only aggregate cycle counts such as
+  inspected, reviewed, skipped, and failed runs; it does not expose worker id,
+  run id, user text, tool arguments, or retrieved snippets.
 - Delivery ledger from `GET /api/v1/admin/monitor/alert-deliveries`. The
   `Delivery` workbench tab filters outbox rows by status and lets an operator
   run `Dispatch now`, replay/requeue dead rows, or close `dead` rows through
@@ -280,7 +299,7 @@ machine.
 - Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
   to display grounded rate, policy compliance, human-review pressure, active
   P0/P1 alerts, tool failure rate, negative feedback, eval freshness, MTTA, and
-  alert delivery health. Each row shows the status and remaining error budget
+  alert delivery health, plus async monitor review worker health. Each row shows the status and remaining error budget
   from backend aggregates, not from browser-only math.
 - Operations Automation in `Settings` uses `GET /api/v1/admin/operations/automation-plan`
   to show prioritized actions with command method/path, required scopes, and
@@ -296,7 +315,8 @@ machine.
   context and reloads the matching backend snapshot.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
   rate, policy compliance, the latest persisted staging eval gate status, the
-  SLO report status, and the read-only promotion gate status.
+  async monitor review worker heartbeat, SLO report status, and the read-only
+  promotion gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
   promotion checks, latest eval gate audit, recent gate history, and backend
   generated Markdown that can be copied or downloaded without message content,
@@ -329,8 +349,9 @@ machine.
   `slo_report.v1` with objective status, target, observed aggregate, and error
   budget remaining. It is useful for on-call review because no-data objectives
   are visible rather than silently treated as healthy. Automation execution
-  failure rate is included so cron, on-call bot, API, and console automation
-  failures can block service objectives instead of hiding in history rows.
+  failure rate and async monitor review worker health are included so cron,
+  on-call bot, API, worker, and console automation failures can block service
+  objectives instead of hiding in history rows.
 - Operations automation plan via `GET /api/v1/admin/operations/automation-plan`.
   It combines the same production evidence with alert delivery, incident brief,
   receipt-gap, regression-draft, retrieval, and staging-eval recommendations.

@@ -27,6 +27,8 @@ EXPECTED_ALERTS = {
     "SupportAgentAlertDeliveryFailed",
     "SupportAgentAlertDeliveryBacklog",
     "SupportAgentAlertDispatcherStale",
+    "SupportAgentMonitorReviewWorkerStale",
+    "SupportAgentMonitorReviewWorkerFailures",
     "SupportAgentAlertDeliveryReceiptMissing",
     "SupportAgentFeedbackReviewStale",
     "SupportAgentFeedbackReviewUnassigned",
@@ -51,6 +53,8 @@ EXPORTED_METRICS_USED_BY_RULES = {
     "support_agent_monitor_triage_health_status",
     "support_agent_monitor_triage_new_events_since_triage",
     "support_agent_monitor_triage_stale_active_alerts",
+    "support_agent_monitor_review_worker_health_status",
+    "support_agent_monitor_review_worker_last_failed_runs",
     "support_agent_rate_limit_decisions_total",
     "support_agent_tool_calls_window",
     "support_agent_tool_failure_rate",
@@ -143,7 +147,7 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     data = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
     services = data["services"]
-    assert {"app", "frontend", "alert-dispatcher", "prometheus"} <= set(services)
+    assert {"app", "frontend", "alert-dispatcher", "monitor-review-worker", "prometheus"} <= set(services)
     assert "profiles" not in services["app"]
     assert "profiles" not in services["frontend"]
 
@@ -161,6 +165,21 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     ]
     assert dispatcher["healthcheck"] == {"disable": True}
     assert dispatcher["restart"] == "unless-stopped"
+
+    review_worker = services["monitor-review-worker"]
+    assert review_worker["build"] == "."
+    assert review_worker["profiles"] == ["alerts"]
+    assert review_worker["depends_on"] == ["app"]
+    assert review_worker["env_file"] == [".env"]
+    assert "./data:/app/data" in review_worker["volumes"]
+    assert review_worker["command"] == [
+        "support-agent-monitor-review-worker",
+        "--interval-seconds",
+        "30",
+        "--json",
+    ]
+    assert review_worker["healthcheck"] == {"disable": True}
+    assert review_worker["restart"] == "unless-stopped"
 
     prometheus = services["prometheus"]
     assert prometheus["image"] == "prom/prometheus:v3.13.0"
@@ -192,6 +211,8 @@ def test_prometheus_compose_docs_stay_consistent():
     assert "docker compose --profile alerts up --build" in deployment
     assert "support-agent-alert-dispatcher" in frontend
     assert "support-agent-alert-dispatcher" in runbook
+    assert "support-agent-monitor-review-worker" in frontend
+    assert "support-agent-monitor-review-worker" in runbook
 
     for text in (runbook, deployment, frontend):
         assert "app:8000" in text

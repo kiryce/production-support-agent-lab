@@ -549,6 +549,14 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
             headers=_production_headers(scopes="monitor:read"),
             params={"source": "event_store"},
         )
+        missing_review_worker = client.get(
+            "/api/v1/admin/monitor/review-worker/summary",
+            headers=_production_headers(scopes="crm:read"),
+        )
+        review_worker_allowed = client.get(
+            "/api/v1/admin/monitor/review-worker/summary",
+            headers=_production_headers(scopes="monitor:read"),
+        )
         alert_key = read_allowed.json()["alerts"][0]["key"]
         missing_write = client.post(
             f"/api/v1/admin/monitor/alerts/{alert_key}/triage",
@@ -575,6 +583,10 @@ def test_production_monitor_admin_requires_explicit_monitor_scopes(tmp_path, mon
     assert missing_metrics.json()["detail"] == "Missing required scope: monitor:read"
     assert metrics_allowed.status_code == 200
     assert metrics_allowed.json()["alert_count"] == 1
+    assert missing_review_worker.status_code == 403
+    assert missing_review_worker.json()["detail"] == "Missing required scope: monitor:read"
+    assert review_worker_allowed.status_code == 200
+    assert review_worker_allowed.json()["status"] == "missing"
     assert missing_write.status_code == 403
     assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
     assert write_allowed.status_code == 200
@@ -4804,7 +4816,7 @@ def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkey
     objectives = {objective["name"]: objective for objective in body["objectives"]}
     assert body["schema_version"] == "slo_report.v1"
     assert body["status"] == "breached"
-    assert body["objective_count"] == 10
+    assert body["objective_count"] == 11
     assert body["breached_count"] >= 6
     assert objectives["grounded_rate"]["status"] == "breached"
     assert objectives["policy_compliance_rate"]["status"] == "breached"
@@ -4812,6 +4824,7 @@ def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkey
     assert objectives["tool_failure_rate"]["status"] == "breached"
     assert objectives["feedback_negative_rate"]["status"] == "breached"
     assert objectives["alert_delivery_health"]["status"] == "breached"
+    assert objectives["monitor_review_worker_health"]["status"] == "breached"
     assert objectives["automation_execution_failure_rate"]["status"] == "breached"
     assert objectives["staging_eval_gate_freshness"]["status"] == "met"
     assert objectives["tool_failure_rate"]["error_budget_remaining"] == 0

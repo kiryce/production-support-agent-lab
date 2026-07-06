@@ -178,6 +178,32 @@ First response:
 
 Escalate when: dispatcher heartbeat is stale while P0/P1 monitor alerts or due delivery rows exist.
 
+## SupportAgentMonitorReviewWorkerStale
+
+Meaning: the async monitor review worker heartbeat is missing or stale, so completed runs may not be backfilled into durable `monitor.reviewed` events.
+
+First response:
+
+- Confirm the `support-agent-monitor-review-worker` process is running, or that the Compose `alerts` profile is enabled.
+- Check `/api/v1/admin/monitor/review-worker/summary` for status, active/stale worker counts, last heartbeat, and latest cycle counts.
+- If the worker is missing but the API is healthy, start `support-agent-monitor-review-worker --interval-seconds 30 --json` against the same SQLite `APP_DATABASE_URL`.
+- If the worker is running but stale, check file permissions, database URL, process logs, and operation-lock contention.
+
+Escalate when: the heartbeat is stale while new `agent.run.completed` rows are arriving or monitor triage appears unexpectedly quiet.
+
+## SupportAgentMonitorReviewWorkerFailures
+
+Meaning: the latest async monitor review worker cycle failed to review one or more completed runs.
+
+First response:
+
+- Check `/api/v1/admin/monitor/review-worker/summary` for latest inspected, reviewed, skipped, and failed counts.
+- Inspect worker logs for the sanitized error type, then compare with recent `agent.run.completed` rows using `/api/v1/admin/runs`.
+- Fix malformed persisted traces or schema drift before rerunning the worker; the append path is idempotent and will skip runs that already have `monitor.reviewed`.
+- Keep alert triage open until `/metrics` reports zero failed runs in a fresh worker cycle.
+
+Escalate when: failed counts continue across two cycles or block P0/P1 monitor event visibility.
+
 ## SupportAgentAlertDeliveryReceiptMissing
 
 Meaning: the signed alert webhook receiver is enabled, but at least one sent

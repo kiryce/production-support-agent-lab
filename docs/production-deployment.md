@@ -43,9 +43,10 @@ APP_EVENT_RETENTION_DAYS=365
 APP_TOOL_AUDIT_RETENTION_DAYS=180
 APP_IDEMPOTENCY_RETENTION_DAYS=30
 APP_ALERT_DELIVERY_RETENTION_DAYS=90
+APP_MONITOR_REVIEW_WORKER_HEARTBEAT_STALE_SECONDS=180
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, inbound alert webhook receipt summaries, event-store operation ledger rows, and operations automation execution ledger rows. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, async monitor review worker heartbeats, inbound alert webhook receipt summaries, event-store operation ledger rows, and operations automation execution ledger rows. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend, alert dispatcher, and monitor review worker can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
 Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, terminal alert-delivery rows, and alert webhook receipt summaries. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
 
@@ -182,6 +183,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `/api/v1/admin/monitor/events` | `monitor:read` |
 | `GET /api/v1/admin/monitor/drilldown` | `monitor:read` |
 | `GET /api/v1/admin/monitor/triage/metrics` | `monitor:read` |
+| `GET /api/v1/admin/monitor/review-worker/summary` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries/summary` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries/receipt-gaps` | `monitor:read`. Lists sent delivery rows that exceeded the receipt grace period without receiver proof. |
@@ -264,8 +266,8 @@ events, or returns raw tool arguments, raw monitor events, or eval answer text.
 view for on-call and release review. It returns `slo_report.v1` with individual
 objective rows for grounded rate, policy compliance, human-review pressure,
 active P0/P1 alerts, tool failure rate, negative feedback rate, staging eval
-freshness, triage MTTA, alert delivery health, and automation execution failure
-rate. Each row includes target,
+freshness, triage MTTA, alert delivery health, async monitor review worker
+health, and automation execution failure rate. Each row includes target,
 observed aggregate, status (`met`, `at_risk`, `breached`, or `no_data`), and
 `error_budget_remaining` when that math is meaningful. No-data is explicit so
 missing evidence cannot look healthy. The endpoint uses only aggregates and
@@ -473,6 +475,21 @@ active alerts, unresolved ownership, new events since triage, stale active
 alerts, severity/status counts, health status, MTTA, and MTTR. It intentionally
 does not return raw monitor events, sample run ids, event summaries, or triage
 notes.
+
+`support-agent-monitor-review-worker` is the durable async companion for
+`OnlineMonitorAgent`. The request path still reviews normal chat responses
+synchronously, but the worker can backfill missing `monitor.reviewed` events
+from persisted `agent.run.completed` rows after process restarts, transient
+request failures, or operator-triggered replay. Each cycle uses a tenant-scoped
+operation lock, selects only completed runs that do not already have a
+same-tenant `monitor.reviewed` event, reconstructs a minimal response from the
+persisted trace, and appends the monitor event idempotently. Run it with
+`support-agent-monitor-review-worker --interval-seconds 30 --json` or the
+Compose `alerts` profile. `GET /api/v1/admin/monitor/review-worker/summary`
+returns only heartbeat health, active/stale worker counts, latest cycle counts,
+and last success/error type; it does not expose worker id, user text, tool
+arguments, retrieved snippets, or run ids. The stale threshold is
+`APP_MONITOR_REVIEW_WORKER_HEARTBEAT_STALE_SECONDS`, defaulting to 180 seconds.
 
 `POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox
 dispatcher for proactive alert notification. It projects active P0/P1 alerts
@@ -698,7 +715,8 @@ endpoint intentionally exports only aggregate, low-cardinality signals such as
 HTTP request counts by method/route family/status, rate-limit decision counts,
 monitor event counts, monitor triage health by status/severity, active/stale
 alert counts, MTTA/MTTR, alert delivery outbox counts by status/severity,
-alert delivery health, alert dispatcher heartbeat health, feedback review backlog counts by current status,
+alert delivery health, alert dispatcher heartbeat health, async monitor review
+worker heartbeat health and latest cycle counts, feedback review backlog counts by current status,
 stale/unassigned unresolved feedback counts, automation execution totals/failure rate/source/status counts,
 grounded/policy/human-review rates, tool audit totals and latency summaries, adapter circuit state, LLM
 fallback counts, effective rate-limit backend, and rate-limit configuration. It does not include user ids,

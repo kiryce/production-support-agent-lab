@@ -32,6 +32,7 @@ from support_agent_lab.tools.registry import ToolAuditSummary, ToolAuditToolSumm
 PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 ALERT_DELIVERY_HEALTH_STATUSES = ("ok", "queued", "degraded", "failed", "disabled", "unknown")
 ALERT_DISPATCHER_HEALTH_STATUSES = ("active", "stale", "missing", "disabled", "unknown")
+MONITOR_REVIEW_WORKER_HEALTH_STATUSES = ("active", "stale", "missing", "unknown")
 ALERT_DELIVERY_SEVERITIES = ("P0", "P1", "P2", "P3")
 FEEDBACK_REVIEW_STATUSES = ("unreviewed", "acknowledged", "investigating", "resolved", "dismissed")
 OPERATIONS_AUTOMATION_EXECUTION_STATUSES = ("completed", "failed", "rejected")
@@ -150,6 +151,7 @@ def render_prometheus_metrics(
 
     _add_http_metrics(metrics, http_metrics)
     _add_alert_delivery_metrics(metrics, deps, now=now)
+    _add_monitor_review_worker_metrics(metrics, deps, now=now)
     _add_feedback_review_metrics(metrics, deps, now=now)
     _add_operations_automation_metrics(metrics, deps, created_after=created_after)
     _add_monitor_triage_metrics(metrics, triage_metrics, now=now)
@@ -433,6 +435,135 @@ def _add_alert_dispatcher_health_metrics(
     _add_optional_timestamp(
         metrics,
         "support_agent_alert_dispatcher_last_success_timestamp_seconds",
+        last_success_at,
+    )
+
+
+def _add_monitor_review_worker_metrics(metrics: "_MetricWriter", deps: AppContainer, *, now: datetime) -> None:
+    metrics.add(
+        "support_agent_monitor_review_worker_configured",
+        _bool(bool(deps.event_store)),
+        metric_type="gauge",
+        help_text="Whether async monitor review worker health can read a durable event store.",
+    )
+    if not deps.event_store:
+        _add_monitor_review_worker_health_metrics(
+            metrics,
+            current_status="unknown",
+            active_worker_count=0,
+            stale_worker_count=0,
+            stale_after_seconds=deps.settings.app_monitor_review_worker_heartbeat_stale_seconds,
+            last_seen_at=None,
+            last_success_at=None,
+            now=now,
+        )
+        metrics.add("support_agent_monitor_review_worker_last_inspected_runs", 0, metric_type="gauge")
+        metrics.add("support_agent_monitor_review_worker_last_reviewed_runs", 0, metric_type="gauge")
+        metrics.add("support_agent_monitor_review_worker_last_skipped_existing_runs", 0, metric_type="gauge")
+        metrics.add("support_agent_monitor_review_worker_last_skipped_unreviewable_runs", 0, metric_type="gauge")
+        metrics.add("support_agent_monitor_review_worker_last_failed_runs", 0, metric_type="gauge")
+        return
+    summary = deps.event_store.summarize_monitor_review_worker_heartbeats(
+        tenant_id=deps.settings.app_tenant_id,
+        stale_after_seconds=deps.settings.app_monitor_review_worker_heartbeat_stale_seconds,
+        now=now,
+    )
+    _add_monitor_review_worker_health_metrics(
+        metrics,
+        current_status=summary.status,
+        active_worker_count=summary.active_worker_count,
+        stale_worker_count=summary.stale_worker_count,
+        stale_after_seconds=summary.stale_after_seconds,
+        last_seen_at=summary.last_seen_at,
+        last_success_at=summary.last_success_at,
+        now=now,
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_last_inspected_runs",
+        summary.last_inspected_count,
+        metric_type="gauge",
+        help_text="Completed agent run rows inspected by the latest async monitor review worker cycle.",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_last_reviewed_runs",
+        summary.last_reviewed_count,
+        metric_type="gauge",
+        help_text="Monitor review events appended by the latest async monitor review worker cycle.",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_last_skipped_existing_runs",
+        summary.last_skipped_existing_count,
+        metric_type="gauge",
+        help_text="Completed agent runs skipped because monitor.reviewed already existed in the latest worker cycle.",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_last_skipped_unreviewable_runs",
+        summary.last_skipped_unreviewable_count,
+        metric_type="gauge",
+        help_text="Completed agent runs skipped as unreviewable by the latest worker cycle.",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_last_failed_runs",
+        summary.last_failed_count,
+        metric_type="gauge",
+        help_text="Completed agent runs that failed async monitor review in the latest worker cycle.",
+    )
+
+
+def _add_monitor_review_worker_health_metrics(
+    metrics: "_MetricWriter",
+    *,
+    current_status: str,
+    active_worker_count: int,
+    stale_worker_count: int,
+    stale_after_seconds: int,
+    last_seen_at: datetime | None,
+    last_success_at: datetime | None,
+    now: datetime,
+) -> None:
+    for status in MONITOR_REVIEW_WORKER_HEALTH_STATUSES:
+        metrics.add(
+            "support_agent_monitor_review_worker_health_status",
+            _bool(status == current_status),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Current async monitor review worker heartbeat health as a one-hot gauge.",
+        )
+    metrics.add(
+        "support_agent_monitor_review_worker_workers",
+        active_worker_count,
+        {"status": "active"},
+        metric_type="gauge",
+        help_text="Async monitor review worker heartbeat rows by bounded freshness status.",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_workers",
+        stale_worker_count,
+        {"status": "stale"},
+        metric_type="gauge",
+    )
+    metrics.add(
+        "support_agent_monitor_review_worker_stale_after_seconds",
+        stale_after_seconds,
+        metric_type="gauge",
+        help_text="Configured heartbeat age after which an async monitor review worker is considered stale.",
+    )
+    if last_seen_at:
+        metrics.add(
+            "support_agent_monitor_review_worker_last_heartbeat_timestamp_seconds",
+            _timestamp_seconds(last_seen_at),
+            metric_type="gauge",
+            help_text="Unix timestamp for the most recent async monitor review worker heartbeat.",
+        )
+        metrics.add(
+            "support_agent_monitor_review_worker_heartbeat_age_seconds",
+            _age_seconds(last_seen_at, now),
+            metric_type="gauge",
+            help_text="Age of the most recent async monitor review worker heartbeat.",
+        )
+    _add_optional_timestamp(
+        metrics,
+        "support_agent_monitor_review_worker_last_success_timestamp_seconds",
         last_success_at,
     )
 

@@ -9,9 +9,9 @@
 | ConversationMemory | 进程内状态 + SQLite event replay | PostgreSQL + Redis |
 | Business tools | HTTPBusinessClient 调真实 CRM/OMS/Shipping/Ticketing API，内置有限重试和进程内断路器 | 服务网格、分布式熔断状态、全局重试预算、审计中心 |
 | Knowledge | HTTPKnowledgeIndex 调真实 knowledge service，内置有限重试和进程内断路器 | pgvector + BM25 + reranker |
-| OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
+| OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + async monitor review worker + append-only triage events + alert delivery outbox | Distributed queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API，内置有限重试、grounded draft fallback 和进程内断路器 | Provider routing + fallback model + budget |
-| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + event-store operation ledger + automation execution ledger + operation lease lock + production rate-limit buckets; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox + distributed lease |
+| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + dispatcher/review-worker heartbeats + event-store operation ledger + automation execution ledger + operation lease lock + production rate-limit buckets; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox + distributed lease |
 | Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + `operations_automation_executions` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/operations/automation-executions` + `/api/v1/admin/operations/automation-executions/summary` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table + local memory / production SQLite rate limit | mTLS/JWT, centralized Redis/Postgres nonce and rate-limit state, tenant isolation |
@@ -83,6 +83,8 @@ monitor.review
 - open alert count
 - repeated alert rate
 - monitor triage health: active P0/P1, unassigned active, new-after-triage, stale active, MTTA, and MTTR from `/metrics`
+- monitor review worker health: active/stale/missing heartbeat status, last success timestamp, and latest inspected/reviewed/skipped/failed cycle counts from `/metrics` and `/api/v1/admin/monitor/review-worker/summary`
+- monitor review worker: run `support-agent-monitor-review-worker --interval-seconds 30 --json` or the Compose `alerts` profile so durable `monitor.reviewed` events do not depend only on the request path
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, dispatcher heartbeat active/stale/missing status, and last success/dead-letter timestamp from `/metrics`
 - alert delivery worker: run `support-agent-alert-dispatcher --interval-seconds 30 --json` or the Compose `alerts` profile so P0/P1 notification does not depend on a human clicking `Dispatch now`
 - feedback review backlog health: unresolved, unassigned unresolved, stale unresolved, reviewed/unreviewed, and bounded status counts from `/metrics`
