@@ -272,8 +272,9 @@ machine.
   to show prioritized actions with command method/path, required scopes, and
   whether an external runner may safely auto-execute them. The plan is read-only:
   it can recommend dispatching alert deliveries, generating an incident brief,
-  drafting a regression eval, or keeping promotion blocked, but it never mutates
-  triage, delivery, eval, or release state by itself.
+  inspecting sent deliveries missing receipt proof, drafting a regression eval,
+  or keeping promotion blocked, but it never mutates triage, delivery, eval, or
+  release state by itself.
 - Queue workbench controls for severity, status, search, new-event filtering,
   and severity/newest/count sorting.
 - Shareable investigation URLs for `runId`, `alertKey`, active workspace,
@@ -316,9 +317,9 @@ machine.
   are visible rather than silently treated as healthy.
 - Operations automation plan via `GET /api/v1/admin/operations/automation-plan`.
   It combines the same production evidence with alert delivery, incident brief,
-  regression-draft, retrieval, and staging-eval recommendations. Each action
-  returns a runnable backend command plus scopes and guardrails, so teams can
-  connect cron or an on-call bot without inventing a separate rules engine.
+  receipt-gap, regression-draft, retrieval, and staging-eval recommendations.
+  Each action returns a runnable backend command plus scopes and guardrails, so
+  teams can connect cron or an on-call bot without inventing a separate rules engine.
   The Settings UI can run only server-generated `auto-safe` actions through
   `POST /api/console/operations/automation-actions`: the BFF re-fetches the
   current plan, matches the action id, rejects manual actions, and checks the

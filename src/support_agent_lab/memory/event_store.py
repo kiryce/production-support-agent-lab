@@ -1069,6 +1069,47 @@ class SQLiteEventStore:
             rows = conn.execute(sql, params).fetchall()
         return [self._alert_delivery_from_row(row) for row in rows]
 
+    def list_alert_delivery_receipt_gaps(
+        self,
+        *,
+        tenant_id: str,
+        receipt_grace_seconds: int = 0,
+        now: datetime | None = None,
+        limit: int = 100,
+        order: str = "asc",
+    ) -> list[AlertDeliveryRecord]:
+        effective_now = now or utc_now()
+        if effective_now.tzinfo is None:
+            effective_now = effective_now.replace(tzinfo=timezone.utc)
+        grace_seconds = max(0, receipt_grace_seconds)
+        receipt_cutoff = effective_now - timedelta(seconds=grace_seconds)
+        direction = "asc" if order == "asc" else "desc"
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                select deliveries.*
+                from alert_delivery_outbox deliveries
+                left join alert_webhook_receipts receipts
+                  on receipts.tenant_id = deliveries.tenant_id
+                 and receipts.delivery_id = deliveries.id
+                where deliveries.tenant_id = ?
+                  and deliveries.status = ?
+                  and receipts.delivery_id is null
+                  and coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at) <= ?
+                order by
+                  coalesce(deliveries.delivered_at, deliveries.last_attempt_at, deliveries.updated_at) {direction},
+                  deliveries.rowid {direction}
+                limit ?
+                """,
+                (
+                    tenant_id,
+                    AlertDeliveryStatus.sent.value,
+                    receipt_cutoff.isoformat(),
+                    limit,
+                ),
+            ).fetchall()
+        return [self._alert_delivery_from_row(row) for row in rows]
+
     def summarize_alert_delivery_records(self, *, tenant_id: str) -> AlertDeliveryMetricSummary:
         now = utc_now().isoformat()
         with self._connect() as conn:

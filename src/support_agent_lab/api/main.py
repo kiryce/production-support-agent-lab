@@ -362,6 +362,7 @@ class OperationsAutomationAction(BaseModel):
         "retriage_recurring_alert",
         "investigate_stale_alert",
         "requeue_dead_delivery",
+        "inspect_missing_alert_receipts",
         "generate_incident_brief",
         "create_regression_draft",
         "block_promotion",
@@ -1156,6 +1157,7 @@ async def _operations_automation_plan_response(
     webhook_enabled = bool(_monitor_alert_webhook_url(deps))
     delivery_summary = _safe_monitor_alert_delivery_summary(deps, limit=200)
     dead_deliveries = _list_ops_delivery_records(deps, status=AlertDeliveryStatus.dead, limit=3)
+    receipt_gap_deliveries = _list_ops_receipt_gap_records(deps, limit=3, order="asc")
     actions: list[OperationsAutomationAction] = []
 
     if active_p0p1_alerts and webhook_enabled:
@@ -1317,6 +1319,34 @@ async def _operations_automation_plan_response(
                     body={"note": "Automation plan: destination verified; requeue dead-letter delivery."},
                 ),
                 evidence=_ops_delivery_record_evidence(record),
+            )
+        )
+
+    if delivery_summary and delivery_summary.receipt_tracking_enabled and delivery_summary.sent_without_receipt_count:
+        oldest_gap = receipt_gap_deliveries[0] if receipt_gap_deliveries else None
+        actions.append(
+            _ops_action(
+                kind="inspect_missing_alert_receipts",
+                key=f"{delivery_summary.sent_without_receipt_count}:{delivery_summary.oldest_unconfirmed_sent_at}",
+                priority="P1",
+                title="Inspect alert deliveries missing receipts",
+                detail=(
+                    f"{delivery_summary.sent_without_receipt_count} sent alert delivery row(s) exceeded "
+                    "the receipt grace period without receiving-side proof."
+                ),
+                safe_to_auto_execute=True,
+                required_scopes=["monitor:read"],
+                command=OperationsAutomationCommand(
+                    method="GET",
+                    path="/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+                    query={"limit": 100, "order": "asc"},
+                ),
+                evidence={
+                    "alert_delivery": _ops_delivery_summary_evidence(delivery_summary),
+                    "oldest_gap_delivery": (
+                        _ops_delivery_record_evidence(oldest_gap) if oldest_gap else None
+                    ),
+                },
             )
         )
 
@@ -1707,6 +1737,22 @@ def _list_ops_delivery_records(
     )
 
 
+def _list_ops_receipt_gap_records(
+    deps: AppContainer,
+    *,
+    limit: int,
+    order: Literal["asc", "desc"] = "asc",
+) -> list[AlertDeliveryRecord]:
+    if not deps.event_store:
+        return []
+    return deps.event_store.list_alert_delivery_receipt_gaps(
+        tenant_id=deps.settings.app_tenant_id,
+        receipt_grace_seconds=deps.settings.app_monitor_alert_webhook_receipt_grace_seconds,
+        limit=limit,
+        order=order,
+    )
+
+
 def _ops_alert_requires_attention(alert: MonitorAlert) -> bool:
     return _enum_value(alert.status) in OPS_ACTIVE_ALERT_STATUSES or alert.new_events_since_triage
 
@@ -1845,6 +1891,15 @@ def _ops_delivery_summary_evidence(summary: AlertDeliverySummary) -> dict[str, A
         "dispatcher_last_seen_at": summary.dispatcher_last_seen_at,
         "dispatcher_last_success_at": summary.dispatcher_last_success_at,
         "dispatcher_last_error": summary.dispatcher_last_error,
+        "receipt_tracking_enabled": summary.receipt_tracking_enabled,
+        "receipt_received_count": summary.receipt_received_count,
+        "receipt_duplicate_count": summary.receipt_duplicate_count,
+        "sent_with_receipt_count": summary.sent_with_receipt_count,
+        "sent_without_receipt_count": summary.sent_without_receipt_count,
+        "recent_sent_pending_receipt_count": summary.recent_sent_pending_receipt_count,
+        "receipt_grace_seconds": summary.receipt_grace_seconds,
+        "last_receipt_at": summary.last_receipt_at,
+        "oldest_unconfirmed_sent_at": summary.oldest_unconfirmed_sent_at,
     }
 
 
@@ -5781,6 +5836,24 @@ def create_app() -> FastAPI:
         require_admin(actor)
         require_scope(actor, "monitor:read")
         return _monitor_alert_delivery_summary(deps, limit=limit)
+
+    @app.get("/api/v1/admin/monitor/alert-deliveries/receipt-gaps")
+    def list_monitor_alert_delivery_receipt_gaps(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[Literal["asc", "desc"], Query()] = "asc",
+    ) -> list[AlertDeliveryRecord]:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return deps.event_store.list_alert_delivery_receipt_gaps(
+            tenant_id=deps.settings.app_tenant_id,
+            receipt_grace_seconds=deps.settings.app_monitor_alert_webhook_receipt_grace_seconds,
+            limit=limit,
+            order=order,
+        )
 
     @app.post("/api/v1/webhooks/monitor/alerts")
     async def receive_monitor_alert_webhook(

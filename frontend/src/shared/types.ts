@@ -578,6 +578,7 @@ export type OperationsAutomationAction = {
     | "retriage_recurring_alert"
     | "investigate_stale_alert"
     | "requeue_dead_delivery"
+    | "inspect_missing_alert_receipts"
     | "generate_incident_brief"
     | "create_regression_draft"
     | "block_promotion"

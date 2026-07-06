@@ -184,6 +184,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/triage/metrics` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries/summary` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries` | `monitor:read` |
+| `GET /api/v1/admin/monitor/alert-deliveries/receipt-gaps` | `monitor:read`. Lists sent delivery rows that exceeded the receipt grace period without receiver proof. |
 | `GET /api/v1/admin/monitor/alert-webhook-receipts` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alert-deliveries/dispatch` | `monitor:write` |
 | `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/requeue` | `monitor:write` |
@@ -271,8 +272,9 @@ facts, feedback comments, or raw eval answers.
 next-action planner used by the console `Settings` workbench and external
 automation. It reuses the promotion gate window, then adds active alert
 pressure, webhook/outbox health, dead-letter deliveries, incident-brief and
-regression-draft opportunities, tool-audit failure rate, negative feedback,
-retrieval grounding, and staging-eval freshness. The response schema is
+regression-draft opportunities, missing alert receipt evidence, tool-audit
+failure rate, negative feedback, retrieval grounding, and staging-eval
+freshness. The response schema is
 `ops_automation.v1`. Each action includes priority, detail, `safe_to_auto_execute`,
 required scopes, an optional method/path/query/body command, evidence, and
 guardrails. The endpoint itself never dispatches webhooks, changes triage,

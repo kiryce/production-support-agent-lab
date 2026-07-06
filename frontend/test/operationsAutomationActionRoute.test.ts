@@ -80,6 +80,45 @@ describe("operations automation action BFF route", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("executes the read-only missing receipt inspection command", async () => {
+    process.env.AGENT_API_BASE_URL = "http://agent.internal";
+    process.env.FRONTEND_AUTH_MODE = "demo";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (target) => {
+      const url = new URL(String(target));
+      if (url.pathname === "/api/v1/admin/operations/automation-plan") {
+        return Response.json(planWithAction({
+          id: "ops_inspect_missing_alert_receipts_123",
+          kind: "inspect_missing_alert_receipts",
+          safe_to_auto_execute: true,
+          command: {
+            method: "GET",
+            path: "/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+            query: { limit: 100, order: "asc" },
+            body: {}
+          }
+        }));
+      }
+      if (url.pathname === "/api/v1/admin/monitor/alert-deliveries/receipt-gaps") {
+        return Response.json([{ id: "deliv_missing", status: "sent" }]);
+      }
+      return Response.json({ detail: `unexpected ${url.pathname}` }, { status: 500 });
+    });
+
+    const response = await POST(
+      jsonRequest("/api/console/operations/automation-actions", {
+        actionId: "ops_inspect_missing_alert_receipts_123"
+      })
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result_summary).toBe("1 sent delivery receipt gap(s) loaded.");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const executedUrl = new URL(String(fetchMock.mock.calls[1][0]));
+    expect(executedUrl.pathname).toBe("/api/v1/admin/monitor/alert-deliveries/receipt-gaps");
+    expect(executedUrl.searchParams.get("order")).toBe("asc");
+  });
+
   it("rejects auto-safe actions whose generated command is outside the allowlist", async () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "demo";

@@ -188,6 +188,9 @@ First response:
 
 - Open the console `Delivery` tab and check the `Receipt` metric; `3/4` means
   three eligible sent deliveries have receiver proof and one does not.
+- Call `/api/v1/admin/monitor/alert-deliveries/receipt-gaps?order=asc` or run
+  the `Inspect alert deliveries missing receipts` automation action to list the
+  exact sent delivery rows that exceeded the grace period.
 - Open the console `Receipts` tab or call
   `/api/v1/admin/monitor/alert-webhook-receipts?delivery_id=<delivery_id>` for
   the missing delivery id from the delivery ledger.

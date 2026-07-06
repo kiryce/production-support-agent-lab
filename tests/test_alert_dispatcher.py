@@ -369,6 +369,11 @@ def test_alert_webhook_receipt_summary_tracks_sent_coverage_after_grace(tmp_path
         receipt_grace_seconds=60,
         now=base_time,
     )
+    receipt_gaps = event_store.list_alert_delivery_receipt_gaps(
+        tenant_id="demo_tenant",
+        receipt_grace_seconds=60,
+        now=base_time,
+    )
     delivery_summary = summarize_alert_deliveries(
         event_store.list_alert_delivery_records(tenant_id="demo_tenant"),
         webhook_enabled=True,
@@ -389,6 +394,7 @@ def test_alert_webhook_receipt_summary_tracks_sent_coverage_after_grace(tmp_path
     assert summary.receipt_grace_seconds == 60
     assert summary.last_received_at == duplicate_receipt.last_received_at
     assert summary.oldest_unconfirmed_sent_at == old_sent_at
+    assert [record.id for record in receipt_gaps] == [missing.id]
     assert delivery_summary.status == "degraded"
     assert delivery_summary.receipt_tracking_enabled is True
     assert delivery_summary.receipt_received_count == 1

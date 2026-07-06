@@ -696,6 +696,14 @@ def test_production_alert_delivery_routes_require_monitor_scopes(tmp_path, monke
             "/api/v1/admin/monitor/alert-deliveries/summary",
             headers=_production_headers(scopes="monitor:read"),
         )
+        gaps_missing_read = client.get(
+            "/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+            headers=_production_headers(scopes="crm:read"),
+        )
+        gaps_read_allowed = client.get(
+            "/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+            headers=_production_headers(scopes="monitor:read"),
+        )
         missing_write = client.post(
             "/api/v1/admin/monitor/alert-deliveries/dispatch",
             headers=_production_headers(scopes="monitor:read"),
@@ -720,6 +728,10 @@ def test_production_alert_delivery_routes_require_monitor_scopes(tmp_path, monke
     assert "signature_hash" not in read_allowed.text
     assert "source_hash" not in read_allowed.text
     assert "user_agent_hash" not in read_allowed.text
+    assert gaps_missing_read.status_code == 403
+    assert gaps_missing_read.json()["detail"] == "Missing required scope: monitor:read"
+    assert gaps_read_allowed.status_code == 200
+    assert gaps_read_allowed.json() == []
     assert missing_write.status_code == 403
     assert missing_write.json()["detail"] == "Missing required scope: monitor:write"
     assert write_allowed.status_code == 200
@@ -4420,6 +4432,109 @@ def test_admin_operations_automation_plan_recommends_actions_from_persisted_evid
     assert "Where is order" not in serialized
     assert "A1002" not in serialized
     assert "tool_results" not in serialized
+
+
+def test_admin_operations_automation_plan_surfaces_alert_receipt_gaps(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_ENABLED", "true")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_URL", "https://hooks.internal.test/alerts")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_SECRET", "webhook-signing-secret-with-32-byte-minimum")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED", "true")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_RECEIPT_GRACE_SECONDS", "60")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")
+    base_time = utc_now()
+    old_sent_at = base_time - timedelta(minutes=5)
+    recent_sent_at = base_time - timedelta(seconds=20)
+
+    def seed_sent_delivery(key: str):
+        record, _ = event_store.enqueue_alert_delivery(
+            build_alert_delivery_record(
+                tenant_id=app_container.settings.app_tenant_id,
+                alert=MonitorAlert(
+                    severity="P1",
+                    key=key,
+                    count=1,
+                    reason=f"{key} delivery sent",
+                    first_seen_at=base_time,
+                    last_seen_at=base_time,
+                    sample_event_ids=[f"mon_{key}"],
+                    sample_run_ids=[f"run_{key}"],
+                ),
+                destination_hash=destination_hash,
+            )
+        )
+        return event_store.record_alert_delivery_attempt(
+            record.id,
+            status=AlertDeliveryStatus.sent,
+            response_status_code=204,
+        )
+
+    missing = seed_sent_delivery("agent:order:TIMEOUT")
+    recent = seed_sent_delivery("agent:shipping:TIMEOUT")
+    covered = seed_sent_delivery("agent:billing:POLICY")
+    with event_store._connect() as conn:
+        for record, sent_at in [(missing, old_sent_at), (covered, old_sent_at), (recent, recent_sent_at)]:
+            conn.execute(
+                """
+                update alert_delivery_outbox
+                set delivered_at = ?, last_attempt_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (sent_at.isoformat(), sent_at.isoformat(), sent_at.isoformat(), record.id),
+            )
+    event_store.record_alert_webhook_receipt(
+        tenant_id=app_container.settings.app_tenant_id,
+        delivery_id=covered.id,
+        alert_key=covered.alert_key,
+        severity=covered.severity,
+        body_hash="body_hash_covered",
+        signature_hash="signature_hash_covered",
+        alert_count=covered.alert_count,
+        sample_event_count=len(covered.sample_event_ids),
+        sample_run_count=len(covered.sample_run_ids),
+        now=old_sent_at + timedelta(seconds=1),
+    )
+
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        gaps = client.get(
+            "/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+            headers={"X-Demo-Role": "admin"},
+        )
+        plan = client.get(
+            "/api/v1/admin/operations/automation-plan",
+            headers={"X-Demo-Role": "admin", "X-Demo-User": "operator_admin"},
+            params={"source": "event_store", "min_tool_calls": 0, "min_feedback_count": 0},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert gaps.status_code == 200
+    assert [record["id"] for record in gaps.json()] == [missing.id]
+    assert recent.id not in json.dumps(gaps.json())
+    assert covered.id not in json.dumps(gaps.json())
+    assert plan.status_code == 200
+    body = plan.json()
+    actions_by_kind = {action["kind"]: action for action in body["actions"]}
+    receipt_action = actions_by_kind["inspect_missing_alert_receipts"]
+    assert receipt_action["safe_to_auto_execute"] is True
+    assert receipt_action["required_scopes"] == ["monitor:read"]
+    assert receipt_action["command"] == {
+        "method": "GET",
+        "path": "/api/v1/admin/monitor/alert-deliveries/receipt-gaps",
+        "query": {"limit": 100, "order": "asc"},
+        "body": {},
+    }
+    assert receipt_action["evidence"]["alert_delivery"]["sent_without_receipt_count"] == 1
+    assert receipt_action["evidence"]["alert_delivery"]["recent_sent_pending_receipt_count"] == 1
+    assert receipt_action["evidence"]["oldest_gap_delivery"]["id"] == missing.id
+    assert body["evidence"]["alert_delivery"]["sent_without_receipt_count"] == 1
 
 
 def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkeypatch):

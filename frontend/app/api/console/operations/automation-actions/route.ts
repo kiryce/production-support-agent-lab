@@ -107,6 +107,9 @@ function isAllowedAutomationCommand(action: OperationsAutomationAction, command:
   if (action.kind === "inspect_tool_audit") {
     return command.method === "GET" && command.path === "/api/v1/admin/tools/audit";
   }
+  if (action.kind === "inspect_missing_alert_receipts") {
+    return command.method === "GET" && command.path === "/api/v1/admin/monitor/alert-deliveries/receipt-gaps";
+  }
   if (action.kind === "review_feedback") {
     return command.method === "GET" && command.path === "/api/v1/admin/feedback";
   }
@@ -149,6 +152,9 @@ function summarizeResult(action: OperationsAutomationAction, result: JsonValue) 
   }
   if (action.kind === "inspect_tool_audit" && Array.isArray(result)) {
     return `${result.length} tool audit record(s) loaded.`;
+  }
+  if (action.kind === "inspect_missing_alert_receipts" && Array.isArray(result)) {
+    return `${result.length} sent delivery receipt gap(s) loaded.`;
   }
   if (action.kind === "review_feedback" && Array.isArray(result)) {
     return `${result.length} feedback record(s) loaded.`;
