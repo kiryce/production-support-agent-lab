@@ -940,9 +940,15 @@ python scripts/run_release_check.py \
   --smoke-message "Where is my most recent order?"
 ```
 
-The default release check is deterministic and local. `--prod-smoke` is intentionally explicit because it calls a deployed service and can reach your real OpenAI, business, and knowledge integrations through `/api/v1/ready?deep=true` and `/api/v1/chat/messages`.
+The default release check is deterministic and local. It also runs static
+deployment policy checks for loopback-bound compose ports, required high-scope
+frontend environment interpolation, reproducible frontend lint dependencies,
+and same-origin console write protection. `--prod-smoke` is intentionally
+explicit because it calls a deployed service and can reach your real OpenAI,
+business, and knowledge integrations through `/api/v1/ready?deep=true` and
+`/api/v1/chat/messages`.
 
-- GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, and Docker image build.
+- GitHub Actions passes for deployment policy checks, unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, frontend lint/typecheck/test/build, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business URLs are real internal services, not local fixtures or placeholder domains. Knowledge is either a real HTTP service or an ingested SQLite index.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or the configured knowledge backend requirement makes startup/readiness fail.

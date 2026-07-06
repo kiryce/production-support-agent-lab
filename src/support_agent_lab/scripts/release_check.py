@@ -25,6 +25,21 @@ SMOKE_ENV = {
 AGENT_SCOPES = "crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write"
 ADMIN_SCOPES = "admin:read,admin:write,events:read,monitor:read,audit:read,eval:read,feedback:read,memory:replay"
 DOCKER_IMAGE = "production-support-agent-lab:release-check"
+REQUIRED_FRONTEND_ENV_VARS = (
+    "FRONTEND_CONSOLE_USERNAME",
+    "FRONTEND_CONSOLE_PASSWORD",
+    "FRONTEND_ACTOR_USER_ID",
+    "FRONTEND_ACTOR_ROLES",
+    "FRONTEND_ACTOR_SCOPES",
+    "APP_TENANT_ID",
+    "APP_INTERNAL_API_KEY",
+    "APP_ACTOR_SIGNATURE_SECRET",
+)
+REQUIRED_FRONTEND_LINT_DEPS = (
+    "@next/eslint-plugin-next",
+    "eslint-plugin-react",
+    "eslint-plugin-react-hooks",
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +109,14 @@ def build_steps(include_docker: bool = False) -> list[GateStep]:
                         AGENT_SCOPES,
                         "--timestamp",
                         "1783014000",
+                        "--nonce",
+                        "nonce_docker_release_check_1234567890",
+                        "--method",
+                        "POST",
+                        "--path",
+                        "/api/v1/chat/sessions",
+                        "--body",
+                        '{"user_id":"user_prod"}',
                         "--format",
                         "json",
                     ],
@@ -120,12 +143,55 @@ def validate_repo_root(root: Path) -> None:
         "scripts/run_monitor_eval.py",
         "scripts/run_retrieval_eval.py",
         "scripts/event_store_ops.py",
+        "docker-compose.yml",
+        "frontend/middleware.ts",
+        "frontend/package.json",
+        "frontend/pnpm-lock.yaml",
         *[suite.path for suite in STAGING_EVAL_SUITES],
     ]
     missing = [path for path in required_paths if not (root / path).exists()]
     if missing:
         joined = ", ".join(missing)
         raise RuntimeError(f"release check must run from the repository root; missing: {joined}")
+
+
+def validate_deployment_policy(root: Path) -> None:
+    try:
+        import yaml
+    except ImportError as exc:  # pragma: no cover - exercised only with incomplete dev installs
+        raise RuntimeError("PyYAML is required for deployment policy checks; install .[dev]") from exc
+
+    compose_path = root / "docker-compose.yml"
+    compose = yaml.safe_load(compose_path.read_text(encoding="utf-8")) or {}
+    services = compose.get("services") or {}
+    app = services.get("app") or {}
+    frontend = services.get("frontend") or {}
+
+    if app.get("ports") != ["127.0.0.1:8000:8000"]:
+        raise RuntimeError("docker-compose app port must be bound to 127.0.0.1:8000:8000")
+    if frontend.get("ports") != ["127.0.0.1:3000:3000"]:
+        raise RuntimeError("docker-compose frontend port must be bound to 127.0.0.1:3000:3000")
+
+    frontend_env = frontend.get("environment") or {}
+    for name in REQUIRED_FRONTEND_ENV_VARS:
+        value = frontend_env.get(name)
+        if not isinstance(value, str) or not value.startswith(f"${{{name}:?") or ":-" in value:
+            raise RuntimeError(f"docker-compose frontend {name} must use required interpolation")
+
+    package_path = root / "frontend" / "package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    dev_dependencies = package.get("devDependencies") or {}
+    lock_text = (root / "frontend" / "pnpm-lock.yaml").read_text(encoding="utf-8")
+    for name in REQUIRED_FRONTEND_LINT_DEPS:
+        if name not in dev_dependencies:
+            raise RuntimeError(f"frontend package.json must declare {name} for reproducible lint")
+        if name not in lock_text:
+            raise RuntimeError(f"frontend pnpm-lock.yaml must include {name} for frozen installs")
+
+    middleware = (root / "frontend" / "middleware.ts").read_text(encoding="utf-8").lower()
+    for token in ("sec-fetch-site", "origin", "same-origin", "unsafe_methods"):
+        if token not in middleware:
+            raise RuntimeError("frontend middleware must keep same-origin write protection")
 
 
 def validate_production_config(root: Path) -> None:
@@ -357,6 +423,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = Path(args.cwd).resolve()
     try:
         validate_repo_root(root)
+        print("==> deployment policy validation")
+        validate_deployment_policy(root)
         if args.prod_smoke and not args.base_url:
             raise RuntimeError("--prod-smoke requires --base-url")
         if args.production_config:

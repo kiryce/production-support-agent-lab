@@ -125,6 +125,7 @@ python scripts/run_release_check.py
 
 这条命令会跑：
 
+- deployment policy check（Compose 端口、前端高权限环境变量、console 同源写保护、前端 lint 依赖）
 - `pip check`
 - 生产请求签名 smoke
 - 全量单测
