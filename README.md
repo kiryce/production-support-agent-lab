@@ -32,7 +32,7 @@
 
 “不能用 mock”在这里的含义是：生产模式绝不会偷偷退回本地 fixtures。你必须接入自己的 CRM/OMS/物流/工单/知识库服务，否则应用会在启动或 readiness 阶段失败。
 
-默认生产持久层是 SQLite event store，适合单实例部署或 staging。多实例高并发时，请按 `docs/production-hardening.md` 的路线替换为 Postgres/Kafka/warehouse。
+默认生产持久层是 SQLite event store，适合单实例部署或 staging；连接层会启用 WAL、5 秒 busy timeout、`synchronous=NORMAL` 和外键约束。多实例高并发时，请按 `docs/production-hardening.md` 的路线替换为 Postgres/Kafka/warehouse。
 
 ## 前端控制台
 

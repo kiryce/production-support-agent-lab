@@ -189,10 +189,15 @@ class SQLiteEventStore:
     production event log without forcing learners to run Postgres on day one.
     """
 
+    SQLITE_BUSY_TIMEOUT_MS = 5000
+    SQLITE_JOURNAL_MODE = "WAL"
+    SQLITE_SYNCHRONOUS = "NORMAL"
+
     def __init__(self, path: str | Path, tool_idempotency_lease_seconds: int = 300) -> None:
         self.path = Path(path)
         self.tool_idempotency_lease_seconds = tool_idempotency_lease_seconds
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._configure_database_file()
         self._init_schema()
 
     @classmethod
@@ -2156,9 +2161,23 @@ class SQLiteEventStore:
         }
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=self.SQLITE_BUSY_TIMEOUT_MS / 1000)
         conn.row_factory = sqlite3.Row
+        self._configure_connection(conn)
         return conn
+
+    def _configure_database_file(self) -> None:
+        conn = sqlite3.connect(self.path, timeout=self.SQLITE_BUSY_TIMEOUT_MS / 1000)
+        try:
+            self._configure_connection(conn)
+            conn.execute(f"pragma journal_mode = {self.SQLITE_JOURNAL_MODE}")
+        finally:
+            conn.close()
+
+    def _configure_connection(self, conn: sqlite3.Connection) -> None:
+        conn.execute(f"pragma busy_timeout = {self.SQLITE_BUSY_TIMEOUT_MS}")
+        conn.execute(f"pragma synchronous = {self.SQLITE_SYNCHRONOUS}")
+        conn.execute("pragma foreign_keys = on")
 
     def _idempotency_row_is_stale(self, updated_at: str) -> bool:
         if self.tool_idempotency_lease_seconds <= 0:

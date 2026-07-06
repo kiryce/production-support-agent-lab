@@ -657,6 +657,40 @@ def test_event_store_health_check_verifies_write_without_persisting_probe(tmp_pa
     assert event_store.list_events(event_type="readiness.probe") == []
 
 
+def test_event_store_configures_sqlite_runtime_pragmas(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    conn = event_store._connect()
+    try:
+        assert conn.execute("pragma busy_timeout").fetchone()[0] == SQLiteEventStore.SQLITE_BUSY_TIMEOUT_MS
+        assert conn.execute("pragma journal_mode").fetchone()[0].lower() == "wal"
+        assert conn.execute("pragma synchronous").fetchone()[0] == 1
+        assert conn.execute("pragma foreign_keys").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_event_store_wal_mode_supports_multiple_store_instances(tmp_path):
+    database_path = tmp_path / "events.db"
+    writer = SQLiteEventStore(database_path)
+    reader = SQLiteEventStore(database_path)
+
+    event = writer.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_shared",
+        user_id="user_demo",
+        event_type="message.user",
+        payload=_message_payload("msg_shared", "conv_shared", "hello from another process"),
+    )
+
+    assert reader.list_events(tenant_id="demo_tenant")[0].id == event.id
+    for store in (writer, reader):
+        conn = store._connect()
+        try:
+            assert conn.execute("pragma journal_mode").fetchone()[0].lower() == "wal"
+        finally:
+            conn.close()
+
+
 def test_event_store_creates_verified_online_backup(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     event = event_store.append(

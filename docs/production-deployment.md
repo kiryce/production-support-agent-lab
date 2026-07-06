@@ -44,7 +44,7 @@ APP_IDEMPOTENCY_RETENTION_DAYS=30
 APP_ALERT_DELIVERY_RETENTION_DAYS=90
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, and alert delivery outbox. That is enough for a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, and alert delivery outbox. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
 Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, and terminal alert-delivery rows. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
 
