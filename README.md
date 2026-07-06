@@ -502,6 +502,8 @@ Console:  http://127.0.0.1:3000
 Metrics:  http://127.0.0.1:8000/metrics
 ```
 
+Docker Compose binds the backend and console host ports to `127.0.0.1` by default. Put a real reverse proxy, gateway auth, and TLS in front before exposing either service outside the host.
+
 可观测 profile：
 
 ```text

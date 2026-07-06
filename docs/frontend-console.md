@@ -179,8 +179,10 @@ With Docker Compose:
 docker compose up --build
 ```
 
-The backend listens on `8000`; the console listens on `3000`. To start the
-optional Prometheus service for local production-style monitoring, run:
+The compose file binds backend `8000` and console `3000` to `127.0.0.1` by
+default. Put an authenticated reverse proxy or gateway in front before exposing
+either service outside the host. To start the optional Prometheus service for
+local production-style monitoring, run:
 
 ```bash
 docker compose --profile observability up --build

@@ -154,6 +154,23 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     assert {"app", "frontend", "alert-dispatcher", "monitor-review-worker", "audit-export-worker", "prometheus"} <= set(services)
     assert "profiles" not in services["app"]
     assert "profiles" not in services["frontend"]
+    assert services["app"]["ports"] == ["127.0.0.1:8000:8000"]
+
+    frontend = services["frontend"]
+    assert frontend["ports"] == ["127.0.0.1:3000:3000"]
+    frontend_environment = frontend["environment"]
+    for name in (
+        "FRONTEND_CONSOLE_USERNAME",
+        "FRONTEND_CONSOLE_PASSWORD",
+        "FRONTEND_ACTOR_USER_ID",
+        "FRONTEND_ACTOR_ROLES",
+        "FRONTEND_ACTOR_SCOPES",
+        "APP_TENANT_ID",
+        "APP_INTERNAL_API_KEY",
+        "APP_ACTOR_SIGNATURE_SECRET",
+    ):
+        assert frontend_environment[name].startswith(f"${{{name}:?"), name
+        assert ":-" not in frontend_environment[name], name
 
     dispatcher = services["alert-dispatcher"]
     assert dispatcher["build"] == "."
