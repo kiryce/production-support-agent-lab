@@ -1187,6 +1187,25 @@ class SQLiteEventStore:
             ).fetchone()
         return self._alert_delivery_from_row(refreshed)
 
+    def get_alert_delivery_record(
+        self,
+        delivery_id: str,
+        *,
+        tenant_id: str,
+    ) -> AlertDeliveryRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                select *
+                from alert_delivery_outbox
+                where id = ? and tenant_id = ?
+                """,
+                (delivery_id, tenant_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._alert_delivery_from_row(row)
+
     def list_alert_delivery_records(
         self,
         *,

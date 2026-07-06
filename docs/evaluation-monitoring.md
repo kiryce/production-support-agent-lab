@@ -233,9 +233,10 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alert-deliveries/summary" \
 如果想在本地或内网演示完整通知闭环，可以启用
 `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true`，并把
 `APP_MONITOR_ALERT_WEBHOOK_URL` 指向 `/api/v1/webhooks/monitor/alerts`。receiver
-会校验发送端 `X-PSA-*` HMAC 签名、body hash 和 timestamp，把 receipt 幂等写入
-`alert_webhook_receipts`；重复 delivery 只增加 `duplicate_count`，不会保存 raw body、
-headers、reason 或 sample ids。
+会校验发送端 `X-PSA-*` HMAC 签名、body hash 和 timestamp，并要求 delivery、
+alert、severity 和 payload hash 匹配 `alert_delivery_outbox` 里的非 pending 投递，
+再把 receipt 幂等写入 `alert_webhook_receipts`；重复 delivery 只增加
+`duplicate_count`，不会保存 raw body、headers、reason 或 sample ids。
 控制台的 Delivery ledger 会读取同一个 outbox；值班人员只能对 `dead` row 执行
 replay/requeue 或 close，动作会保留在 append-only audit event 中。
 Prometheus `/metrics` 会读取同一套 monitor triage 投影，但只输出聚合指标：active

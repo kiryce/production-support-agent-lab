@@ -114,6 +114,7 @@ from support_agent_lab.monitoring.alert_dispatcher import (
     AlertDeliverySummary,
     AlertDispatchReport,
     AlertWebhookSignatureError,
+    VerifiedAlertWebhook,
     summarize_alert_deliveries,
     verify_alert_webhook_signature,
 )
@@ -2711,6 +2712,24 @@ def _safe_len(value: Any) -> int:
     if isinstance(value, list):
         return len(value)
     return 0
+
+
+def _validate_alert_webhook_receipt_delivery(
+    *,
+    verified: VerifiedAlertWebhook,
+    expected_delivery: AlertDeliveryRecord | None,
+    severity: str,
+) -> None:
+    if expected_delivery is None:
+        raise HTTPException(status_code=409, detail="Alert webhook delivery is not recognized")
+    if expected_delivery.status == AlertDeliveryStatus.pending:
+        raise HTTPException(status_code=409, detail="Alert webhook delivery has not been dispatched")
+    if (
+        expected_delivery.alert_key != verified.alert_key
+        or expected_delivery.severity != severity
+        or expected_delivery.payload_hash != verified.body_hash
+    ):
+        raise HTTPException(status_code=409, detail="Alert webhook delivery does not match outbox record")
 
 
 def _audit_payload_summary(payload: Any) -> dict[str, Any]:
@@ -6254,6 +6273,15 @@ def create_app() -> FastAPI:
         severity = str(payload.get("severity") or "")
         if severity not in {"P0", "P1", "P2", "P3"}:
             raise HTTPException(status_code=400, detail="Alert webhook severity is invalid")
+        expected_delivery = deps.event_store.get_alert_delivery_record(
+            verified.delivery_id,
+            tenant_id=deps.settings.app_tenant_id,
+        )
+        _validate_alert_webhook_receipt_delivery(
+            verified=verified,
+            expected_delivery=expected_delivery,
+            severity=severity,
+        )
         try:
             record, created = deps.event_store.record_alert_webhook_receipt(
                 tenant_id=deps.settings.app_tenant_id,

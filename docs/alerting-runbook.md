@@ -253,6 +253,10 @@ First response:
 - Inspect timestamp skew against
   `APP_MONITOR_ALERT_WEBHOOK_RECEIVER_MAX_AGE_SECONDS`; stale `X-PSA-Timestamp`
   values are rejected before a receipt is recorded.
+- If the receiver returns HTTP 409, compare the delivery id against
+  `alert_delivery_outbox`: the row must exist, must already be claimed or
+  attempted by the dispatcher, and its alert key, severity, and payload hash
+  must match the signed request.
 - Check ingress, TLS, proxy, and firewall logs between the dispatcher and
   receiver. Duplicate receipts are retry/idempotency evidence, not a second raw
   payload.

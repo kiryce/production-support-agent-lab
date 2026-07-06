@@ -37,6 +37,7 @@ def test_signed_alert_webhook_receiver_records_receipts_without_actor_headers(tm
             alert=_alert(severity="P1", key="agent:order:TIMEOUT"),
             destination_hash=hash_alert_destination("http://testserver/api/v1/webhooks/monitor/alerts"),
         )
+        record = _claim_delivery_for_webhook(app_container, record)
         body, headers = _signed_body_and_headers(record)
 
         first = client.post(WEBHOOK_PATH, content=body, headers=headers)
@@ -80,6 +81,7 @@ def test_alert_webhook_receiver_rejects_tampering_and_conflicting_replays(tmp_pa
             alert=_alert(severity="P1", key="agent:billing:HTTP_503"),
             destination_hash=hash_alert_destination("http://testserver/api/v1/webhooks/monitor/alerts"),
         )
+        record = _claim_delivery_for_webhook(app_container, record)
         body, headers = _signed_body_and_headers(record)
         tampered = canonical_json_bytes({**alert_delivery_payload_from_record(record), "alert_count": 99})
 
@@ -121,8 +123,87 @@ def test_alert_webhook_receiver_rejects_tampering_and_conflicting_replays(tmp_pa
     assert app_container.event_store.list_alert_webhook_receipts(tenant_id="demo_tenant")[0].duplicate_count == 0
 
 
-def _signed_body_and_headers(record):
-    payload = alert_delivery_payload_from_record(record)
+def test_alert_webhook_receiver_requires_dispatched_outbox_record(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED", "true")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        record = build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:returns:TIMEOUT"),
+            destination_hash=hash_alert_destination("http://testserver/api/v1/webhooks/monitor/alerts"),
+        )
+        body, headers = _signed_body_and_headers(record)
+
+        missing_outbox = client.post(WEBHOOK_PATH, content=body, headers=headers)
+        app_container.event_store.enqueue_alert_delivery(record)
+        pending_outbox = client.post(WEBHOOK_PATH, content=body, headers=headers)
+        claimed_record = _claim_delivery_for_webhook(app_container, record)
+        claimed_body, claimed_headers = _signed_body_and_headers(claimed_record)
+        accepted = client.post(WEBHOOK_PATH, content=claimed_body, headers=claimed_headers)
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert missing_outbox.status_code == 409
+    assert missing_outbox.json()["detail"] == "Alert webhook delivery is not recognized"
+    assert pending_outbox.status_code == 409
+    assert pending_outbox.json()["detail"] == "Alert webhook delivery has not been dispatched"
+    assert accepted.status_code == 200
+    receipts = app_container.event_store.list_alert_webhook_receipts(tenant_id="demo_tenant")
+    assert [receipt.delivery_id for receipt in receipts] == [record.id]
+
+
+def test_alert_webhook_receiver_rejects_first_receipt_that_does_not_match_outbox(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED", "true")
+    monkeypatch.setenv("APP_MONITOR_ALERT_WEBHOOK_SECRET", WEBHOOK_SECRET)
+    get_settings.cache_clear()
+    app_container = create_container()
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        record = build_alert_delivery_record(
+            tenant_id="demo_tenant",
+            alert=_alert(severity="P1", key="agent:refunds:TIMEOUT"),
+            destination_hash=hash_alert_destination("http://testserver/api/v1/webhooks/monitor/alerts"),
+        )
+        record = _claim_delivery_for_webhook(app_container, record)
+        mismatched_payload = {**alert_delivery_payload_from_record(record), "severity": "P0"}
+        body, headers = _signed_body_and_headers(record, payload=mismatched_payload)
+
+        response = client.post(WEBHOOK_PATH, content=body, headers=headers)
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Alert webhook delivery does not match outbox record"
+    response_text = json.dumps(response.json())
+    assert "PRIVATE reason" not in response_text
+    assert "X-PSA-Signature" not in response_text
+    assert app_container.event_store.list_alert_webhook_receipts(tenant_id="demo_tenant") == []
+
+
+def _claim_delivery_for_webhook(app_container, record):
+    app_container.event_store.enqueue_alert_delivery(record)
+    claimed = app_container.event_store.claim_alert_delivery_records(
+        tenant_id=record.tenant_id,
+        worker_id="receiver-test-worker",
+        limit=1,
+        lease_seconds=120,
+        max_attempts=3,
+    )
+    assert [item.id for item in claimed] == [record.id]
+    return claimed[0]
+
+
+def _signed_body_and_headers(record, *, payload=None):
+    payload = payload or alert_delivery_payload_from_record(record)
     body = canonical_json_bytes(payload)
     body_hash = hashlib.sha256(body).hexdigest()
     timestamp = str(int(time.time()))

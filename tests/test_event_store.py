@@ -784,6 +784,22 @@ def test_alert_webhook_receipts_are_idempotent_and_sanitized(tmp_path):
     assert event_store.list_alert_webhook_receipts(tenant_id="demo_tenant")[0].duplicate_count == 1
 
 
+def test_alert_delivery_record_can_be_loaded_by_delivery_id(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    now = utc_now()
+    record = _alert_delivery("deliv_lookup", now, status=AlertDeliveryStatus.pending)
+
+    persisted, created = event_store.enqueue_alert_delivery(record)
+    found = event_store.get_alert_delivery_record("deliv_lookup", tenant_id="demo_tenant")
+    wrong_tenant = event_store.get_alert_delivery_record("deliv_lookup", tenant_id="other_tenant")
+    missing = event_store.get_alert_delivery_record("deliv_missing", tenant_id="demo_tenant")
+
+    assert created is True
+    assert found == persisted
+    assert wrong_tenant is None
+    assert missing is None
+
+
 def test_event_store_configures_sqlite_runtime_pragmas(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     conn = event_store._connect()
