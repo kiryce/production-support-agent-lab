@@ -68,7 +68,7 @@
 http://127.0.0.1:3000
 ```
 
-Production console mode protects `/` and `/api/console/*` with server-side Basic Auth before the BFF can sign backend requests; configure `FRONTEND_CONSOLE_USERNAME` and `FRONTEND_CONSOLE_PASSWORD`. Production write requests to `/api/console/*` also require same-origin browser evidence through `Origin` or `Sec-Fetch-Site`, so cross-site POSTs are rejected even if a browser has cached console credentials. The BFF actor is also fail-closed in production: `AGENT_API_BASE_URL`, `APP_TENANT_ID`, `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`, `FRONTEND_ACTOR_USER_ID`, `FRONTEND_ACTOR_ROLES`, and `FRONTEND_ACTOR_SCOPES` must be explicit real values, not placeholders or local demo defaults.
+Production console mode protects `/` and `/api/console/*` with server-side Basic Auth before the BFF can sign backend requests; configure `FRONTEND_CONSOLE_USERNAME` and `FRONTEND_CONSOLE_PASSWORD`. Production write requests to `/api/console/*` also require same-origin browser evidence through `Origin` or `Sec-Fetch-Site`, so cross-site POSTs are rejected even if a browser has cached console credentials. The BFF actor is also fail-closed in production: `AGENT_API_BASE_URL`, `APP_TENANT_ID`, `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`, `FRONTEND_ACTOR_USER_ID`, `FRONTEND_ACTOR_ROLES`, and `FRONTEND_ACTOR_SCOPES` must be explicit real values, not placeholders or local demo defaults; the backend gateway secrets must be at least 32 characters.
 
 详细说明见 `docs/frontend-console.md`。视觉和交互设计说明见 `docs/product-design-brief.md`。
 
@@ -336,7 +336,7 @@ APP_LLM_RETRY_ATTEMPTS=2
 APP_LLM_RETRY_BACKOFF_MS=250
 APP_LLM_CIRCUIT_FAILURE_THRESHOLD=5
 APP_LLM_CIRCUIT_RESET_SECONDS=30
-APP_INTERNAL_API_KEY=...
+APP_INTERNAL_API_KEY=replace_with_real_internal_gateway_secret_min_32_chars
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_RATE_LIMIT_ENABLED=true

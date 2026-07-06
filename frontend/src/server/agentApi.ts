@@ -162,7 +162,7 @@ function productionFrontendConfig() {
   return {
     baseUrl: requireProductionEnv("AGENT_API_BASE_URL"),
     tenantId: requireProductionTenantId(),
-    internalApiKey: requireProductionEnv("APP_INTERNAL_API_KEY"),
+    internalApiKey: requireProductionEnv("APP_INTERNAL_API_KEY", { minLength: 32 }),
     signatureSecret: requireProductionEnv("APP_ACTOR_SIGNATURE_SECRET", { minLength: 32 }),
     userId: requireProductionEnv("FRONTEND_ACTOR_USER_ID"),
     rolesHeader: requireProductionCsv("FRONTEND_ACTOR_ROLES"),

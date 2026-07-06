@@ -25,6 +25,7 @@ from support_agent_lab.tools.registry import ToolBroker, ToolRegistry
 
 
 ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
+INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum"
 
 
 def _db_url(path) -> str:
@@ -372,7 +373,7 @@ def test_production_config_accepts_sqlite_knowledge_backend(tmp_path):
         app_business_api_key="business-token",
         app_knowledge_backend="sqlite",
         app_knowledge_database_url=_db_url(tmp_path / "knowledge.db"),
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -388,7 +389,7 @@ def test_production_config_rejects_memory_knowledge_backend():
         app_business_api_base_url="https://business.internal.test",
         app_business_api_key="business-token",
         app_knowledge_backend="memory",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -405,7 +406,7 @@ def test_production_container_can_use_sqlite_knowledge_backend(monkeypatch, tmp_
     monkeypatch.setenv("APP_BUSINESS_API_KEY", "business-token")
     monkeypatch.setenv("APP_KNOWLEDGE_BACKEND", "sqlite")
     monkeypatch.setenv("APP_KNOWLEDGE_DATABASE_URL", _db_url(tmp_path / "knowledge.db"))
-    monkeypatch.setenv("APP_INTERNAL_API_KEY", "internal-test-key")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", INTERNAL_API_KEY)
     monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     monkeypatch.setenv("APP_DATABASE_URL", _db_url(tmp_path / "events.db"))
     get_settings.cache_clear()
@@ -446,7 +447,7 @@ async def test_readiness_accepts_production_sqlite_knowledge_index(tmp_path):
         app_business_api_key="business-token",
         app_knowledge_backend="sqlite",
         app_knowledge_database_url=_db_url(tmp_path / "knowledge.db"),
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_database_url=_db_url(tmp_path / "events.db"),
         app_event_store_backup_dir=str(tmp_path / "backups"),

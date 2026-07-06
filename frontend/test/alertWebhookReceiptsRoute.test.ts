@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GET } from "../app/api/console/monitor/alert-webhook-receipts/route";
 
 const ORIGINAL_ENV = { ...process.env };
+const INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -69,7 +70,7 @@ describe("alert webhook receipts BFF route", () => {
     process.env.AGENT_API_BASE_URL = "http://agent.internal";
     process.env.FRONTEND_AUTH_MODE = "production";
     process.env.APP_TENANT_ID = "tenant_live";
-    process.env.APP_INTERNAL_API_KEY = "internal_key";
+    process.env.APP_INTERNAL_API_KEY = INTERNAL_API_KEY;
     process.env.APP_ACTOR_SIGNATURE_SECRET = "receipt_route_secret_min_32_chars";
     process.env.FRONTEND_ACTOR_USER_ID = "console_operator";
     process.env.FRONTEND_ACTOR_ROLES = "admin";
@@ -88,7 +89,7 @@ describe("alert webhook receipts BFF route", () => {
     expect(url.pathname).toBe("/api/v1/admin/monitor/alert-webhook-receipts");
     expect(url.searchParams.get("delivery_id")).toBe("deliv_1");
     expect(url.searchParams.get("limit")).toBe("25");
-    expect(headers["X-Internal-Auth"]).toBe("internal_key");
+    expect(headers["X-Internal-Auth"]).toBe(INTERNAL_API_KEY);
     expect(headers["X-Actor-User-Id"]).toBe("console_operator");
     expect(headers["X-Actor-Scopes"]).toBe("monitor:read");
     expect(headers["X-Request-Body-SHA256"]).toBe(

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { agentFetch, getConsoleConnection } from "../src/server/agentApi";
 
 const ORIGINAL_ENV = { ...process.env };
+const INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -21,7 +22,7 @@ describe("production agent API gateway config", () => {
     const [target, init] = fetchMock.mock.calls[0];
     const headers = init?.headers as Record<string, string>;
     expect(String(target)).toBe("http://agent.internal/api/v1/admin/tools?limit=10");
-    expect(headers["X-Internal-Auth"]).toBe("internal-test-key");
+    expect(headers["X-Internal-Auth"]).toBe(INTERNAL_API_KEY);
     expect(headers["X-Actor-User-Id"]).toBe("console_operator");
     expect(headers["X-Actor-Roles"]).toBe("admin");
     expect(headers["X-Actor-Scopes"]).toBe("admin:read,monitor:read");
@@ -71,13 +72,25 @@ describe("production agent API gateway config", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("fails closed when the internal API key is too short", async () => {
+    useProductionFrontendEnv();
+    process.env.APP_INTERNAL_API_KEY = "short-internal-key";
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+
+    await expect(agentFetch("/api/v1/admin/tools")).rejects.toMatchObject({
+      status: 500,
+      detail: "APP_INTERNAL_API_KEY"
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 function useProductionFrontendEnv() {
   process.env.AGENT_API_BASE_URL = "http://agent.internal";
   process.env.FRONTEND_AUTH_MODE = "production";
   process.env.APP_TENANT_ID = "tenant_live";
-  process.env.APP_INTERNAL_API_KEY = "internal-test-key";
+  process.env.APP_INTERNAL_API_KEY = INTERNAL_API_KEY;
   process.env.APP_ACTOR_SIGNATURE_SECRET = "frontend-actor-secret-with-32-chars";
   process.env.FRONTEND_ACTOR_USER_ID = "console_operator";
   process.env.FRONTEND_ACTOR_ROLES = "admin";

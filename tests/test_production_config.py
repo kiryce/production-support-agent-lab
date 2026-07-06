@@ -7,6 +7,7 @@ from support_agent_lab.llm.gateway import create_llm_gateway
 
 
 ACTOR_SIGNATURE_SECRET = "actor-signing-secret-with-32-byte-minimum"
+INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum"
 
 
 def test_production_mode_requires_real_provider_and_integrations():
@@ -26,7 +27,7 @@ def test_production_mode_rejects_local_deterministic_llm():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -44,7 +45,7 @@ def test_production_mode_accepts_real_integration_config():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -94,7 +95,7 @@ def test_require_production_rejects_disabled_request_signature():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_request_signature_required=False,
     )
@@ -114,7 +115,7 @@ def test_require_production_rejects_disabled_rate_limit():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_rate_limit_enabled=False,
     )
@@ -134,7 +135,7 @@ def test_require_production_rejects_memory_rate_limit_backend():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_rate_limit_backend="memory",
     )
@@ -152,7 +153,7 @@ def test_production_mode_rejects_demo_tenant():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -168,7 +169,7 @@ def test_production_mode_rejects_missing_adapter_keys():
         openai_api_key="sk-test",
         app_business_api_base_url="https://business.internal.test",
         app_knowledge_api_base_url="https://knowledge.internal.test",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
     )
 
@@ -186,7 +187,7 @@ def test_production_mode_rejects_unsupported_event_store_url():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_database_url="postgresql://events.internal/support",
     )
@@ -212,10 +213,28 @@ def test_production_mode_requires_actor_signature_secret():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
     )
 
     with pytest.raises(RuntimeError, match="APP_ACTOR_SIGNATURE_SECRET"):
+        settings.validate_production_ready()
+
+
+def test_production_mode_rejects_short_internal_api_key():
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key="short-internal-key",
+        app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
+    )
+
+    with pytest.raises(RuntimeError, match="APP_INTERNAL_API_KEY must be at least 32 characters"):
         settings.validate_production_ready()
 
 
@@ -229,7 +248,7 @@ def test_production_mode_rejects_short_actor_signature_secret():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret="short-secret",
     )
 
@@ -247,7 +266,7 @@ def test_production_mode_requires_signed_alert_webhook_when_enabled():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_monitor_alert_webhook_enabled=True,
         app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
@@ -267,7 +286,7 @@ def test_production_mode_accepts_signed_alert_webhook_when_enabled():
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret=ACTOR_SIGNATURE_SECRET,
         app_monitor_alert_webhook_enabled=True,
         app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
@@ -286,7 +305,7 @@ def test_production_container_uses_http_integrations_not_demo_store(monkeypatch,
     monkeypatch.setenv("APP_BUSINESS_API_KEY", "business-token")
     monkeypatch.setenv("APP_KNOWLEDGE_API_BASE_URL", "https://knowledge.internal.test")
     monkeypatch.setenv("APP_KNOWLEDGE_API_KEY", "knowledge-token")
-    monkeypatch.setenv("APP_INTERNAL_API_KEY", "internal-test-key")
+    monkeypatch.setenv("APP_INTERNAL_API_KEY", INTERNAL_API_KEY)
     monkeypatch.setenv("APP_ACTOR_SIGNATURE_SECRET", ACTOR_SIGNATURE_SECRET)
     monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
     monkeypatch.setenv("APP_BUSINESS_API_RETRY_ATTEMPTS", "3")

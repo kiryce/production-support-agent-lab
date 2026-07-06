@@ -23,7 +23,8 @@ and the BFF calls the real Agent API:
   `APP_INTERNAL_API_KEY`, `APP_ACTOR_SIGNATURE_SECRET`,
   `FRONTEND_ACTOR_USER_ID`, `FRONTEND_ACTOR_ROLES`, and
   `FRONTEND_ACTOR_SCOPES` must be explicit; there is no default admin-scope
-  fallback in production mode.
+  fallback in production mode. `APP_INTERNAL_API_KEY` and
+  `APP_ACTOR_SIGNATURE_SECRET` must each be at least 32 characters.
 - No fake incident, alert, citation, memory, or tool-audit data is hardcoded in
   the UI. Empty screens mean the backend returned no events.
 
@@ -164,7 +165,7 @@ FRONTEND_ACTOR_ROLES=admin
 FRONTEND_ACTOR_SCOPES=crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write,admin:read,admin:write,audit:read,events:read,eval:read,eval:run,feedback:read,knowledge:diagnose,memory:replay,monitor:read,monitor:write
 FRONTEND_REQUEST_SIGNATURE_REQUIRED=true
 APP_TENANT_ID=your_tenant
-APP_INTERNAL_API_KEY=your_internal_gateway_secret
+APP_INTERNAL_API_KEY=your_internal_gateway_secret_min_32_chars
 APP_ACTOR_SIGNATURE_SECRET=your_actor_signature_secret_min_32_chars
 ```
 
@@ -173,8 +174,8 @@ or route handlers on the server side. `FRONTEND_CONSOLE_*` credentials are the
 browser entry guard for the console; replace the sample password with a rotated
 secret of at least 16 characters. `FRONTEND_ACTOR_*` is the backend actor the BFF
 uses after the browser has been authenticated. Production mode rejects missing
-actor values, placeholder secrets, `APP_TENANT_ID=demo_tenant`, and short actor
-signature secrets before it calls the Agent API.
+actor values, placeholder secrets, `APP_TENANT_ID=demo_tenant`, short internal
+API keys, and short actor signature secrets before it calls the Agent API.
 
 With Docker Compose:
 

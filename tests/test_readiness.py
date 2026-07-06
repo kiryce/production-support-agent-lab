@@ -15,6 +15,9 @@ from support_agent_lab.tools.http_business_tools import HTTPBusinessClient
 from support_agent_lab.tools.registry import ToolBroker, ToolRegistry
 
 
+INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum"
+
+
 def test_ready_endpoint_local_shallow_ok():
     client = TestClient(app)
 
@@ -97,7 +100,7 @@ async def test_production_deep_readiness_checks_external_dependencies(tmp_path):
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
         app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
         app_event_store_backup_dir=str(tmp_path / "backups"),
@@ -167,7 +170,7 @@ async def test_production_readiness_fails_when_backup_directory_is_not_writable(
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
         app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
         app_event_store_backup_dir=str(backup_path),
@@ -213,7 +216,7 @@ async def test_production_readiness_fails_when_audit_export_directory_is_not_wri
         app_business_api_key="business-token",
         app_knowledge_api_base_url="https://knowledge.internal.test",
         app_knowledge_api_key="knowledge-token",
-        app_internal_api_key="internal-test-key",
+        app_internal_api_key=INTERNAL_API_KEY,
         app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
         app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
         app_event_store_backup_dir=str(tmp_path / "backups"),

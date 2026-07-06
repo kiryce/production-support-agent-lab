@@ -5,6 +5,9 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+MIN_PRODUCTION_SECRET_LENGTH = 32
+
+
 class Settings(BaseSettings):
     app_env: Literal["local", "test", "production", "prod"] = "local"
     app_tenant_id: str = "demo_tenant"
@@ -124,7 +127,12 @@ class Settings(BaseSettings):
             missing.append("APP_INTERNAL_API_KEY must not be a placeholder")
         if self._looks_like_placeholder(self.app_actor_signature_secret):
             missing.append("APP_ACTOR_SIGNATURE_SECRET must not be a placeholder")
-        if self.app_actor_signature_secret and len(self.app_actor_signature_secret) < 32:
+        if self.app_internal_api_key and len(self.app_internal_api_key) < MIN_PRODUCTION_SECRET_LENGTH:
+            missing.append("APP_INTERNAL_API_KEY must be at least 32 characters")
+        if (
+            self.app_actor_signature_secret
+            and len(self.app_actor_signature_secret) < MIN_PRODUCTION_SECRET_LENGTH
+        ):
             missing.append("APP_ACTOR_SIGNATURE_SECRET must be at least 32 characters")
         if self.app_require_production and self.app_request_signature_required is False:
             missing.append("APP_REQUEST_SIGNATURE_REQUIRED must not be false when APP_REQUIRE_PRODUCTION=true")

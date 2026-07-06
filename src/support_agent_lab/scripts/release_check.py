@@ -18,7 +18,7 @@ from support_agent_lab.security.actor_signature import build_signed_request_head
 
 SMOKE_ENV = {
     "APP_TENANT_ID": "tenant_live",
-    "APP_INTERNAL_API_KEY": "internal-key",
+    "APP_INTERNAL_API_KEY": "internal-api-key-with-32-byte-minimum",
     "APP_ACTOR_SIGNATURE_SECRET": "actor-signing-secret-with-32-byte-minimum",
 }
 

@@ -22,7 +22,7 @@ APP_KNOWLEDGE_CHUNK_CHARS=1200
 APP_KNOWLEDGE_CHUNK_OVERLAP_CHARS=160
 APP_KNOWLEDGE_FTS_ENABLED=true
 APP_KNOWLEDGE_MIN_READY_DOCUMENTS=1
-APP_INTERNAL_API_KEY=...
+APP_INTERNAL_API_KEY=replace_with_real_internal_gateway_secret_min_32_chars
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
 APP_REQUEST_SIGNATURE_REQUIRED=true
@@ -162,7 +162,7 @@ Use the bundled signer to generate headers for production smoke tests:
 
 ```bash
 export APP_TENANT_ID=your_real_tenant
-export APP_INTERNAL_API_KEY=your_internal_gateway_secret
+export APP_INTERNAL_API_KEY=your_internal_gateway_secret_min_32_chars
 export APP_ACTOR_SIGNATURE_SECRET=your_actor_signature_secret_min_32_chars
 python scripts/sign_actor_headers.py \
   --user-id user_prod \
@@ -886,7 +886,7 @@ partial coverage through `support_agent_audit_export_batch_*` metrics.
   `APP_KNOWLEDGE_API_KEY`.
 - For SQLite knowledge: `APP_KNOWLEDGE_DATABASE_URL=sqlite:///...` and an
   ingested index that satisfies `APP_KNOWLEDGE_MIN_READY_DOCUMENTS`.
-- `APP_INTERNAL_API_KEY`
+- `APP_INTERNAL_API_KEY` with at least 32 characters
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
 - `APP_RATE_LIMIT_ENABLED=true`; it is implied in production when unset, and startup fails if it is explicitly set to `false` while `APP_REQUIRE_PRODUCTION=true`
@@ -955,7 +955,7 @@ business, and knowledge integrations through `/api/v1/ready?deep=true` and
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, the configured knowledge backend health check, and the SQLite event store.
 - During a controlled staging failure, repeated Business API `5xx` responses open the adapter circuit and `/api/v1/ready?deep=true` reports `business_api` as failed with `circuit=open`.
 - During a controlled staging failure, repeated HTTP Knowledge API `5xx` responses open the adapter circuit and retrieval traces show `knowledge_circuit_open`; `/api/v1/ready?deep=true` reports `knowledge_api` as failed with `circuit=open`. For SQLite knowledge, test an empty index against `APP_KNOWLEDGE_MIN_READY_DOCUMENTS` and verify readiness fails before chat traffic uses it.
-- Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
+- Removing `APP_INTERNAL_API_KEY` or `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.
 - Changing the path, body, body hash, or reusing the same `X-Request-Nonce` makes the request fail with `401`.
