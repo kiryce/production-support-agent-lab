@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Literal
 
-from support_agent_lab.api.rate_limit import route_family
+from support_agent_lab.api.rate_limit import rate_limit_backend, route_family
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.models import (
@@ -115,6 +115,7 @@ def render_prometheus_metrics(
         "llm_model": getattr(deps.llm.provider, "model", "unknown"),
         "business_backend": "http" if isinstance(deps.business_client, HTTPBusinessClient) else "local",
         "knowledge_backend": "http" if isinstance(deps.knowledge, HTTPKnowledgeIndex) else "local",
+        "rate_limit_backend": rate_limit_backend(deps.settings),
     }
     metrics.add("support_agent_info", 1, info_labels, metric_type="gauge", help_text="Static support agent deployment metadata.")
     metrics.add(

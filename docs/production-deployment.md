@@ -20,6 +20,7 @@ APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
 APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_RATE_LIMIT_ENABLED=true
+APP_RATE_LIMIT_BACKEND=auto
 APP_RATE_LIMIT_REQUESTS_PER_MINUTE=600
 APP_RATE_LIMIT_BURST=600
 APP_HTTP_TIMEOUT_MS=5000
@@ -130,19 +131,20 @@ This HMAC protects the Agent API ingress boundary. It is not a replacement for t
 
 ## Rate limiting
 
-Production enables an in-process token-bucket limiter by default unless `APP_RATE_LIMIT_ENABLED=false` is explicitly set. When `APP_REQUIRE_PRODUCTION=true`, explicitly disabling it fails startup. The limiter keys by tenant, actor user id, and endpoint family (`chat`, `admin`, `admin-evals`, or `api`). Health and readiness endpoints are exempt.
+Production enables a token-bucket limiter by default unless `APP_RATE_LIMIT_ENABLED=false` is explicitly set. When `APP_REQUIRE_PRODUCTION=true`, explicitly disabling it fails startup. With `APP_RATE_LIMIT_BACKEND=auto`, local mode uses an in-process bucket and production / require-production mode uses SQLite `api_rate_limits`, so workers sharing the same event-store file share the same limit state. The limiter keys by tenant, actor user id, and endpoint family (`chat`, `admin`, `admin-evals`, or `api`). Health, readiness, docs, OpenAPI, and metrics endpoints are exempt.
 
 Tune:
 
 ```text
 APP_RATE_LIMIT_ENABLED=true
+APP_RATE_LIMIT_BACKEND=auto
 APP_RATE_LIMIT_REQUESTS_PER_MINUTE=600
 APP_RATE_LIMIT_BURST=600
 ```
 
 Limited requests return `429` with `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-Request-Id`, and `X-Trace-Id`. Successful limited requests also include `X-RateLimit-Limit` and `X-RateLimit-Remaining` so a gateway or frontend can surface pressure before hard failure.
 
-This built-in limiter is intentionally single-instance, matching the current SQLite production baseline. For multi-replica production, move the token bucket state to Redis or your API gateway and keep the same key dimensions: tenant id, actor user id, and endpoint family.
+`APP_RATE_LIMIT_BACKEND=memory` is useful for local teaching and single-process tests, but startup rejects it when `APP_REQUIRE_PRODUCTION=true`. `APP_RATE_LIMIT_BACKEND=sqlite` forces the durable bucket in any environment. The SQLite bucket is included in backup/restore schema verification and old idle buckets are pruned during token consumption, but it is still a single database-file coordination point. For multi-replica production, move the token bucket state to Redis, Postgres, or your API gateway and keep the same key dimensions: tenant id, actor user id, and endpoint family.
 
 Use the bundled signer to generate headers for production smoke tests:
 
@@ -626,7 +628,7 @@ alert counts, MTTA/MTTR, alert delivery outbox counts by status/severity,
 alert delivery health, feedback review backlog counts by current status,
 stale/unassigned unresolved feedback counts, grounded/policy/human-review
 rates, tool audit totals and latency summaries, adapter circuit state, LLM
-fallback counts, and rate-limit configuration. It does not include user ids,
+fallback counts, effective rate-limit backend, and rate-limit configuration. It does not include user ids,
 assignees, trace ids, alert keys, triage notes, feedback comments, review notes,
 raw tool arguments, request bodies, retrieved snippets, or monitor summaries.
 
@@ -673,6 +675,7 @@ labels; keep those details inside the authenticated console and incident APIs.
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
 - `APP_RATE_LIMIT_ENABLED=true`; it is implied in production when unset, and startup fails if it is explicitly set to `false` while `APP_REQUIRE_PRODUCTION=true`
+- `APP_RATE_LIMIT_BACKEND=auto`; production resolves this to SQLite-backed rate-limit buckets until you move the state to Redis/Postgres/API gateway
 - `APP_DATABASE_URL=sqlite:///...` until another event-store adapter is implemented
 
 Business and Knowledge API resilience knobs are optional but should be set deliberately for each environment:

@@ -125,6 +125,7 @@ def _signed_request_headers(
 def _reset_rate_limit_state() -> None:
     get_settings.cache_clear()
     app.state.rate_limiter.reset()
+    app.state.sqlite_rate_limiter.reset()
 
 
 class _RecordingKnowledge:

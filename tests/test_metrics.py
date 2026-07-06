@@ -62,6 +62,7 @@ def test_prometheus_metrics_render_operational_window_without_sensitive_payloads
     body = render_prometheus_metrics(container, source="live", window_hours=1)
 
     assert 'tenant="tenant\\"blue\\\\one"' in body
+    assert 'rate_limit_backend="memory"' in body
     assert "support_agent_monitor_events_window 1" in body
     assert 'support_agent_monitor_events_by_failure_window{failure_type="TIMEOUT"} 1' in body
     assert "support_agent_llm_fallback_monitor_events_window 1" in body
@@ -82,6 +83,7 @@ def test_metrics_endpoint_is_scrapeable_when_signatures_and_rate_limits_are_enab
     monkeypatch.setenv("APP_RATE_LIMIT_BURST", "1")
     get_settings.cache_clear()
     app.state.rate_limiter.reset()
+    app.state.sqlite_rate_limiter.reset()
     app.state.http_metrics.reset()
     app.dependency_overrides[get_container] = lambda: _metrics_container()
     try:
@@ -92,6 +94,7 @@ def test_metrics_endpoint_is_scrapeable_when_signatures_and_rate_limits_are_enab
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         app.state.rate_limiter.reset()
+        app.state.sqlite_rate_limiter.reset()
         app.state.http_metrics.reset()
 
     assert first.status_code == 200
@@ -107,6 +110,7 @@ def test_metrics_endpoint_exports_http_and_rate_limit_live_counters(monkeypatch)
     monkeypatch.setenv("APP_RATE_LIMIT_BURST", "1")
     get_settings.cache_clear()
     app.state.rate_limiter.reset()
+    app.state.sqlite_rate_limiter.reset()
     app.state.http_metrics.reset()
     app.dependency_overrides[get_container] = lambda: _metrics_container()
     try:
@@ -119,6 +123,7 @@ def test_metrics_endpoint_exports_http_and_rate_limit_live_counters(monkeypatch)
         app.dependency_overrides.clear()
         get_settings.cache_clear()
         app.state.rate_limiter.reset()
+        app.state.sqlite_rate_limiter.reset()
         app.state.http_metrics.reset()
 
     assert health.status_code == 200

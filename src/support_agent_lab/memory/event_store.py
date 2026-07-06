@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import sqlite3
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -191,6 +193,7 @@ SQLITE_REQUIRED_TABLES = (
     "tool_idempotency",
     "tool_audit_records",
     "api_request_nonces",
+    "api_rate_limits",
     "alert_delivery_outbox",
     "event_store_operations",
 )
@@ -1188,6 +1191,71 @@ class SQLiteEventStore:
             except sqlite3.IntegrityError:
                 return False
         return True
+
+    def consume_api_rate_limit_token(
+        self,
+        *,
+        bucket_key: str,
+        requests_per_minute: int,
+        burst: int,
+        now_epoch_seconds: float | None = None,
+    ) -> dict[str, int | bool]:
+        now = float(now_epoch_seconds if now_epoch_seconds is not None else time.time())
+        refill_per_second = requests_per_minute / 60
+        stale_after_seconds = max(3600, math.ceil(max(1, burst) / refill_per_second) * 4)
+        stale_before = now - stale_after_seconds
+
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            conn.execute("delete from api_rate_limits where updated_at <= ?", (stale_before,))
+            row = conn.execute(
+                """
+                select tokens, updated_at
+                from api_rate_limits
+                where bucket_key = ?
+                """,
+                (bucket_key,),
+            ).fetchone()
+            if row:
+                elapsed = max(0.0, now - float(row["updated_at"]))
+                tokens = min(float(burst), float(row["tokens"]) + elapsed * refill_per_second)
+            else:
+                tokens = float(burst)
+
+            if tokens < 1:
+                retry_after = math.ceil((1 - tokens) / refill_per_second) if refill_per_second > 0 else 60
+                conn.execute(
+                    """
+                    insert into api_rate_limits (bucket_key, tokens, updated_at)
+                    values (?, ?, ?)
+                    on conflict(bucket_key) do update set
+                      tokens = excluded.tokens,
+                      updated_at = excluded.updated_at
+                    """,
+                    (bucket_key, tokens, now),
+                )
+                return {
+                    "allowed": False,
+                    "remaining": 0,
+                    "retry_after_seconds": max(1, retry_after),
+                }
+
+            tokens -= 1
+            conn.execute(
+                """
+                insert into api_rate_limits (bucket_key, tokens, updated_at)
+                values (?, ?, ?)
+                on conflict(bucket_key) do update set
+                  tokens = excluded.tokens,
+                  updated_at = excluded.updated_at
+                """,
+                (bucket_key, tokens, now),
+            )
+            return {
+                "allowed": True,
+                "remaining": max(0, math.floor(tokens)),
+                "retry_after_seconds": 0,
+            }
 
     def reserve(self, key: str, arg_hash: str) -> IdempotencyDecision:
         now = utc_now().isoformat()
@@ -2667,6 +2735,16 @@ class SQLiteEventStore:
                 """
             )
             conn.execute("create index if not exists idx_api_request_nonces_expires on api_request_nonces(expires_at)")
+            conn.execute(
+                """
+                create table if not exists api_rate_limits (
+                  bucket_key text primary key,
+                  tokens real not null,
+                  updated_at real not null
+                )
+                """
+            )
+            conn.execute("create index if not exists idx_api_rate_limits_updated on api_rate_limits(updated_at)")
             conn.execute(
                 """
                 create table if not exists alert_delivery_outbox (

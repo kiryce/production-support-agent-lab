@@ -33,7 +33,13 @@ from support_agent_lab.api.request_signature import (
     reserve_request_nonce,
     verify_request_signature,
 )
-from support_agent_lab.api.rate_limit import InMemoryRateLimiter, rate_limit_key, should_rate_limit
+from support_agent_lab.api.rate_limit import (
+    InMemoryRateLimiter,
+    SQLiteRateLimiter,
+    rate_limit_backend,
+    rate_limit_key,
+    should_rate_limit,
+)
 from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import (
@@ -4659,6 +4665,7 @@ def create_app() -> FastAPI:
         description="A production-shaped customer support agent for learning agent engineering.",
     )
     app.state.rate_limiter = InMemoryRateLimiter()
+    app.state.sqlite_rate_limiter = SQLiteRateLimiter()
     app.state.http_metrics = InMemoryHTTPMetrics()
 
     @app.middleware("http")
@@ -4676,11 +4683,20 @@ def create_app() -> FastAPI:
                 return JSONResponse(status_code=401, content={"detail": str(exc)}, headers=correlation_headers)
         rate_decision = None
         if should_rate_limit(settings, request.url.path):
-            rate_decision = app.state.rate_limiter.check(
-                rate_limit_key(settings, request),
-                requests_per_minute=settings.app_rate_limit_requests_per_minute,
-                burst=settings.app_rate_limit_burst,
-            )
+            key = rate_limit_key(settings, request)
+            if rate_limit_backend(settings) == "sqlite":
+                rate_decision = app.state.sqlite_rate_limiter.check(
+                    settings.app_database_url,
+                    key,
+                    requests_per_minute=settings.app_rate_limit_requests_per_minute,
+                    burst=settings.app_rate_limit_burst,
+                )
+            else:
+                rate_decision = app.state.rate_limiter.check(
+                    key,
+                    requests_per_minute=settings.app_rate_limit_requests_per_minute,
+                    burst=settings.app_rate_limit_burst,
+                )
             if not rate_decision.allowed:
                 app.state.http_metrics.observe_rate_limit(path=request.url.path, decision="blocked")
                 _observe_http_request(app, request, status_code=429, started=started)

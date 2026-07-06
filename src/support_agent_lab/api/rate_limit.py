@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from fastapi import Request
 
 from support_agent_lab.config import Settings
+from support_agent_lab.memory.event_store import SQLiteEventStore
 
 
 @dataclass
@@ -62,10 +63,63 @@ class InMemoryRateLimiter:
         self._buckets.clear()
 
 
+class SQLiteRateLimiter:
+    """SQLite-backed token bucket shared by local workers using the same event store."""
+
+    def __init__(self, clock=time.time) -> None:
+        self._clock = clock
+        self._stores: dict[str, SQLiteEventStore] = {}
+
+    def check(
+        self,
+        database_url: str,
+        key: str,
+        *,
+        requests_per_minute: int,
+        burst: int,
+    ) -> RateLimitDecision:
+        store = self._store_for_url(database_url)
+        decision = store.consume_api_rate_limit_token(
+            bucket_key=key,
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            now_epoch_seconds=self._clock(),
+        )
+        return RateLimitDecision(
+            allowed=bool(decision["allowed"]),
+            limit=requests_per_minute,
+            remaining=int(decision["remaining"]),
+            retry_after_seconds=int(decision["retry_after_seconds"]),
+        )
+
+    def reset(self) -> None:
+        self._stores.clear()
+
+    def _store_for_url(self, database_url: str) -> SQLiteEventStore:
+        store = self._stores.get(database_url)
+        if store:
+            return store
+        store = SQLiteEventStore.from_url(database_url)
+        if store is None:
+            raise RuntimeError("SQLite rate limit backend requires sqlite:/// APP_DATABASE_URL")
+        self._stores[database_url] = store
+        return store
+
+
 def should_rate_limit(settings: Settings, path: str) -> bool:
     if not settings.rate_limit_enabled:
         return False
     return not _is_exempt_path(path)
+
+
+def rate_limit_backend(settings: Settings) -> str:
+    if settings.app_rate_limit_backend == "sqlite":
+        return "sqlite"
+    if settings.app_rate_limit_backend == "memory":
+        return "memory"
+    if settings.is_production or settings.app_require_production:
+        return "sqlite"
+    return "memory"
 
 
 def rate_limit_key(settings: Settings, request: Request) -> str:

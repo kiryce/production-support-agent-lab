@@ -158,7 +158,7 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置、event store，以及生产模式下的备份目录写探针；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
-`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、feedback review backlog、tool audit、adapter circuit、LLM fallback 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、工具参数或知识库正文。
+`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、feedback review backlog、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、工具参数或知识库正文。
 
 ### 4. 启动前端控制台
 
@@ -331,6 +331,7 @@ APP_INTERNAL_API_KEY=...
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_REQUEST_SIGNATURE_REQUIRED=true
 APP_RATE_LIMIT_ENABLED=true
+APP_RATE_LIMIT_BACKEND=auto
 APP_RATE_LIMIT_REQUESTS_PER_MINUTE=600
 APP_RATE_LIMIT_BURST=600
 APP_DATABASE_URL=sqlite:///./data/production/support-agent-lab.db
