@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 from datetime import timedelta
@@ -15,14 +16,17 @@ from support_agent_lab.memory.event_store import (
 )
 from support_agent_lab.models import AlertDeliveryStatus, MonitorAlertStatus, utc_now
 from support_agent_lab.monitoring.alert_dispatcher import (
+    AlertWebhookSignatureError,
     alert_delivery_payload_from_record,
     build_alert_delivery_record,
+    canonical_json_bytes,
     dispatch_alert_deliveries,
     enqueue_alert_deliveries,
     hash_alert_destination,
     post_alert_delivery_webhook,
     sign_alert_webhook_payload,
     summarize_alert_deliveries,
+    verify_alert_webhook_signature,
 )
 from support_agent_lab.monitoring.monitor import MonitorAlert
 
@@ -739,6 +743,96 @@ def test_alert_delivery_webhook_sends_signed_sanitized_payload():
         body_hash=headers["X-PSA-Body-SHA256"],
     )
     assert headers["X-PSA-Signature"] == expected_signature
+
+
+def test_alert_webhook_signature_verifier_accepts_sender_contract_and_rejects_tampering():
+    record = build_alert_delivery_record(
+        tenant_id="demo_tenant",
+        alert=_alert(severity="P0", key="agent:order:TIMEOUT"),
+        destination_hash=hash_alert_destination("https://hooks.internal.test/alerts"),
+    )
+    payload = alert_delivery_payload_from_record(record)
+    body = canonical_json_bytes(payload)
+    body_hash = hashlib.sha256(body).hexdigest()
+    timestamp = "1000"
+    headers = {
+        "X-PSA-Delivery-ID": record.id,
+        "X-PSA-Tenant-ID": record.tenant_id,
+        "X-PSA-Alert-Key": record.alert_key,
+        "X-PSA-Timestamp": timestamp,
+        "X-PSA-Body-SHA256": body_hash,
+        "X-PSA-Signature": sign_alert_webhook_payload(
+            secret=WEBHOOK_SECRET,
+            delivery_id=record.id,
+            tenant_id=record.tenant_id,
+            alert_key=record.alert_key,
+            timestamp=timestamp,
+            body_hash=body_hash,
+        ),
+    }
+
+    verified = verify_alert_webhook_signature(
+        secret=WEBHOOK_SECRET,
+        headers=headers,
+        body=body,
+        max_age_seconds=300,
+        expected_tenant_id="demo_tenant",
+        now_epoch_seconds=1000,
+    )
+
+    assert verified.delivery_id == record.id
+    assert verified.payload["severity"] == "P0"
+    with pytest.raises(AlertWebhookSignatureError, match="expired"):
+        verify_alert_webhook_signature(
+            secret=WEBHOOK_SECRET,
+            headers=headers,
+            body=body,
+            max_age_seconds=300,
+            expected_tenant_id="demo_tenant",
+            now_epoch_seconds=2000,
+        )
+    tampered_body = canonical_json_bytes({**payload, "alert_key": "agent:other:TIMEOUT"})
+    with pytest.raises(AlertWebhookSignatureError, match="does not match"):
+        verify_alert_webhook_signature(
+            secret=WEBHOOK_SECRET,
+            headers=headers,
+            body=tampered_body,
+            max_age_seconds=300,
+            expected_tenant_id="demo_tenant",
+            now_epoch_seconds=1000,
+        )
+    mismatched_payload = canonical_json_bytes({**payload, "delivery_id": "deliv_other"})
+    mismatched_hash = hashlib.sha256(mismatched_payload).hexdigest()
+    mismatched_headers = {
+        **headers,
+        "X-PSA-Body-SHA256": mismatched_hash,
+        "X-PSA-Signature": sign_alert_webhook_payload(
+            secret=WEBHOOK_SECRET,
+            delivery_id=record.id,
+            tenant_id=record.tenant_id,
+            alert_key=record.alert_key,
+            timestamp=timestamp,
+            body_hash=mismatched_hash,
+        ),
+    }
+    with pytest.raises(AlertWebhookSignatureError, match="payload delivery_id"):
+        verify_alert_webhook_signature(
+            secret=WEBHOOK_SECRET,
+            headers=mismatched_headers,
+            body=mismatched_payload,
+            max_age_seconds=300,
+            expected_tenant_id="demo_tenant",
+            now_epoch_seconds=1000,
+        )
+    with pytest.raises(AlertWebhookSignatureError, match="tenant"):
+        verify_alert_webhook_signature(
+            secret=WEBHOOK_SECRET,
+            headers=headers,
+            body=body,
+            max_age_seconds=300,
+            expected_tenant_id="other_tenant",
+            now_epoch_seconds=1000,
+        )
 
 
 def test_alert_delivery_webhook_maps_http_failure_to_retryable_record_state():

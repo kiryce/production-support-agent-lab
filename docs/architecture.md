@@ -50,7 +50,7 @@ Do not expose `X-Demo-*` in production.
 
 `ConversationMemory` is short-term working state: recent messages, extracted facts, open questions, and a compact summary for the next turn.
 
-`SQLiteEventStore` is the local/production persistence boundary for the modular monolith: user messages, assistant messages, completed agent runs, response feedback, feedback review events, monitor reviews, monitor triage events, tool idempotency records, tool audit records, alert-delivery rows, and event-store operation ledger rows are persisted for audit, replay, offline eval, and analytics.
+`SQLiteEventStore` is the local/production persistence boundary for the modular monolith: user messages, assistant messages, completed agent runs, response feedback, feedback review events, monitor reviews, monitor triage events, tool idempotency records, tool audit records, alert-delivery rows, inbound alert webhook receipt summaries, and event-store operation ledger rows are persisted for audit, replay, offline eval, and analytics.
 
 `event_store_operations` is separate from the append-only `events` stream. It records backup, restore-drill, retention-preview, and retention-apply operations with actor, status, timestamp, and safe summaries. `event_store_operation_locks` is the matching tenant-scoped lease table used by both the API and CLI to prevent overlapping maintenance work while tokens and high-water marks are being generated. Both tables are included in backup/restore verification, but excluded from retention high-water marks so audit writes and temporary leases do not invalidate the guarded backup/preview tokens they document.
 

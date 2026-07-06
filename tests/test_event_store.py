@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sqlite3
 from datetime import timedelta
 from pathlib import Path
@@ -10,6 +11,7 @@ from support_agent_lab.agent.orchestrator import SupportAgentOrchestrator
 from support_agent_lab.data.fixtures import DemoStore
 from support_agent_lab.llm.gateway import create_default_llm_gateway
 from support_agent_lab.memory.event_store import (
+    ALERT_WEBHOOK_RECEIVED_EVENT_TYPE,
     EventStoreOperationLockConflict,
     SQLiteEventStore,
     StoredEvent,
@@ -719,6 +721,69 @@ def test_event_store_health_check_verifies_write_without_persisting_probe(tmp_pa
     assert event_store.list_events(event_type="readiness.probe") == []
 
 
+def test_alert_webhook_receipts_are_idempotent_and_sanitized(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    received_at = utc_now()
+
+    first, first_created = event_store.record_alert_webhook_receipt(
+        tenant_id="demo_tenant",
+        delivery_id="deliv_receipt_1",
+        alert_key="agent:order:TIMEOUT",
+        severity="P1",
+        body_hash="body_hash_1",
+        signature_hash="signature_hash_1",
+        source_hash="source_hash_1",
+        user_agent_hash="agent_hash_1",
+        alert_count=2,
+        sample_event_count=2,
+        sample_run_count=1,
+        now=received_at,
+    )
+    duplicate, duplicate_created = event_store.record_alert_webhook_receipt(
+        tenant_id="demo_tenant",
+        delivery_id="deliv_receipt_1",
+        alert_key="agent:order:TIMEOUT",
+        severity="P1",
+        body_hash="body_hash_1",
+        signature_hash="signature_hash_2",
+        source_hash="source_hash_2",
+        user_agent_hash="agent_hash_2",
+        alert_count=2,
+        sample_event_count=2,
+        sample_run_count=1,
+        now=received_at + timedelta(seconds=10),
+    )
+    receipts = event_store.list_alert_webhook_receipts(tenant_id="demo_tenant")
+    events = event_store.list_events(
+        tenant_id="demo_tenant",
+        event_type=ALERT_WEBHOOK_RECEIVED_EVENT_TYPE,
+    )
+
+    assert first_created is True
+    assert duplicate_created is False
+    assert first.duplicate_count == 0
+    assert duplicate.duplicate_count == 1
+    assert duplicate.signature_hash == "signature_hash_2"
+    assert duplicate.last_received_at > duplicate.first_received_at
+    assert receipts[0].delivery_id == "deliv_receipt_1"
+    assert receipts[0].body_hash == "body_hash_1"
+    assert len(events) == 2
+    assert events[0].payload["duplicate"] is False
+    assert events[1].payload["duplicate"] is True
+    assert "PRIVATE reason" not in json.dumps([event.payload for event in events])
+
+    with pytest.raises(ValueError, match="different payload"):
+        event_store.record_alert_webhook_receipt(
+            tenant_id="demo_tenant",
+            delivery_id="deliv_receipt_1",
+            alert_key="agent:order:TIMEOUT",
+            severity="P1",
+            body_hash="different_body_hash",
+            signature_hash="signature_hash_3",
+        )
+    assert event_store.list_alert_webhook_receipts(tenant_id="demo_tenant")[0].duplicate_count == 1
+
+
 def test_event_store_configures_sqlite_runtime_pragmas(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     conn = event_store._connect()
@@ -985,6 +1050,15 @@ def test_event_store_retention_policy_dry_run_and_apply(tmp_path):
     fresh_sent = _alert_delivery("deliv_fresh_sent", fresh, status=AlertDeliveryStatus.sent)
     for record in (old_sent, old_dead, fresh_sent):
         event_store.enqueue_alert_delivery(record)
+    event_store.record_alert_webhook_receipt(
+        tenant_id="demo_tenant",
+        delivery_id="deliv_old_receipt",
+        alert_key="agent:order:TIMEOUT",
+        severity="P1",
+        body_hash="old_body_hash",
+        signature_hash="old_signature_hash",
+        now=old,
+    )
 
     with event_store._connect() as conn:
         conn.execute("update events set created_at = ? where id = ?", (old.isoformat(), old_event.id))
@@ -1036,10 +1110,10 @@ def test_event_store_retention_policy_dry_run_and_apply(tmp_path):
         alert_delivery_retention_days=90,
     )
 
-    assert dry_run.total_candidates == 5
+    assert dry_run.total_candidates == 6
     assert dry_run.total_deleted == 0
     assert _table_report(dry_run, "events").action == "skipped"
-    assert applied.total_deleted == 4
+    assert applied.total_deleted == 5
     assert _table_report(applied, "events").deleted_count == 0
     assert event_apply.total_deleted == 1
     assert event_store.list_events(tenant_id="demo_tenant", conversation_id="conv_old") == []
@@ -1053,6 +1127,7 @@ def test_event_store_retention_policy_dry_run_and_apply(tmp_path):
     assert _count_rows(event_store, "alert_delivery_outbox", "id = 'deliv_old_sent'") == 0
     assert _count_rows(event_store, "alert_delivery_outbox", "id = 'deliv_old_dead'") == 1
     assert _count_rows(event_store, "alert_delivery_outbox", "id = 'deliv_fresh_sent'") == 1
+    assert _count_rows(event_store, "alert_webhook_receipts", "delivery_id = 'deliv_old_receipt'") == 0
 
 
 @pytest.mark.asyncio

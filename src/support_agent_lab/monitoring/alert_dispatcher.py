@@ -4,8 +4,10 @@ import hashlib
 import hmac
 import json
 import math
+import time
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from pydantic import BaseModel, Field
@@ -59,6 +61,20 @@ class AlertDispatchReport(BaseModel):
     failed_count: int = 0
     dead_count: int = 0
     deliveries: list[AlertDeliveryRecord] = Field(default_factory=list)
+
+
+class VerifiedAlertWebhook(BaseModel):
+    delivery_id: str
+    tenant_id: str
+    alert_key: str
+    timestamp: str
+    body_hash: str
+    signature: str
+    payload: dict[str, Any]
+
+
+class AlertWebhookSignatureError(RuntimeError):
+    pass
 
 
 def enqueue_alert_deliveries(
@@ -387,6 +403,76 @@ def sign_alert_webhook_payload(
     message = "\n".join(["v1", delivery_id, tenant_id, alert_key, timestamp, body_hash])
     digest = hmac.new(secret.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+def verify_alert_webhook_signature(
+    *,
+    secret: str,
+    headers: Mapping[str, str],
+    body: bytes,
+    max_age_seconds: int = 300,
+    expected_tenant_id: str | None = None,
+    now_epoch_seconds: float | None = None,
+) -> VerifiedAlertWebhook:
+    delivery_id = _required_webhook_header(headers, "X-PSA-Delivery-ID")
+    tenant_id = _required_webhook_header(headers, "X-PSA-Tenant-ID")
+    alert_key = _required_webhook_header(headers, "X-PSA-Alert-Key")
+    timestamp = _required_webhook_header(headers, "X-PSA-Timestamp")
+    provided_body_hash = _required_webhook_header(headers, "X-PSA-Body-SHA256")
+    provided_signature = _required_webhook_header(headers, "X-PSA-Signature")
+    if expected_tenant_id and tenant_id != expected_tenant_id:
+        raise AlertWebhookSignatureError("Alert webhook tenant is not allowed.")
+    try:
+        issued_at = int(timestamp)
+    except ValueError as exc:
+        raise AlertWebhookSignatureError("X-PSA-Timestamp must be a Unix timestamp.") from exc
+    now = now_epoch_seconds if now_epoch_seconds is not None else time.time()
+    if abs(now - issued_at) > max_age_seconds:
+        raise AlertWebhookSignatureError("Alert webhook signature is expired.")
+    actual_body_hash = hashlib.sha256(body).hexdigest()
+    if not hmac.compare_digest(provided_body_hash, actual_body_hash):
+        raise AlertWebhookSignatureError("X-PSA-Body-SHA256 does not match the request body.")
+    expected_signature = sign_alert_webhook_payload(
+        secret=secret,
+        delivery_id=delivery_id,
+        tenant_id=tenant_id,
+        alert_key=alert_key,
+        timestamp=timestamp,
+        body_hash=provided_body_hash,
+    )
+    if not hmac.compare_digest(provided_signature, expected_signature):
+        raise AlertWebhookSignatureError("Alert webhook signature is invalid.")
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AlertWebhookSignatureError("Alert webhook body must be valid JSON.") from exc
+    if not isinstance(payload, dict):
+        raise AlertWebhookSignatureError("Alert webhook body must be a JSON object.")
+    _assert_payload_field(payload, "type", "monitor.alert")
+    _assert_payload_field(payload, "delivery_id", delivery_id)
+    _assert_payload_field(payload, "tenant_id", tenant_id)
+    _assert_payload_field(payload, "alert_key", alert_key)
+    return VerifiedAlertWebhook(
+        delivery_id=delivery_id,
+        tenant_id=tenant_id,
+        alert_key=alert_key,
+        timestamp=timestamp,
+        body_hash=provided_body_hash,
+        signature=provided_signature,
+        payload=payload,
+    )
+
+
+def _required_webhook_header(headers: Mapping[str, str], name: str) -> str:
+    value = headers.get(name) or headers.get(name.lower())
+    if not value:
+        raise AlertWebhookSignatureError(f"Alert webhook must include {name}.")
+    return value
+
+
+def _assert_payload_field(payload: dict[str, Any], field_name: str, expected: str) -> None:
+    if payload.get(field_name) != expected:
+        raise AlertWebhookSignatureError(f"Alert webhook payload {field_name} does not match signed header.")
 
 
 def hash_alert_destination(webhook_url: str) -> str:

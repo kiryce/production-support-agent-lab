@@ -1549,6 +1549,19 @@ def test_admin_can_read_sanitized_incident_timeline_from_event_store(tmp_path, m
         trace_id = message["trace_id"]
         monitor_event = app_container.event_store.list_monitor_events(run_id=trace_id)[0]
         alert_key = monitor_event.alert_key or monitor_alert_key(monitor_event)
+        app_container.event_store.record_alert_webhook_receipt(
+            tenant_id=app_container.settings.app_tenant_id,
+            delivery_id="deliv_timeline_receipt",
+            alert_key=alert_key,
+            severity="P1",
+            body_hash="receipt_body_hash_only",
+            signature_hash="PRIVATE raw signature should not leak",
+            source_hash="PRIVATE source hash should not leak",
+            user_agent_hash="PRIVATE user agent hash should not leak",
+            alert_count=1,
+            sample_event_count=1,
+            sample_run_count=1,
+        )
         app_container.event_store.append_monitor_alert_triage(
             MonitorAlertTriageEvent(
                 alert_key=alert_key,
@@ -1593,9 +1606,12 @@ def test_admin_can_read_sanitized_incident_timeline_from_event_store(tmp_path, m
     assert {"message.user", "agent.run.completed", "monitor.reviewed", "tool.audit"} <= event_types
     assert "agent.response.feedback" in event_types
     assert "monitor.alert.triaged" in event_types
+    assert "monitor.alert.webhook.received" in event_types
     assert "message_content" in body["redactions"]
     assert "feedback_comments" in body["redactions"]
     assert "triage_notes" in body["redactions"]
+    assert "alert_webhook_payloads" in body["redactions"]
+    assert "alert_webhook_headers" in body["redactions"]
     assert "PRIVATE order A1002" not in serialized
     assert "15555550123" not in serialized
     assert "PRIVATE feedback comment should not leak" not in serialized
@@ -1603,6 +1619,9 @@ def test_admin_can_read_sanitized_incident_timeline_from_event_store(tmp_path, m
     assert "ops_private_user" not in serialized
     assert "operator_private_user" not in serialized
     assert "user_demo" not in serialized
+    assert "PRIVATE raw signature should not leak" not in serialized
+    assert "PRIVATE source hash should not leak" not in serialized
+    assert "PRIVATE user agent hash should not leak" not in serialized
 
 
 def test_admin_can_search_persisted_agent_runs(tmp_path, monkeypatch):

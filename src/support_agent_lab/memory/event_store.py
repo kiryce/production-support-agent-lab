@@ -92,6 +92,25 @@ class AlertDispatcherHeartbeatSummary(BaseModel):
     last_error: str | None = None
 
 
+class AlertWebhookReceiptRecord(BaseModel):
+    tenant_id: str
+    delivery_id: str
+    alert_key: str
+    severity: str
+    body_hash: str
+    signature_hash: str
+    source_hash: str | None = None
+    user_agent_hash: str | None = None
+    alert_count: int = 0
+    sample_event_count: int = 0
+    sample_run_count: int = 0
+    duplicate_count: int = 0
+    first_received_at: datetime
+    last_received_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
 class FeedbackReasonSummary(BaseModel):
     reason: str
     count: int
@@ -226,6 +245,7 @@ ALERT_DELIVERY_ENQUEUED_EVENT_TYPE = "monitor.alert.delivery.enqueued"
 ALERT_DELIVERY_ATTEMPTED_EVENT_TYPE = "monitor.alert.delivery.attempted"
 ALERT_DELIVERY_REQUEUED_EVENT_TYPE = "monitor.alert.delivery.requeued"
 ALERT_DELIVERY_CLOSED_EVENT_TYPE = "monitor.alert.delivery.closed"
+ALERT_WEBHOOK_RECEIVED_EVENT_TYPE = "monitor.alert.webhook.received"
 FEEDBACK_EVENT_TYPE = "agent.response.feedback"
 FEEDBACK_REVIEW_EVENT_TYPE = "agent.response.feedback.reviewed"
 MEMORY_REPLAY_EVENT_TYPES = ("message.user", "message.assistant", "agent.run.completed")
@@ -237,6 +257,7 @@ SQLITE_REQUIRED_TABLES = (
     "api_rate_limits",
     "alert_delivery_outbox",
     "alert_dispatcher_heartbeats",
+    "alert_webhook_receipts",
     "event_store_operations",
     "event_store_operation_locks",
 )
@@ -282,6 +303,24 @@ SQLITE_ALERT_DISPATCHER_HEARTBEATS_REQUIRED_COLUMNS = {
     "sent_count",
     "failed_count",
     "dead_count",
+    "created_at",
+    "updated_at",
+}
+SQLITE_ALERT_WEBHOOK_RECEIPTS_REQUIRED_COLUMNS = {
+    "tenant_id",
+    "delivery_id",
+    "alert_key",
+    "severity",
+    "body_hash",
+    "signature_hash",
+    "source_hash",
+    "user_agent_hash",
+    "alert_count",
+    "sample_event_count",
+    "sample_run_count",
+    "duplicate_count",
+    "first_received_at",
+    "last_received_at",
     "created_at",
     "updated_at",
 }
@@ -1215,6 +1254,142 @@ class SQLiteEventStore:
             last_error=errors[0] if errors else None,
         )
 
+    def record_alert_webhook_receipt(
+        self,
+        *,
+        tenant_id: str,
+        delivery_id: str,
+        alert_key: str,
+        severity: str,
+        body_hash: str,
+        signature_hash: str,
+        source_hash: str | None = None,
+        user_agent_hash: str | None = None,
+        alert_count: int = 0,
+        sample_event_count: int = 0,
+        sample_run_count: int = 0,
+        now: datetime | None = None,
+    ) -> tuple[AlertWebhookReceiptRecord, bool]:
+        effective_now = now or utc_now()
+        created = False
+        with self._connect() as conn:
+            conn.execute("begin immediate")
+            existing = conn.execute(
+                """
+                select body_hash
+                from alert_webhook_receipts
+                where tenant_id = ? and delivery_id = ?
+                """,
+                (tenant_id, delivery_id),
+            ).fetchone()
+            if existing and existing["body_hash"] != body_hash:
+                raise ValueError("Alert webhook delivery id was reused with a different payload")
+            if existing is None:
+                conn.execute(
+                    """
+                    insert into alert_webhook_receipts (
+                      tenant_id, delivery_id, alert_key, severity, body_hash, signature_hash,
+                      source_hash, user_agent_hash, alert_count, sample_event_count, sample_run_count,
+                      duplicate_count, first_received_at, last_received_at, created_at, updated_at
+                    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant_id,
+                        delivery_id,
+                        alert_key,
+                        severity,
+                        body_hash,
+                        signature_hash,
+                        source_hash,
+                        user_agent_hash,
+                        alert_count,
+                        sample_event_count,
+                        sample_run_count,
+                        effective_now.isoformat(),
+                        effective_now.isoformat(),
+                        effective_now.isoformat(),
+                        effective_now.isoformat(),
+                    ),
+                )
+                created = True
+            else:
+                conn.execute(
+                    """
+                    update alert_webhook_receipts
+                    set signature_hash = ?,
+                        source_hash = coalesce(?, source_hash),
+                        user_agent_hash = coalesce(?, user_agent_hash),
+                        duplicate_count = duplicate_count + 1,
+                        last_received_at = ?,
+                        updated_at = ?
+                    where tenant_id = ? and delivery_id = ?
+                    """,
+                    (
+                        signature_hash,
+                        source_hash,
+                        user_agent_hash,
+                        effective_now.isoformat(),
+                        effective_now.isoformat(),
+                        tenant_id,
+                        delivery_id,
+                    ),
+                )
+            row = conn.execute(
+                """
+                select *
+                from alert_webhook_receipts
+                where tenant_id = ? and delivery_id = ?
+                """,
+                (tenant_id, delivery_id),
+            ).fetchone()
+        record = self._alert_webhook_receipt_from_row(row)
+        self.append(
+            tenant_id=tenant_id,
+            event_type=ALERT_WEBHOOK_RECEIVED_EVENT_TYPE,
+            payload={
+                "delivery_id": record.delivery_id,
+                "alert_key": record.alert_key,
+                "severity": record.severity,
+                "body_hash": record.body_hash,
+                "duplicate": not created,
+                "duplicate_count": record.duplicate_count,
+                "received_at": record.last_received_at.isoformat(),
+            },
+        )
+        return record, created
+
+    def list_alert_webhook_receipts(
+        self,
+        *,
+        tenant_id: str,
+        alert_key: str | None = None,
+        delivery_id: str | None = None,
+        limit: int = 100,
+        order: str = "desc",
+    ) -> list[AlertWebhookReceiptRecord]:
+        clauses = ["tenant_id = ?"]
+        params: list[Any] = [tenant_id]
+        if alert_key:
+            clauses.append("alert_key = ?")
+            params.append(alert_key)
+        if delivery_id:
+            clauses.append("delivery_id = ?")
+            params.append(delivery_id)
+        direction = "asc" if order == "asc" else "desc"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                select *
+                from alert_webhook_receipts
+                where {" and ".join(clauses)}
+                order by last_received_at {direction}, rowid {direction}
+                limit ?
+                """,
+                params,
+            ).fetchall()
+        return [self._alert_webhook_receipt_from_row(row) for row in rows]
+
     def record_alert_delivery_attempt(
         self,
         delivery_id: str,
@@ -1746,6 +1921,13 @@ class SQLiteEventStore:
                     params=[tenant_id],
                     timestamp_columns=["created_at", "updated_at"],
                 ),
+                "alert_webhook_receipts": self._table_high_water_mark(
+                    conn,
+                    table_name="alert_webhook_receipts",
+                    where_sql="tenant_id = ?",
+                    params=[tenant_id],
+                    timestamp_columns=["first_received_at", "last_received_at"],
+                ),
                 "events": self._table_high_water_mark(
                     conn,
                     table_name="events",
@@ -1825,6 +2007,17 @@ class SQLiteEventStore:
                     dry_run=dry_run,
                     cutoff_at=alert_cutoff,
                     reason="terminal alert deliveries only; pending, failed, in-progress, and dead rows are retained",
+                )
+            )
+            reports.append(
+                self._retention_table_report(
+                    conn,
+                    table_name="alert_webhook_receipts",
+                    where_sql="tenant_id = ? and last_received_at <= ?",
+                    params=[tenant_id, alert_cutoff.isoformat()],
+                    dry_run=dry_run,
+                    cutoff_at=alert_cutoff,
+                    reason="old inbound alert webhook receipt summaries",
                 )
             )
             if include_events:
@@ -2755,6 +2948,20 @@ class SQLiteEventStore:
                 raise RuntimeError(
                     f"alert_dispatcher_heartbeats table missing columns: {', '.join(heartbeat_missing)}"
                 )
+            alert_webhook_receipts = conn.execute(
+                "select name from sqlite_master where type = 'table' and name = 'alert_webhook_receipts'"
+            ).fetchone()
+            if not alert_webhook_receipts:
+                raise RuntimeError("alert_webhook_receipts table is missing")
+            receipt_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(alert_webhook_receipts)").fetchall()
+            }
+            receipt_missing = sorted(SQLITE_ALERT_WEBHOOK_RECEIPTS_REQUIRED_COLUMNS - receipt_columns)
+            if receipt_missing:
+                raise RuntimeError(
+                    f"alert_webhook_receipts table missing columns: {', '.join(receipt_missing)}"
+                )
             event_store_operations = conn.execute(
                 "select name from sqlite_master where type = 'table' and name = 'event_store_operations'"
             ).fetchone()
@@ -2859,6 +3066,15 @@ class SQLiteEventStore:
             if heartbeat_missing:
                 raise RuntimeError(
                     f"alert_dispatcher_heartbeats table missing columns: {', '.join(heartbeat_missing)}"
+                )
+            receipt_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(alert_webhook_receipts)").fetchall()
+            }
+            receipt_missing = sorted(SQLITE_ALERT_WEBHOOK_RECEIPTS_REQUIRED_COLUMNS - receipt_columns)
+            if receipt_missing:
+                raise RuntimeError(
+                    f"alert_webhook_receipts table missing columns: {', '.join(receipt_missing)}"
                 )
             table_counts = {
                 table_name: int(conn.execute(f"select count(*) from {table_name}").fetchone()[0])
@@ -3035,6 +3251,26 @@ class SQLiteEventStore:
             sent_count=int(row["sent_count"]),
             failed_count=int(row["failed_count"]),
             dead_count=int(row["dead_count"]),
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=datetime.fromisoformat(row["updated_at"]),
+        )
+
+    def _alert_webhook_receipt_from_row(self, row: sqlite3.Row) -> AlertWebhookReceiptRecord:
+        return AlertWebhookReceiptRecord(
+            tenant_id=row["tenant_id"],
+            delivery_id=row["delivery_id"],
+            alert_key=row["alert_key"],
+            severity=row["severity"],
+            body_hash=row["body_hash"],
+            signature_hash=row["signature_hash"],
+            source_hash=row["source_hash"],
+            user_agent_hash=row["user_agent_hash"],
+            alert_count=int(row["alert_count"]),
+            sample_event_count=int(row["sample_event_count"]),
+            sample_run_count=int(row["sample_run_count"]),
+            duplicate_count=int(row["duplicate_count"]),
+            first_received_at=datetime.fromisoformat(row["first_received_at"]),
+            last_received_at=datetime.fromisoformat(row["last_received_at"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
         )
@@ -3318,4 +3554,56 @@ class SQLiteEventStore:
                     conn.execute(f"alter table alert_dispatcher_heartbeats add column {column_name} {column_type}")
             conn.execute(
                 "create index if not exists idx_alert_dispatcher_heartbeats_tenant_seen on alert_dispatcher_heartbeats(tenant_id, last_seen_at)"
+            )
+            conn.execute(
+                """
+                create table if not exists alert_webhook_receipts (
+                  tenant_id text not null,
+                  delivery_id text not null,
+                  alert_key text not null,
+                  severity text not null,
+                  body_hash text not null,
+                  signature_hash text not null,
+                  source_hash text,
+                  user_agent_hash text,
+                  alert_count integer not null default 0,
+                  sample_event_count integer not null default 0,
+                  sample_run_count integer not null default 0,
+                  duplicate_count integer not null default 0,
+                  first_received_at text not null,
+                  last_received_at text not null,
+                  created_at text not null,
+                  updated_at text not null,
+                  primary key (tenant_id, delivery_id)
+                )
+                """
+            )
+            receipt_columns = {
+                item["name"]
+                for item in conn.execute("pragma table_info(alert_webhook_receipts)").fetchall()
+            }
+            receipt_missing_columns = {
+                "alert_key": "text not null default ''",
+                "severity": "text not null default ''",
+                "body_hash": "text not null default ''",
+                "signature_hash": "text not null default ''",
+                "source_hash": "text",
+                "user_agent_hash": "text",
+                "alert_count": "integer not null default 0",
+                "sample_event_count": "integer not null default 0",
+                "sample_run_count": "integer not null default 0",
+                "duplicate_count": "integer not null default 0",
+                "first_received_at": "text not null default ''",
+                "last_received_at": "text not null default ''",
+                "created_at": "text not null default ''",
+                "updated_at": "text not null default ''",
+            }
+            for column_name, column_type in receipt_missing_columns.items():
+                if column_name not in receipt_columns:
+                    conn.execute(f"alter table alert_webhook_receipts add column {column_name} {column_type}")
+            conn.execute(
+                "create index if not exists idx_alert_webhook_receipts_tenant_received on alert_webhook_receipts(tenant_id, last_received_at)"
+            )
+            conn.execute(
+                "create index if not exists idx_alert_webhook_receipts_tenant_alert on alert_webhook_receipts(tenant_id, alert_key)"
             )

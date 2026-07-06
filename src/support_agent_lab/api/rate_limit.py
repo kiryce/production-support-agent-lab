@@ -146,6 +146,8 @@ def route_family(path: str) -> str:
         return "health"
     if path == "/metrics":
         return "metrics"
+    if path.startswith("/api/v1/webhooks"):
+        return "webhooks"
     if path.startswith("/api/v1/chat"):
         return "chat"
     if path.startswith("/api/v1/admin/evals"):

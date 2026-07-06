@@ -49,6 +49,7 @@ from support_agent_lab.memory.event_store import (
     EventStoreRetentionReport,
     FEEDBACK_EVENT_TYPE,
     FEEDBACK_REVIEW_EVENT_TYPE,
+    AlertWebhookReceiptRecord,
     FeedbackReviewQueueResponse,
     FeedbackSummary,
     SQLiteBackupReport,
@@ -100,7 +101,9 @@ from support_agent_lab.monitoring.triage import (
 from support_agent_lab.monitoring.alert_dispatcher import (
     AlertDeliverySummary,
     AlertDispatchReport,
+    AlertWebhookSignatureError,
     summarize_alert_deliveries,
+    verify_alert_webhook_signature,
 )
 from support_agent_lab.monitoring.alert_delivery_service import (
     monitor_alert_webhook_url,
@@ -175,6 +178,15 @@ class AlertDeliveryOperatorActionRequest(BaseModel):
     note: str = Field(default="", max_length=1000)
 
 
+class AlertWebhookReceiptResponse(BaseModel):
+    schema_version: str = "alert_webhook_receipt.v1"
+    delivery_id: str
+    alert_key: str
+    created: bool
+    duplicate_count: int
+    received_at: datetime
+
+
 class EventStoreRetentionRequest(BaseModel):
     dry_run: bool = True
     include_events: bool = False
@@ -226,7 +238,7 @@ class IncidentBriefResponse(BaseModel):
 class IncidentTimelineEntry(BaseModel):
     occurred_at: datetime
     sequence: int
-    source: Literal["event_store", "tool_audit", "alert_delivery", "run"]
+    source: Literal["event_store", "tool_audit", "alert_delivery", "alert_webhook_receipt", "run"]
     event_type: str
     title: str
     detail: str
@@ -2366,6 +2378,30 @@ def _audit_hash(value: str | None) -> str | None:
     return hashlib.sha256(f"audit_export.v1:{value}".encode("utf-8")).hexdigest()[:32]
 
 
+def _webhook_source_hash(request: Request) -> str | None:
+    host = request.client.host if request.client and request.client.host else None
+    return _webhook_hash(host, purpose="source")
+
+
+def _webhook_hash(value: str | None, *, purpose: str) -> str | None:
+    if not value:
+        return None
+    return hashlib.sha256(f"alert_webhook_{purpose}.v1:{value}".encode("utf-8")).hexdigest()[:32]
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_len(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    return 0
+
+
 def _audit_payload_summary(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -2499,6 +2535,8 @@ INCIDENT_TIMELINE_REDACTIONS = [
     "feedback_review_notes",
     "triage_notes",
     "alert_delivery_errors",
+    "alert_webhook_payloads",
+    "alert_webhook_headers",
 ]
 
 
@@ -2628,6 +2666,13 @@ def _incident_timeline_response(
                 order="asc",
             ):
                 entries.append(_timeline_entry_from_alert_delivery(delivery))
+            for receipt in deps.event_store.list_alert_webhook_receipts(
+                tenant_id=tenant_id,
+                alert_key=alert_key,
+                limit=limit,
+                order="asc",
+            ):
+                entries.append(_timeline_entry_from_alert_webhook_receipt(receipt))
             for gate in deps.event_store.list_eval_gate_records(
                 tenant_id=tenant_id,
                 alert_key=alert_key,
@@ -2772,6 +2817,30 @@ def _timeline_entry_from_alert_delivery(record: AlertDeliveryRecord) -> Incident
             "sample_event_count": len(record.sample_event_ids),
             "sample_run_count": len(record.sample_run_ids),
             "operator_action": record.operator_action,
+        },
+    )
+
+
+def _timeline_entry_from_alert_webhook_receipt(record: AlertWebhookReceiptRecord) -> IncidentTimelineEntry:
+    return IncidentTimelineEntry(
+        occurred_at=record.last_received_at,
+        sequence=0,
+        source="alert_webhook_receipt",
+        event_type="monitor.alert.webhook.received",
+        title="Alert webhook received",
+        detail="Webhook receipt was verified and stored; raw body, headers, reason, and sample ids are omitted.",
+        tone="warn" if record.duplicate_count else "success",
+        correlation=_audit_correlation(
+            tenant_id=record.tenant_id,
+        ),
+        evidence={
+            "delivery_id": record.delivery_id,
+            "severity": record.severity,
+            "duplicate_count": record.duplicate_count,
+            "alert_key_hash": _audit_hash(record.alert_key),
+            "body_hash": record.body_hash,
+            "sample_event_count": record.sample_event_count,
+            "sample_run_count": record.sample_run_count,
         },
     )
 
@@ -5706,6 +5775,77 @@ def create_app() -> FastAPI:
         require_admin(actor)
         require_scope(actor, "monitor:read")
         return _monitor_alert_delivery_summary(deps, limit=limit)
+
+    @app.post("/api/v1/webhooks/monitor/alerts")
+    async def receive_monitor_alert_webhook(
+        request: Request,
+        deps: Annotated[AppContainer, Depends(get_container)],
+    ) -> AlertWebhookReceiptResponse:
+        if not deps.settings.app_monitor_alert_webhook_receiver_enabled:
+            raise HTTPException(status_code=404, detail="Alert webhook receiver is not enabled")
+        if not deps.settings.app_monitor_alert_webhook_secret:
+            raise HTTPException(status_code=503, detail="Alert webhook receiver secret is not configured")
+        if not deps.event_store:
+            raise HTTPException(status_code=503, detail="Event store is not configured")
+        body = await read_body_and_restore(request)
+        try:
+            verified = verify_alert_webhook_signature(
+                secret=deps.settings.app_monitor_alert_webhook_secret,
+                headers=request.headers,
+                body=body,
+                max_age_seconds=deps.settings.app_monitor_alert_webhook_receiver_max_age_seconds,
+                expected_tenant_id=deps.settings.app_tenant_id,
+            )
+        except AlertWebhookSignatureError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        payload = verified.payload
+        severity = str(payload.get("severity") or "")
+        if severity not in {"P0", "P1", "P2", "P3"}:
+            raise HTTPException(status_code=400, detail="Alert webhook severity is invalid")
+        try:
+            record, created = deps.event_store.record_alert_webhook_receipt(
+                tenant_id=deps.settings.app_tenant_id,
+                delivery_id=verified.delivery_id,
+                alert_key=verified.alert_key,
+                severity=severity,
+                body_hash=verified.body_hash,
+                signature_hash=_webhook_hash(verified.signature, purpose="signature"),
+                source_hash=_webhook_source_hash(request),
+                user_agent_hash=_webhook_hash(request.headers.get("user-agent"), purpose="user_agent"),
+                alert_count=_safe_int(payload.get("alert_count")),
+                sample_event_count=_safe_len(payload.get("sample_event_ids")),
+                sample_run_count=_safe_len(payload.get("sample_run_ids")),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return AlertWebhookReceiptResponse(
+            delivery_id=record.delivery_id,
+            alert_key=record.alert_key,
+            created=created,
+            duplicate_count=record.duplicate_count,
+            received_at=record.last_received_at,
+        )
+
+    @app.get("/api/v1/admin/monitor/alert-webhook-receipts")
+    def list_monitor_alert_webhook_receipts(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        alert_key: Annotated[str | None, Query(max_length=256)] = None,
+        delivery_id: Annotated[str | None, Query(max_length=128)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[Literal["asc", "desc"], Query()] = "desc",
+    ) -> list[AlertWebhookReceiptRecord]:
+        require_admin(actor)
+        require_scope(actor, "monitor:read")
+        if not deps.event_store:
+            raise HTTPException(status_code=404, detail="Event store is not configured")
+        return deps.event_store.list_alert_webhook_receipts(
+            tenant_id=deps.settings.app_tenant_id,
+            alert_key=alert_key,
+            delivery_id=delivery_id,
+            limit=limit,
+            order=order,
+        )
 
     @app.get("/api/v1/admin/monitor/alert-deliveries")
     def list_monitor_alert_deliveries(

@@ -23,6 +23,7 @@ REQUEST_SIGNATURE_EXEMPT_PATHS = {
     "/metrics",
     "/docs",
     "/openapi.json",
+    "/api/v1/webhooks/monitor/alerts",
 }
 
 

@@ -276,8 +276,9 @@ machine.
   tool payloads, retrieval body text, memory facts, or feedback comments.
 - Incident timeline via `GET /api/v1/admin/incidents/runs/{run_id}/timeline`.
   It orders sanitized event-store rows, tool audit rows, feedback, triage,
-  alert delivery, and eval-gate evidence so operators can see what happened
-  before reading raw trace details.
+  alert delivery, alert webhook receipt summaries, and eval-gate evidence so
+  operators can see what happened before reading raw trace details. Webhook
+  bodies, headers, reason text, and sample ids stay out of the timeline.
 - Agent run timeline from `AgentRunTrace`.
 - Retrieval citations from `run.retrieval.selected_context`.
 - Tool audit from `tool_audit_records`.

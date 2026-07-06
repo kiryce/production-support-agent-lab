@@ -45,9 +45,9 @@ APP_IDEMPOTENCY_RETENTION_DAYS=30
 APP_ALERT_DELIVERY_RETENTION_DAYS=90
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, and alert delivery outbox. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, and inbound alert webhook receipt summaries. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend and alert dispatcher can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
-Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, and terminal alert-delivery rows. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
+Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, terminal alert-delivery rows, and alert webhook receipt summaries. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
 
 ## Business API contract
 
@@ -184,6 +184,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/monitor/triage/metrics` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries/summary` | `monitor:read` |
 | `GET /api/v1/admin/monitor/alert-deliveries` | `monitor:read` |
+| `GET /api/v1/admin/monitor/alert-webhook-receipts` | `monitor:read` |
 | `POST /api/v1/admin/monitor/alert-deliveries/dispatch` | `monitor:write` |
 | `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/requeue` | `monitor:write` |
 | `POST /api/v1/admin/monitor/alert-deliveries/{delivery_id}/close` | `monitor:write` |
@@ -473,6 +474,18 @@ the configured stale threshold. Operators can use `POST .../{delivery_id}/requeu
 `dead` row back to `pending` with attempts reset, or `POST .../{delivery_id}/close`
 to mark the dead-letter handled without pretending it was delivered. Both
 actions append audit events with the operator actor id and note.
+
+For end-to-end local or internal-environment drills, enable
+`APP_MONITOR_ALERT_WEBHOOK_RECEIVER_ENABLED=true` and point
+`APP_MONITOR_ALERT_WEBHOOK_URL` at `/api/v1/webhooks/monitor/alerts` on the same
+service or an internal receiver deployment. This external webhook route is
+exempt from actor/request signatures because webhook gateways do not send
+`X-Actor-*` claims, but it has its own `X-PSA-*` HMAC envelope using
+`APP_MONITOR_ALERT_WEBHOOK_SECRET`, timestamp freshness, and body hash checks.
+Accepted deliveries are recorded idempotently in `alert_webhook_receipts`; the
+ledger stores delivery id, alert key, severity, hashes, counts, duplicate count,
+and timestamps, not raw webhook body, headers, reason text, or sample ids. Use
+`GET /api/v1/admin/monitor/alert-webhook-receipts` to inspect receipt summaries.
 
 For unattended production delivery, run the same cycle with
 `support-agent-alert-dispatcher --interval-seconds 30 --json` or start the
