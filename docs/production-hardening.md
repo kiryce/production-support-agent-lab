@@ -12,7 +12,7 @@
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + append-only triage events + alert delivery outbox | Queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API，内置有限重试、grounded draft fallback 和进程内断路器 | Provider routing + fallback model + budget |
 | SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + event-store operation ledger + automation execution ledger + operation lease lock + production rate-limit buckets; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox + distributed lease |
-| Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + `operations_automation_executions` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/operations/automation-executions` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
+| Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + `operations_automation_executions` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/operations/automation-executions` + `/api/v1/admin/operations/automation-executions/summary` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table + local memory / production SQLite rate limit | mTLS/JWT, centralized Redis/Postgres nonce and rate-limit state, tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
@@ -86,6 +86,7 @@ monitor.review
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, dispatcher heartbeat active/stale/missing status, and last success/dead-letter timestamp from `/metrics`
 - alert delivery worker: run `support-agent-alert-dispatcher --interval-seconds 30 --json` or the Compose `alerts` profile so P0/P1 notification does not depend on a human clicking `Dispatch now`
 - feedback review backlog health: unresolved, unassigned unresolved, stale unresolved, reviewed/unreviewed, and bounded status counts from `/metrics`
+- automation execution health: total/completed/failed/rejected execution rows, failure rate, source counts, and latest failure timestamp from `/metrics` and `/api/v1/admin/operations/automation-executions/summary`
 - Prometheus rules: load `deploy/prometheus/support-agent-alerts.yml` through managed Prometheus or `docker compose --profile observability up --build`, and keep every alert linked to `docs/alerting-runbook.md`
 
 ## 发布策略

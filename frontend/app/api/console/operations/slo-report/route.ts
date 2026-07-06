@@ -35,8 +35,20 @@ export async function GET(request: NextRequest) {
     1000,
     0
   );
+  const maxAutomationFailureRate = clampFloat(
+    request.nextUrl.searchParams.get("max_automation_failure_rate"),
+    0,
+    1,
+    0.1
+  );
   const minToolCalls = clampNumber(request.nextUrl.searchParams.get("min_tool_calls"), 0, 10000, 1);
   const minFeedbackCount = clampNumber(request.nextUrl.searchParams.get("min_feedback_count"), 0, 10000, 5);
+  const minAutomationExecutions = clampNumber(
+    request.nextUrl.searchParams.get("min_automation_executions"),
+    0,
+    10000,
+    1
+  );
   try {
     const report = await agentFetch<SloReportResponse>("/api/v1/admin/operations/slo-report", {
       query: {
@@ -52,8 +64,10 @@ export async function GET(request: NextRequest) {
         max_eval_age_hours: maxEvalAgeHours,
         max_mtta_seconds: maxMttaSeconds,
         max_alert_delivery_dead_count: maxAlertDeliveryDeadCount,
+        max_automation_failure_rate: maxAutomationFailureRate,
         min_tool_calls: minToolCalls,
-        min_feedback_count: minFeedbackCount
+        min_feedback_count: minFeedbackCount,
+        min_automation_executions: minAutomationExecutions
       }
     });
     return NextResponse.json(report);

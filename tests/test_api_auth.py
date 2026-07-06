@@ -4601,6 +4601,11 @@ def test_admin_can_record_and_export_operations_automation_executions(tmp_path, 
             headers={"X-Demo-Role": "admin"},
             params={"action_kind": "run_retrieval_diagnostics"},
         )
+        summary = client.get(
+            "/api/v1/admin/operations/automation-executions/summary",
+            headers={"X-Demo-Role": "admin"},
+            params={"action_kind": "run_retrieval_diagnostics", "window_hours": 24},
+        )
         exported = client.get(
             "/api/v1/admin/audit/export",
             headers={"X-Demo-Role": "admin"},
@@ -4635,6 +4640,14 @@ def test_admin_can_record_and_export_operations_automation_executions(tmp_path, 
     assert command_body_secret not in recorded.text
     assert listed.status_code == 200
     assert [item["id"] for item in listed.json()] == [body["id"]]
+    assert summary.status_code == 200
+    summary_body = summary.json()
+    assert summary_body["schema_version"] == "ops_automation_execution_summary.v1"
+    assert summary_body["total_count"] == 1
+    assert summary_body["completed_count"] == 1
+    assert summary_body["failure_rate"] == 0
+    assert summary_body["counts_by_source"] == {"console": 1}
+    assert command_body_secret not in summary.text
     assert exported.status_code == 200
     assert exported.headers["x-audit-export-records"] == "1"
     assert command_body_secret not in exported.text
@@ -4754,6 +4767,25 @@ def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkey
         created_at=now,
     )
     event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    event_store.append_operations_automation_execution(
+        tenant_id=app_container.settings.app_tenant_id,
+        actor_user_id="cron_worker_private",
+        action_id="ops_dispatch_failed_private",
+        action_kind="dispatch_alert_deliveries",
+        title="Dispatch alert deliveries",
+        status="failed",
+        safe_to_auto_execute=True,
+        command_method="POST",
+        command_path="/api/v1/admin/monitor/alert-deliveries/dispatch",
+        command_query={},
+        command_body_keys=["limit"],
+        command_body_hash="PRIVATE hash should not leak",
+        command_fingerprint="PRIVATE fingerprint should not leak",
+        result_summary="Automation action failed.",
+        error_detail="PRIVATE automation error should not leak",
+        source="cron",
+        created_at=now.isoformat(),
+    )
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
@@ -4772,14 +4804,15 @@ def test_admin_operations_slo_report_tracks_breached_objectives(tmp_path, monkey
     objectives = {objective["name"]: objective for objective in body["objectives"]}
     assert body["schema_version"] == "slo_report.v1"
     assert body["status"] == "breached"
-    assert body["objective_count"] == 9
-    assert body["breached_count"] >= 5
+    assert body["objective_count"] == 10
+    assert body["breached_count"] >= 6
     assert objectives["grounded_rate"]["status"] == "breached"
     assert objectives["policy_compliance_rate"]["status"] == "breached"
     assert objectives["active_p0p1_alerts"]["status"] == "breached"
     assert objectives["tool_failure_rate"]["status"] == "breached"
     assert objectives["feedback_negative_rate"]["status"] == "breached"
     assert objectives["alert_delivery_health"]["status"] == "breached"
+    assert objectives["automation_execution_failure_rate"]["status"] == "breached"
     assert objectives["staging_eval_gate_freshness"]["status"] == "met"
     assert objectives["tool_failure_rate"]["error_budget_remaining"] == 0
     assert "PRIVATE" not in serialized
@@ -5035,6 +5068,10 @@ def test_production_operations_automation_executions_require_write_and_read_scop
             "/api/v1/admin/operations/automation-executions",
             headers=_production_headers(scopes="admin:read,audit:read,events:read"),
         )
+        summary_allowed = client.get(
+            "/api/v1/admin/operations/automation-executions/summary",
+            headers=_production_headers(scopes="admin:read,audit:read,events:read"),
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -5051,6 +5088,8 @@ def test_production_operations_automation_executions_require_write_and_read_scop
     assert missing_events.json()["detail"] == "Missing required scope: events:read"
     assert read_allowed.status_code == 200
     assert [record["id"] for record in read_allowed.json()] == [write_allowed.json()["id"]]
+    assert summary_allowed.status_code == 200
+    assert summary_allowed.json()["total_count"] == 1
 
 
 def test_production_operations_slo_report_requires_read_scopes(tmp_path, monkeypatch):

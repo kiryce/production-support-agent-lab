@@ -632,6 +632,24 @@ export type OperationsAutomationExecutionRecord = {
   created_at: string;
 };
 
+export type OperationsAutomationExecutionSummary = {
+  schema_version: "ops_automation_execution_summary.v1";
+  total_count: number;
+  completed_count: number;
+  failed_count: number;
+  rejected_count: number;
+  failure_rate: number;
+  counts_by_status: Record<string, number>;
+  counts_by_source: Record<string, number>;
+  counts_by_action_kind: Record<string, number>;
+  window_start: string | null;
+  window_end: string | null;
+  latest_execution_at: string | null;
+  latest_failure_at: string | null;
+  latest_failure_action_kind: string | null;
+  latest_failure_source: string | null;
+};
+
 export type OperationsAutomationExecutionResult = {
   schema_version: "ops_action_execution.v1";
   action_id: string;
@@ -921,6 +939,7 @@ export type ConsoleSnapshot = {
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
+  operationsAutomationExecutionSummary: OperationsAutomationExecutionSummary | null;
   sloReport: SloReportResponse | null;
   monitorAlertDelivery: MonitorAlertDeliverySummary | null;
   triageEvents: MonitorAlertTriageEvent[];

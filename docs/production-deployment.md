@@ -210,6 +210,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/operations/automation-plan` | `admin:read`, `monitor:read`, `audit:read`, `events:read`, `eval:read`, `feedback:read`. Read-only next-action plan with runnable commands and guardrails. |
 | `POST /api/v1/admin/operations/automation-executions` | `admin:write`. Records a sanitized automation action execution ledger row. |
 | `GET /api/v1/admin/operations/automation-executions` | `admin:read`, `audit:read`, `events:read`. Lists sanitized automation action execution ledger rows. |
+| `GET /api/v1/admin/operations/automation-executions/summary` | `admin:read`, `audit:read`, `events:read`. Returns bounded execution health aggregates for SLOs, console, metrics, and audit review. |
 | `GET /api/v1/admin/promotion/decisions` | `admin:read`, `audit:read` |
 | `POST /api/v1/admin/promotion/decisions` | `admin:write`, `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Recomputes the release preflight and writes an append-only decision event. |
 | `GET /api/v1/admin/audit/export` | `audit:read`, `events:read`. Returns sanitized `application/x-ndjson` for SIEM or warehouse ingestion. |
@@ -263,12 +264,13 @@ events, or returns raw tool arguments, raw monitor events, or eval answer text.
 view for on-call and release review. It returns `slo_report.v1` with individual
 objective rows for grounded rate, policy compliance, human-review pressure,
 active P0/P1 alerts, tool failure rate, negative feedback rate, staging eval
-freshness, triage MTTA, and alert delivery health. Each row includes target,
+freshness, triage MTTA, alert delivery health, and automation execution failure
+rate. Each row includes target,
 observed aggregate, status (`met`, `at_risk`, `breached`, or `no_data`), and
 `error_budget_remaining` when that math is meaningful. No-data is explicit so
 missing evidence cannot look healthy. The endpoint uses only aggregates and
 does not return messages, tool arguments, payloads, retrieval bodies, memory
-facts, feedback comments, or raw eval answers.
+facts, feedback comments, automation action ids, or raw eval answers.
 
 `GET /api/v1/admin/operations/automation-plan` is the read-only production
 next-action planner used by the console `Settings` workbench and external
@@ -291,7 +293,13 @@ signatures, tokens, tool arguments, or customer text. Audit export hashes the
 error detail instead of emitting it. Operators can list the same ledger through
 `GET /api/v1/admin/operations/automation-executions`, filtering by action kind,
 status, source, actor, time window, limit, and sort order; the console Settings
-panel uses that API for its execution-history view.
+panel uses that API for its execution-history view. The companion
+`GET /api/v1/admin/operations/automation-executions/summary` endpoint defaults
+to the latest 24 hours and aggregates total/completed/failed/rejected counts,
+failure rate, source counts, action-kind counts, and latest failure metadata
+without raw command bodies, raw results, actors, action ids, or error details.
+The SLO report, console execution-health strip, and Prometheus metrics all use
+that bounded summary.
 
 `POST /api/v1/admin/promotion/decisions` is the mutable release audit action.
 It recalculates the promotion gate, stores the resulting gate snapshot with the
@@ -691,11 +699,12 @@ HTTP request counts by method/route family/status, rate-limit decision counts,
 monitor event counts, monitor triage health by status/severity, active/stale
 alert counts, MTTA/MTTR, alert delivery outbox counts by status/severity,
 alert delivery health, alert dispatcher heartbeat health, feedback review backlog counts by current status,
-stale/unassigned unresolved feedback counts, grounded/policy/human-review
-rates, tool audit totals and latency summaries, adapter circuit state, LLM
+stale/unassigned unresolved feedback counts, automation execution totals/failure rate/source/status counts,
+grounded/policy/human-review rates, tool audit totals and latency summaries, adapter circuit state, LLM
 fallback counts, effective rate-limit backend, and rate-limit configuration. It does not include user ids,
 assignees, trace ids, alert keys, triage notes, feedback comments, review notes,
-raw tool arguments, request bodies, retrieved snippets, or monitor summaries.
+automation action ids, raw automation command bodies/results, raw tool arguments,
+request bodies, retrieved snippets, or monitor summaries.
 
 The minimal Prometheus example lives in `deploy/prometheus/prometheus.yml`, the
 production alert rules live in `deploy/prometheus/support-agent-alerts.yml`, and

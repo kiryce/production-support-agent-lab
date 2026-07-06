@@ -45,7 +45,7 @@ describe("SLO report BFF route", () => {
 
     const response = await GET(
       getRequest(
-        "/api/console/operations/slo-report?source=live&window_hours=999&min_grounded_rate=1.5&max_mtta_seconds=0&max_tool_failure_rate=0.25"
+        "/api/console/operations/slo-report?source=live&window_hours=999&min_grounded_rate=1.5&max_mtta_seconds=0&max_tool_failure_rate=0.25&max_automation_failure_rate=1.5&min_automation_executions=99999"
       )
     );
 
@@ -60,6 +60,8 @@ describe("SLO report BFF route", () => {
     expect(url.searchParams.get("min_grounded_rate")).toBe("1");
     expect(url.searchParams.get("max_mtta_seconds")).toBe("1");
     expect(url.searchParams.get("max_tool_failure_rate")).toBe("0.25");
+    expect(url.searchParams.get("max_automation_failure_rate")).toBe("1");
+    expect(url.searchParams.get("min_automation_executions")).toBe("10000");
   });
 });
 

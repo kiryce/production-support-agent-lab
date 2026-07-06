@@ -34,6 +34,8 @@ ALERT_DELIVERY_HEALTH_STATUSES = ("ok", "queued", "degraded", "failed", "disable
 ALERT_DISPATCHER_HEALTH_STATUSES = ("active", "stale", "missing", "disabled", "unknown")
 ALERT_DELIVERY_SEVERITIES = ("P0", "P1", "P2", "P3")
 FEEDBACK_REVIEW_STATUSES = ("unreviewed", "acknowledged", "investigating", "resolved", "dismissed")
+OPERATIONS_AUTOMATION_EXECUTION_STATUSES = ("completed", "failed", "rejected")
+OPERATIONS_AUTOMATION_EXECUTION_SOURCES = ("console", "cron", "on_call_bot", "api")
 
 
 @dataclass(frozen=True)
@@ -149,6 +151,7 @@ def render_prometheus_metrics(
     _add_http_metrics(metrics, http_metrics)
     _add_alert_delivery_metrics(metrics, deps, now=now)
     _add_feedback_review_metrics(metrics, deps, now=now)
+    _add_operations_automation_metrics(metrics, deps, created_after=created_after)
     _add_monitor_triage_metrics(metrics, triage_metrics, now=now)
     _add_monitor_metrics(metrics, monitor_summary, monitor_events)
     _add_tool_metrics(metrics, tool_summary)
@@ -561,6 +564,99 @@ def _add_feedback_review_zero_metrics(metrics: "_MetricWriter") -> None:
         metrics.add("support_agent_feedback_review_queue_by_status", 0, {"status": status}, metric_type="gauge")
 
 
+def _add_operations_automation_metrics(
+    metrics: "_MetricWriter",
+    deps: AppContainer,
+    *,
+    created_after: datetime,
+) -> None:
+    metrics.add(
+        "support_agent_operations_automation_execution_configured",
+        _bool(bool(deps.event_store)),
+        metric_type="gauge",
+        help_text="Whether operations automation execution summaries can read a durable event store.",
+    )
+    if not deps.event_store:
+        _add_operations_automation_zero_metrics(metrics)
+        return
+
+    summary = deps.event_store.summarize_operations_automation_executions(
+        tenant_id=deps.settings.app_tenant_id,
+        created_after=created_after.isoformat(),
+    )
+    metrics.add(
+        "support_agent_operations_automation_executions_window",
+        summary.total_count,
+        metric_type="gauge",
+        help_text="Operations automation execution ledger rows in the scrape window.",
+    )
+    metrics.add(
+        "support_agent_operations_automation_failed_executions_window",
+        summary.failed_count,
+        metric_type="gauge",
+        help_text="Failed operations automation execution ledger rows in the scrape window.",
+    )
+    metrics.add(
+        "support_agent_operations_automation_rejected_executions_window",
+        summary.rejected_count,
+        metric_type="gauge",
+        help_text="Rejected operations automation execution ledger rows in the scrape window.",
+    )
+    metrics.add(
+        "support_agent_operations_automation_failure_rate",
+        summary.failure_rate,
+        metric_type="gauge",
+        help_text="Share of failed or rejected operations automation execution rows in the scrape window.",
+    )
+    for status in OPERATIONS_AUTOMATION_EXECUTION_STATUSES:
+        metrics.add(
+            "support_agent_operations_automation_executions_by_status",
+            summary.counts_by_status.get(status, 0),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Operations automation execution rows by bounded status in the scrape window.",
+        )
+    for source in OPERATIONS_AUTOMATION_EXECUTION_SOURCES:
+        metrics.add(
+            "support_agent_operations_automation_executions_by_source",
+            summary.counts_by_source.get(source, 0),
+            {"source": source},
+            metric_type="gauge",
+            help_text="Operations automation execution rows by bounded caller source in the scrape window.",
+        )
+    _add_optional_timestamp_from_iso(
+        metrics,
+        "support_agent_operations_automation_latest_execution_timestamp_seconds",
+        summary.latest_execution_at,
+    )
+    _add_optional_timestamp_from_iso(
+        metrics,
+        "support_agent_operations_automation_latest_failure_timestamp_seconds",
+        summary.latest_failure_at,
+    )
+
+
+def _add_operations_automation_zero_metrics(metrics: "_MetricWriter") -> None:
+    metrics.add("support_agent_operations_automation_executions_window", 0, metric_type="gauge")
+    metrics.add("support_agent_operations_automation_failed_executions_window", 0, metric_type="gauge")
+    metrics.add("support_agent_operations_automation_rejected_executions_window", 0, metric_type="gauge")
+    metrics.add("support_agent_operations_automation_failure_rate", 0, metric_type="gauge")
+    for status in OPERATIONS_AUTOMATION_EXECUTION_STATUSES:
+        metrics.add(
+            "support_agent_operations_automation_executions_by_status",
+            0,
+            {"status": status},
+            metric_type="gauge",
+        )
+    for source in OPERATIONS_AUTOMATION_EXECUTION_SOURCES:
+        metrics.add(
+            "support_agent_operations_automation_executions_by_source",
+            0,
+            {"source": source},
+            metric_type="gauge",
+        )
+
+
 def _add_monitor_triage_metrics(
     metrics: "_MetricWriter",
     triage: MonitorTriageMetricsResponse,
@@ -915,6 +1011,16 @@ def _add_optional_timestamp(metrics: "_MetricWriter", name: str, value: datetime
     if value is None:
         return
     metrics.add(name, _timestamp_seconds(value), metric_type="gauge")
+
+
+def _add_optional_timestamp_from_iso(metrics: "_MetricWriter", name: str, value: str | None) -> None:
+    if not value:
+        return
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return
+    _add_optional_timestamp(metrics, name, parsed)
 
 
 def _timestamp_seconds(value: datetime) -> float:

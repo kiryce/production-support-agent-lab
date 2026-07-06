@@ -264,6 +264,24 @@ class OperationsAutomationExecutionRecord(BaseModel):
     created_at: str
 
 
+class OperationsAutomationExecutionSummary(BaseModel):
+    schema_version: str = "ops_automation_execution_summary.v1"
+    total_count: int = 0
+    completed_count: int = 0
+    failed_count: int = 0
+    rejected_count: int = 0
+    failure_rate: float = 0.0
+    counts_by_status: dict[str, int] = Field(default_factory=dict)
+    counts_by_source: dict[str, int] = Field(default_factory=dict)
+    counts_by_action_kind: dict[str, int] = Field(default_factory=dict)
+    window_start: str | None = None
+    window_end: str | None = None
+    latest_execution_at: str | None = None
+    latest_failure_at: str | None = None
+    latest_failure_action_kind: str | None = None
+    latest_failure_source: str | None = None
+
+
 class EventStoreOperationLock(BaseModel):
     tenant_id: str
     lock_name: str
@@ -2466,6 +2484,86 @@ class SQLiteEventStore:
         with self._connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._operations_automation_execution_from_row(row) for row in rows]
+
+    def summarize_operations_automation_executions(
+        self,
+        *,
+        tenant_id: str | None = None,
+        action_kind: str | None = None,
+        source: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+    ) -> OperationsAutomationExecutionSummary:
+        sql = """
+            select action_kind, status, source, created_at
+            from operations_automation_executions
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            clauses.append("tenant_id = ?")
+            params.append(tenant_id)
+        if action_kind:
+            clauses.append("action_kind = ?")
+            params.append(action_kind)
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if created_after:
+            clauses.append("created_at >= ?")
+            params.append(created_after)
+        if created_before:
+            clauses.append("created_at <= ?")
+            params.append(created_before)
+        if clauses:
+            sql += " where " + " and ".join(clauses)
+        sql += " order by created_at asc, rowid asc"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        status_counts: dict[str, int] = {}
+        source_counts: dict[str, int] = {}
+        action_kind_counts: dict[str, int] = {}
+        latest_failure = None
+        latest_execution_at: str | None = None
+        window_start: str | None = None
+        window_end: str | None = None
+        for row in rows:
+            status = str(row["status"])
+            row_source = str(row["source"])
+            row_action_kind = str(row["action_kind"])
+            created_at = str(row["created_at"])
+            status_counts[status] = status_counts.get(status, 0) + 1
+            source_counts[row_source] = source_counts.get(row_source, 0) + 1
+            action_kind_counts[row_action_kind] = action_kind_counts.get(row_action_kind, 0) + 1
+            window_start = created_at if window_start is None else min(window_start, created_at)
+            window_end = created_at if window_end is None else max(window_end, created_at)
+            latest_execution_at = created_at if latest_execution_at is None else max(latest_execution_at, created_at)
+            if status in {"failed", "rejected"} and (
+                latest_failure is None or created_at >= str(latest_failure["created_at"])
+            ):
+                latest_failure = row
+
+        total_count = len(rows)
+        failed_count = status_counts.get("failed", 0)
+        rejected_count = status_counts.get("rejected", 0)
+        failure_count = failed_count + rejected_count
+        return OperationsAutomationExecutionSummary(
+            total_count=total_count,
+            completed_count=status_counts.get("completed", 0),
+            failed_count=failed_count,
+            rejected_count=rejected_count,
+            failure_rate=round(failure_count / total_count, 4) if total_count else 0.0,
+            counts_by_status=status_counts,
+            counts_by_source=source_counts,
+            counts_by_action_kind=action_kind_counts,
+            window_start=window_start,
+            window_end=window_end,
+            latest_execution_at=latest_execution_at,
+            latest_failure_at=str(latest_failure["created_at"]) if latest_failure else None,
+            latest_failure_action_kind=str(latest_failure["action_kind"]) if latest_failure else None,
+            latest_failure_source=str(latest_failure["source"]) if latest_failure else None,
+        )
 
     @contextmanager
     def event_store_operation_lock(

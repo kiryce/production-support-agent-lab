@@ -1378,6 +1378,32 @@ textarea:disabled {
   overflow-wrap: anywhere;
 }
 
+.automation-execution-summary {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: #fbfcfb;
+  padding: 8px;
+}
+
+.automation-execution-summary.state-success {
+  border-left-color: var(--green-700);
+}
+
+.automation-execution-summary.state-warn {
+  border-left-color: var(--orange);
+}
+
+.automation-execution-summary.state-danger {
+  border-left-color: var(--red);
+}
+
+.automation-execution-summary-stats {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .automation-action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3427,6 +3453,7 @@ textarea {
   .promotion-decision-row,
   .slo-objective-row,
   .slo-report-stats,
+  .automation-execution-summary-stats,
   .automation-action-row,
   .automation-plan-stats {
     grid-template-columns: 1fr;

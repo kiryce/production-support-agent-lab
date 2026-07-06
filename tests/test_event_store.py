@@ -927,6 +927,24 @@ def test_operations_automation_execution_ledger_is_queryable_and_backup_verified
         error_detail="unavailable",
         source="console",
     )
+    event_store.append_operations_automation_execution(
+        tenant_id="demo_tenant",
+        actor_user_id="cron_worker",
+        action_id="ops_dispatch_failed",
+        action_kind="dispatch_alert_deliveries",
+        title="Dispatch alert deliveries",
+        status="failed",
+        safe_to_auto_execute=True,
+        command_method="POST",
+        command_path="/api/v1/admin/monitor/alert-deliveries/dispatch",
+        command_query={},
+        command_body_keys=["limit"],
+        command_body_hash="body_hash",
+        command_fingerprint="fingerprint_dispatch",
+        result_summary="Automation action failed.",
+        error_detail="PRIVATE webhook detail should not be summarized",
+        source="cron",
+    )
     after = event_store.retention_high_water_mark(tenant_id="demo_tenant")
     backup_path = tmp_path / "backups" / "events.backup.db"
     event_store.backup_to(backup_path)
@@ -944,15 +962,29 @@ def test_operations_automation_execution_ledger_is_queryable_and_backup_verified
         tenant_id="demo_tenant",
         action_kind="review_feedback",
     )
+    summary = event_store.summarize_operations_automation_executions(tenant_id="demo_tenant")
+    cron_summary = event_store.summarize_operations_automation_executions(
+        tenant_id="demo_tenant",
+        source="cron",
+    )
 
     assert after == before
-    assert [item.id for item in records] == [record.id]
+    assert [item.action_kind for item in records] == ["dispatch_alert_deliveries", "inspect_tool_audit"]
     assert [item.id for item in filtered] == [record.id]
     assert missing == []
-    assert records[0].command_query == {"status": "failed", "limit": 100}
-    assert records[0].command_body_hash is None
-    assert drill.table_counts["operations_automation_executions"] == 2
-    assert restored_store.list_operations_automation_executions(tenant_id="demo_tenant")[0].id == record.id
+    assert records[-1].command_query == {"status": "failed", "limit": 100}
+    assert records[-1].command_body_hash is None
+    assert summary.total_count == 2
+    assert summary.completed_count == 1
+    assert summary.failed_count == 1
+    assert summary.failure_rate == 0.5
+    assert summary.counts_by_source == {"console": 1, "cron": 1}
+    assert summary.latest_failure_action_kind == "dispatch_alert_deliveries"
+    assert "PRIVATE" not in summary.model_dump_json()
+    assert cron_summary.total_count == 1
+    assert cron_summary.failure_rate == 1.0
+    assert drill.table_counts["operations_automation_executions"] == 3
+    assert restored_store.list_operations_automation_executions(tenant_id="demo_tenant")[0].action_kind == "dispatch_alert_deliveries"
 
 
 def test_event_store_restore_drill_proves_backup_can_be_restored(tmp_path):

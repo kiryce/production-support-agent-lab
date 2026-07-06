@@ -109,6 +109,7 @@ import type {
   MonitorEvent,
   OperationsAutomationAction,
   OperationsAutomationExecutionRecord,
+  OperationsAutomationExecutionSummary,
   OperationsAutomationExecutionResult,
   OperationsAutomationPlan,
   PolicyFinding,
@@ -2396,6 +2397,7 @@ export default function Home() {
               promotionGate={snapshot?.promotionGate ?? null}
               promotionDecisions={snapshot?.promotionDecisions ?? []}
               operationsAutomation={snapshot?.operationsAutomation ?? null}
+              operationsAutomationExecutionSummary={snapshot?.operationsAutomationExecutionSummary ?? null}
               sloReport={snapshot?.sloReport ?? null}
               busy={eventOpsBusy}
               error={eventOpsError}
@@ -3735,6 +3737,7 @@ function SettingsWorkbenchPanel({
   promotionGate,
   promotionDecisions,
   operationsAutomation,
+  operationsAutomationExecutionSummary,
   sloReport,
   busy,
   error,
@@ -3812,6 +3815,7 @@ function SettingsWorkbenchPanel({
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;
+  operationsAutomationExecutionSummary: OperationsAutomationExecutionSummary | null;
   sloReport: SloReportResponse | null;
   busy: string | null;
   error: string | null;
@@ -4020,6 +4024,44 @@ function SettingsWorkbenchPanel({
               {operationsAutomation.guardrails.slice(0, 2).map((guardrail) => (
                 <span key={guardrail}>{guardrail}</span>
               ))}
+            </div>
+            <div className={`automation-execution-summary state-${automationExecutionSummaryTone(operationsAutomationExecutionSummary)}`}>
+              <div className="settings-section-head">
+                <strong>Execution Health</strong>
+                <Badge tone={automationExecutionSummaryTone(operationsAutomationExecutionSummary)}>
+                  {operationsAutomationExecutionSummary
+                    ? `${formatPercent(operationsAutomationExecutionSummary.failure_rate)} failed`
+                    : "unavailable"}
+                </Badge>
+              </div>
+              <div className="run-search-stats event-op-stats automation-execution-summary-stats">
+                <Metric
+                  label="24h total"
+                  value={operationsAutomationExecutionSummary ? String(operationsAutomationExecutionSummary.total_count) : "n/a"}
+                />
+                <Metric
+                  label="Failed"
+                  value={operationsAutomationExecutionSummary ? String(operationsAutomationExecutionSummary.failed_count) : "n/a"}
+                />
+                <Metric
+                  label="Rejected"
+                  value={operationsAutomationExecutionSummary ? String(operationsAutomationExecutionSummary.rejected_count) : "n/a"}
+                />
+                <Metric
+                  label="Latest fail"
+                  value={
+                    operationsAutomationExecutionSummary?.latest_failure_at
+                      ? formatTime(operationsAutomationExecutionSummary.latest_failure_at)
+                      : "none"
+                  }
+                />
+              </div>
+              {operationsAutomationExecutionSummary?.latest_failure_action_kind ? (
+                <div className="preflight-meta">
+                  <span>{operationsAutomationExecutionSummary.latest_failure_action_kind}</span>
+                  <span>{operationsAutomationExecutionSummary.latest_failure_source ?? "unknown source"}</span>
+                </div>
+              ) : null}
             </div>
             {automationActionStatus ? (
               <div className="automation-action-status" role="status">
@@ -7272,6 +7314,10 @@ function stringifyValue(value: JsonValue): string {
   return String(value);
 }
 
+function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(value < 0.01 && value > 0 ? 2 : 1)}%`;
+}
+
 function toKnowledgeSearchResponse(trace: RetrievalTrace): KnowledgeSearchResponse {
   return {
     query: trace.query,
@@ -7404,6 +7450,21 @@ function automationPlanTone(plan: OperationsAutomationPlan | null): "neutral" | 
   return plan.action_count > 0 && !plan.actions.some((action) => action.kind === "no_action_required")
     ? "warn"
     : "success";
+}
+
+function automationExecutionSummaryTone(
+  summary: OperationsAutomationExecutionSummary | null
+): "neutral" | "success" | "warn" | "danger" {
+  if (!summary || summary.total_count === 0) {
+    return "neutral";
+  }
+  if (summary.failure_rate > 0.1 || summary.failed_count > 0) {
+    return "danger";
+  }
+  if (summary.rejected_count > 0 || summary.failure_rate > 0) {
+    return "warn";
+  }
+  return "success";
 }
 
 function automationPriorityTone(priority: OperationsAutomationAction["priority"]): "neutral" | "success" | "warn" | "danger" {

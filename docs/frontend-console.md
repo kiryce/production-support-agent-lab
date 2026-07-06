@@ -125,7 +125,8 @@ real local FastAPI endpoints:
    records completed or failed auto-safe action execution, and
    `GET /api/v1/admin/operations/automation-executions` when the Settings
    history panel or external audit/history integrations list sanitized
-   execution records.
+   execution records. `GET /api/v1/admin/operations/automation-executions/summary`
+   feeds the Settings execution-health strip and SLO evidence.
 27. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
@@ -273,7 +274,9 @@ machine.
   `GET /api/v1/admin/operations/automation-executions` and show command
   method/path, sanitized query, body keys/hash, command fingerprint, result
   summary, actor, source, and timestamp without exposing raw command bodies or
-  raw automation results.
+  raw automation results. A separate 24h execution-health strip shows total,
+  failed, rejected, failure rate, and latest failure source/action kind from
+  `GET /api/v1/admin/operations/automation-executions/summary`.
 - Service Objectives in `Settings` uses `GET /api/v1/admin/operations/slo-report`
   to display grounded rate, policy compliance, human-review pressure, active
   P0/P1 alerts, tool failure rate, negative feedback, eval freshness, MTTA, and
@@ -325,7 +328,9 @@ machine.
 - SLO report via `GET /api/v1/admin/operations/slo-report`. It returns
   `slo_report.v1` with objective status, target, observed aggregate, and error
   budget remaining. It is useful for on-call review because no-data objectives
-  are visible rather than silently treated as healthy.
+  are visible rather than silently treated as healthy. Automation execution
+  failure rate is included so cron, on-call bot, API, and console automation
+  failures can block service objectives instead of hiding in history rows.
 - Operations automation plan via `GET /api/v1/admin/operations/automation-plan`.
   It combines the same production evidence with alert delivery, incident brief,
   receipt-gap, regression-draft, retrieval, and staging-eval recommendations.

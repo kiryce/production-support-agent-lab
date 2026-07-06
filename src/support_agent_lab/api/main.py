@@ -53,6 +53,7 @@ from support_agent_lab.memory.event_store import (
     FeedbackReviewQueueResponse,
     FeedbackSummary,
     OperationsAutomationExecutionRecord,
+    OperationsAutomationExecutionSummary,
     SQLiteBackupReport,
     SQLiteRestoreDrillReport,
     StoredEvent,
@@ -716,8 +717,10 @@ async def _slo_report_response(
     max_eval_age_hours: int,
     max_mtta_seconds: int,
     max_alert_delivery_dead_count: int,
+    max_automation_failure_rate: float,
     min_tool_calls: int,
     min_feedback_count: int,
+    min_automation_executions: int,
 ) -> SloReportResponse:
     promotion = await _promotion_gate_response(
         deps=deps,
@@ -733,6 +736,11 @@ async def _slo_report_response(
         min_feedback_count=min_feedback_count,
     )
     delivery_summary = _safe_monitor_alert_delivery_summary(deps, limit=200)
+    created_after = promotion.generated_at - timedelta(hours=window_hours)
+    automation_summary = _operations_automation_execution_summary(
+        deps,
+        created_after=created_after.isoformat(),
+    )
     dead_delivery_records = _list_ops_delivery_records(
         deps,
         status=AlertDeliveryStatus.dead,
@@ -835,6 +843,23 @@ async def _slo_report_response(
             max_dead_count=max_alert_delivery_dead_count,
             observed_dead_count=len(dead_delivery_records),
         ),
+        _slo_maximum_rate(
+            name="automation_execution_failure_rate",
+            observed_rate=automation_summary.failure_rate,
+            target_rate=max_automation_failure_rate,
+            sample_count=automation_summary.total_count,
+            min_sample_count=min_automation_executions,
+            detail_label="Operations automation execution failure rate",
+            evidence={
+                "total_count": automation_summary.total_count,
+                "failed_count": automation_summary.failed_count,
+                "rejected_count": automation_summary.rejected_count,
+                "counts_by_status": automation_summary.counts_by_status,
+                "counts_by_source": automation_summary.counts_by_source,
+                "latest_failure_action_kind": automation_summary.latest_failure_action_kind,
+                "latest_failure_source": automation_summary.latest_failure_source,
+            },
+        ),
     ]
     counts = Counter(objective.status for objective in objectives)
     return SloReportResponse(
@@ -854,6 +879,7 @@ async def _slo_report_response(
             "monitor_health_status": promotion.monitor.health_status,
             "promotion_gate_status": promotion.status,
             "alert_delivery_status": delivery_summary.status if delivery_summary else None,
+            "automation_execution_failure_rate": automation_summary.failure_rate,
             "latest_eval_gate_id": promotion.latest_eval_gate.id if promotion.latest_eval_gate else None,
         },
         guardrails=SLO_REPORT_GUARDRAILS,
@@ -2016,6 +2042,25 @@ def _load_feedback_summary(*, deps: AppContainer, created_after: datetime) -> Fe
     return deps.event_store.summarize_agent_feedback(
         tenant_id=deps.settings.app_tenant_id,
         created_after=created_after.isoformat(),
+    )
+
+
+def _operations_automation_execution_summary(
+    deps: AppContainer,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    action_kind: str | None = None,
+    source: str | None = None,
+) -> OperationsAutomationExecutionSummary:
+    if not deps.event_store:
+        return OperationsAutomationExecutionSummary()
+    return deps.event_store.summarize_operations_automation_executions(
+        tenant_id=deps.settings.app_tenant_id,
+        action_kind=action_kind,
+        source=source,
+        created_after=created_after,
+        created_before=created_before,
     )
 
 
@@ -5188,6 +5233,29 @@ def create_app() -> FastAPI:
             order=order,
         )
 
+    @app.get("/api/v1/admin/operations/automation-executions/summary")
+    def summarize_operations_automation_executions(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        action_kind: Annotated[str | None, Query(max_length=80)] = None,
+        source: Annotated[Literal["console", "cron", "on_call_bot", "api"] | None, Query()] = None,
+        created_after: Annotated[str | None, Query()] = None,
+        created_before: Annotated[str | None, Query()] = None,
+        window_hours: Annotated[int, Query(ge=1, le=168)] = 24,
+    ) -> OperationsAutomationExecutionSummary:
+        require_admin(actor)
+        require_scope(actor, "admin:read")
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        resolved_created_after = created_after or (utc_now() - timedelta(hours=window_hours)).isoformat()
+        return _operations_automation_execution_summary(
+            deps,
+            action_kind=action_kind,
+            source=source,
+            created_after=resolved_created_after,
+            created_before=created_before,
+        )
+
     @app.get("/api/v1/admin/operations/slo-report")
     async def operations_slo_report(
         deps: Annotated[AppContainer, Depends(get_container)],
@@ -5204,8 +5272,10 @@ def create_app() -> FastAPI:
         max_eval_age_hours: Annotated[int, Query(ge=1, le=720)] = 24,
         max_mtta_seconds: Annotated[int, Query(ge=1, le=86400)] = 900,
         max_alert_delivery_dead_count: Annotated[int, Query(ge=0, le=1000)] = 0,
+        max_automation_failure_rate: Annotated[float, Query(ge=0, le=1)] = 0.1,
         min_tool_calls: Annotated[int, Query(ge=0, le=10000)] = 1,
         min_feedback_count: Annotated[int, Query(ge=0, le=10000)] = 5,
+        min_automation_executions: Annotated[int, Query(ge=0, le=10000)] = 1,
     ) -> SloReportResponse:
         require_admin(actor)
         require_scope(actor, "admin:read")
@@ -5227,8 +5297,10 @@ def create_app() -> FastAPI:
             max_eval_age_hours=max_eval_age_hours,
             max_mtta_seconds=max_mtta_seconds,
             max_alert_delivery_dead_count=max_alert_delivery_dead_count,
+            max_automation_failure_rate=max_automation_failure_rate,
             min_tool_calls=min_tool_calls,
             min_feedback_count=min_feedback_count,
+            min_automation_executions=min_automation_executions,
         )
 
     @app.get("/api/v1/admin/promotion/decisions")

@@ -54,7 +54,7 @@
 - response feedback workbench：读取真实 run 的好评/差评、reason 分布、用户评论和复核积压指标，记录 append-only review trail，并从负反馈生成 regression draft
 - staging eval gate 和 append-only eval gate history
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
-- SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA 和 alert delivery 计算服务目标与错误预算
+- SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA、alert delivery 和 automation execution failure rate 计算服务目标与错误预算
 - release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
 - operations automation plan：聚合 monitor、alert delivery、promotion gate、tool audit、feedback、eval 证据，返回可执行 endpoint、scope、guardrail 和是否可自动执行，适合接 cron、值班机器人或发布前检查；控制台执行 auto-safe 动作后会写入 automation execution ledger，并能在 Settings 里按 action kind、status、source 和 actor 查询执行历史
 - audit export：把脱敏后的 event/tool audit/event-store operation/automation execution 摘要导出为 NDJSON，方便接 SIEM 或 warehouse
@@ -158,7 +158,7 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置、event store，以及生产模式下的备份目录写探针；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
-`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、alert dispatcher heartbeat、feedback review backlog、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、工具参数、worker id 或知识库正文。
+`/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、alert delivery outbox、alert dispatcher heartbeat、feedback review backlog、automation execution health、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、自动化 action id、工具参数、worker id 或知识库正文。
 
 ### 4. 启动前端控制台
 
@@ -504,9 +504,9 @@ Eval 不只看最终回答，还检查：
 `/api/v1/admin/feedback/review-queue` 是只读反馈复核队列：它从 append-only feedback/review 事件投影当前状态、未解决数、未分配数、过期未处理数、最新 assignee 和复核次数。它不输出用户 comment、operator note 或 raw payload，适合控制台首页、值班队列、自动化计划和报表使用；只有打开单条反馈时才读取 review trail。
 反馈复核写入也会发送 expected review state；如果另一位操作者已经追加了 review event，后端会返回 `409 Conflict`，不会把旧页面上的复核结论写进 append-only review trail。
 
-`/api/v1/admin/operations/slo-report` 是只读服务目标报告：它复用同一套生产证据，返回 `slo_report.v1`，逐项说明 grounded rate、policy compliance、human review rate、active P0/P1、tool failure rate、feedback negative rate、staging eval freshness、triage MTTA 和 alert delivery health 是否 `met`、`at_risk`、`breached` 或 `no_data`，并给出 `error_budget_remaining`。它只输出聚合证据，不输出用户原文、工具参数、检索正文、memory facts 或反馈 comment。控制台 Overview 会显示 SLO 总状态，Settings 会列出每个 objective。
+`/api/v1/admin/operations/slo-report` 是只读服务目标报告：它复用同一套生产证据，返回 `slo_report.v1`，逐项说明 grounded rate、policy compliance、human review rate、active P0/P1、tool failure rate、feedback negative rate、staging eval freshness、triage MTTA、alert delivery health 和 automation execution failure rate 是否 `met`、`at_risk`、`breached` 或 `no_data`，并给出 `error_budget_remaining`。它只输出聚合证据，不输出用户原文、工具参数、检索正文、memory facts、自动化 action id 或反馈 comment。控制台 Overview 会显示 SLO 总状态，Settings 会列出每个 objective。
 
-`/api/v1/admin/operations/automation-plan` 是只读运营自动化计划：它在同一个证据窗口里汇总 active P0/P1 alert、webhook/outbox 状态、dead-letter delivery、缺回执 sent delivery、incident brief、regression draft、promotion gate、tool audit、feedback、retrieval grounding 和 staging eval gate，然后返回 `ops_automation.v1`。每条 action 都包含 title、detail、priority、`safe_to_auto_execute`、所需 scope、可调用的 method/path/query/body，以及不含用户原文的 evidence。它不会自己改 triage、不会发 webhook、不会跑 eval；真正执行必须由有 scope 的控制台、cron 或值班机器人显式调用返回的 command。控制台执行 auto-safe action 后会调用 `/api/v1/admin/operations/automation-executions` 写入执行台账，只保存 action kind、状态、command 指纹、body key/hash 和结果摘要，不保存 raw command body 或 raw result。Settings 会通过同一个后端列表接口展示最近执行历史，并支持按 action kind、status、source、actor 过滤，方便排查 cron、值班机器人、API 和控制台自动化动作。
+`/api/v1/admin/operations/automation-plan` 是只读运营自动化计划：它在同一个证据窗口里汇总 active P0/P1 alert、webhook/outbox 状态、dead-letter delivery、缺回执 sent delivery、incident brief、regression draft、promotion gate、tool audit、feedback、retrieval grounding 和 staging eval gate，然后返回 `ops_automation.v1`。每条 action 都包含 title、detail、priority、`safe_to_auto_execute`、所需 scope、可调用的 method/path/query/body，以及不含用户原文的 evidence。它不会自己改 triage、不会发 webhook、不会跑 eval；真正执行必须由有 scope 的控制台、cron 或值班机器人显式调用返回的 command。控制台执行 auto-safe action 后会调用 `/api/v1/admin/operations/automation-executions` 写入执行台账，只保存 action kind、状态、command 指纹、body key/hash 和结果摘要，不保存 raw command body 或 raw result。`/api/v1/admin/operations/automation-executions/summary` 会按时间窗口聚合 completed/failed/rejected、source 和 failure rate；Settings 会展示 24h execution health，并支持按 action kind、status、source、actor 查询执行历史，方便排查 cron、值班机器人、API 和控制台自动化动作。
 
 `/api/v1/admin/promotion/decisions` 会重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
 

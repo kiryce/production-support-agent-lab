@@ -216,6 +216,60 @@ def test_prometheus_metrics_exports_alert_delivery_outbox_health(tmp_path):
     assert "dispatcher-private-host-123" not in body
 
 
+def test_prometheus_metrics_exports_operations_automation_execution_health(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    event_store.append_operations_automation_execution(
+        tenant_id="demo_tenant",
+        actor_user_id="cron_private_actor",
+        action_id="ops_private_action",
+        action_kind="dispatch_alert_deliveries",
+        title="Dispatch alert deliveries",
+        status="failed",
+        safe_to_auto_execute=True,
+        command_method="POST",
+        command_path="/api/v1/admin/monitor/alert-deliveries/dispatch",
+        command_query={},
+        command_body_keys=["limit"],
+        command_body_hash="PRIVATE_body_hash",
+        command_fingerprint="PRIVATE_fingerprint",
+        result_summary="Automation action failed.",
+        error_detail="PRIVATE webhook error",
+        source="cron",
+    )
+    event_store.append_operations_automation_execution(
+        tenant_id="demo_tenant",
+        actor_user_id="console_operator",
+        action_id="ops_completed",
+        action_kind="inspect_tool_audit",
+        title="Inspect tool audit",
+        status="completed",
+        safe_to_auto_execute=True,
+        command_method="GET",
+        command_path="/api/v1/admin/tools/audit",
+        command_query={"status": "failed"},
+        command_body_keys=[],
+        command_body_hash=None,
+        command_fingerprint="fingerprint",
+        result_summary="1 tool audit record(s) loaded.",
+        source="console",
+    )
+    container = _metrics_container(event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert "support_agent_operations_automation_execution_configured 1" in body
+    assert "support_agent_operations_automation_executions_window 2" in body
+    assert "support_agent_operations_automation_failed_executions_window 1" in body
+    assert "support_agent_operations_automation_failure_rate 0.5" in body
+    assert 'support_agent_operations_automation_executions_by_status{status="failed"} 1' in body
+    assert 'support_agent_operations_automation_executions_by_source{source="cron"} 1' in body
+    assert "support_agent_operations_automation_latest_execution_timestamp_seconds" in body
+    assert "support_agent_operations_automation_latest_failure_timestamp_seconds" in body
+    assert "cron_private_actor" not in body
+    assert "ops_private_action" not in body
+    assert "PRIVATE" not in body
+
+
 def test_prometheus_metrics_degrades_alert_delivery_when_receiver_misses_receipt(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     destination_hash = hash_alert_destination("https://hooks.internal.test/alerts")
