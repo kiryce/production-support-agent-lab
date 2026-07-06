@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { agentFetch, issueFrom } from "@/src/server/agentApi";
-import type { AgentFeedback, FeedbackSearchResponse, FeedbackSummary } from "@/src/shared/types";
+import type {
+  AgentFeedback,
+  FeedbackReviewQueueResponse,
+  FeedbackSearchResponse,
+  FeedbackSummary
+} from "@/src/shared/types";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
-  const limit = searchParams.get("limit") ?? "50";
+  const limit = String(clampNumber(searchParams.get("limit"), 1, 500, 50));
   const order = searchParams.get("order") === "asc" ? "asc" : "desc";
+  const staleAfterHours = clampNumber(searchParams.get("staleAfterHours"), 1, 720, 48);
   const query = {
     conversation_id: searchParams.get("conversationId"),
     run_id: searchParams.get("runId"),
@@ -20,14 +26,18 @@ export async function GET(request: NextRequest) {
   };
 
   try {
-    const [items, summary] = await Promise.all([
+    const [items, summary, reviewQueue] = await Promise.all([
       agentFetch<AgentFeedback[]>("/api/v1/admin/feedback", { query }),
-      agentFetch<FeedbackSummary>("/api/v1/admin/feedback/summary", { query })
+      agentFetch<FeedbackSummary>("/api/v1/admin/feedback/summary", { query }),
+      agentFetch<FeedbackReviewQueueResponse>("/api/v1/admin/feedback/review-queue", {
+        query: { ...query, stale_after_hours: staleAfterHours }
+      })
     ]);
     const response: FeedbackSearchResponse = {
       items,
       summary,
-      limit: Number(limit) || 50,
+      review_queue: reviewQueue,
+      limit: Number(limit),
       order
     };
     return NextResponse.json(response);
@@ -35,4 +45,12 @@ export async function GET(request: NextRequest) {
     const issue = issueFrom(error);
     return NextResponse.json({ detail: issue.detail }, { status: issue.status });
   }
+}
+
+function clampNumber(value: string | null, min: number, max: number, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }

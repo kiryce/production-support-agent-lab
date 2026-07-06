@@ -873,6 +873,18 @@ textarea:disabled {
   padding: 8px;
 }
 
+.feedback-review-stats .metric {
+  border-color: #d7e7df;
+  background: #f8faf9;
+}
+
+.feedback-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
 .feedback-comment {
   color: var(--ink-700);
   font-size: 0.83rem;

@@ -442,6 +442,17 @@ def test_event_store_persists_feedback_review_trail_append_only(tmp_path):
         rating=FeedbackRating.negative,
         reasons=["wrong_order"],
         comment="The answer referenced the wrong order.",
+        created_at=utc_now() - timedelta(hours=72),
+    )
+    unresolved = AgentFeedback(
+        tenant_id="tenant_a",
+        conversation_id="conv_feedback_review",
+        run_id="run_feedback_unresolved",
+        user_id="customer_2",
+        rating=FeedbackRating.negative,
+        reasons=["irrelevant"],
+        comment="Needs review.",
+        created_at=utc_now() - timedelta(hours=4),
     )
     acknowledged = FeedbackReviewEvent(
         tenant_id="tenant_a",
@@ -473,6 +484,7 @@ def test_event_store_persists_feedback_review_trail_append_only(tmp_path):
     )
 
     event_store.append_agent_feedback(feedback)
+    event_store.append_agent_feedback(unresolved)
     event_store.append_feedback_review(acknowledged)
     event_store.append_feedback_review(resolved)
     event_store.append_feedback_review(other_tenant)
@@ -489,6 +501,21 @@ def test_event_store_persists_feedback_review_trail_append_only(tmp_path):
         limit=1,
     )
     loaded_feedback = event_store.get_agent_feedback(feedback.id, tenant_id="tenant_a")
+    queue = event_store.feedback_review_queue(
+        tenant_id="tenant_a",
+        rating="negative",
+        order="asc",
+        stale_after_hours=24,
+    )
+    queue_by_id = {item.feedback_id: item for item in queue.items}
+    queue_without_tenant_filter = event_store.feedback_review_queue(
+        rating="negative",
+        order="asc",
+        stale_after_hours=24,
+    )
+    queue_without_tenant_by_id = {
+        item.feedback_id: item for item in queue_without_tenant_filter.items
+    }
 
     assert [event.id for event in trail] == [acknowledged.id, resolved.id]
     assert newest_first[0].id == resolved.id
@@ -496,6 +523,25 @@ def test_event_store_persists_feedback_review_trail_append_only(tmp_path):
     assert trail[1].assignee_user_id == "ops_b"
     assert loaded_feedback and loaded_feedback.rating == FeedbackRating.negative
     assert loaded_feedback.comment == "The answer referenced the wrong order."
+    assert queue.schema_version == "feedback_review_queue.v1"
+    assert queue.summary.total_count == 2
+    assert queue.summary.summary_source_count == 2
+    assert queue.summary.summary_truncated is False
+    assert queue.summary.reviewed_count == 1
+    assert queue.summary.unreviewed_count == 1
+    assert queue.summary.unresolved_count == 1
+    assert queue.summary.unassigned_unresolved_count == 1
+    assert queue.summary.stale_unresolved_count == 0
+    assert queue.summary.counts_by_status == {"resolved": 1, "unreviewed": 1}
+    assert queue.summary.newest_review_at == resolved.created_at
+    assert queue_by_id[feedback.id].current_status == "resolved"
+    assert queue_by_id[feedback.id].review_count == 2
+    assert queue_by_id[feedback.id].assignee_user_id == "ops_b"
+    assert queue_by_id[feedback.id].is_unresolved is False
+    assert queue_by_id[unresolved.id].current_status == "unreviewed"
+    assert queue_by_id[unresolved.id].is_unassigned is True
+    assert queue_without_tenant_by_id[feedback.id].current_status == "resolved"
+    assert queue_without_tenant_by_id[feedback.id].review_count == 2
 
 
 @pytest.mark.asyncio

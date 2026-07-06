@@ -442,6 +442,52 @@ export type FeedbackReviewEvent = {
   created_at: string;
 };
 
+export type FeedbackReviewQueueStatus = FeedbackReviewStatus | "unreviewed";
+
+export type FeedbackReviewQueueItem = {
+  feedback_id: string;
+  run_id: string;
+  conversation_id: string;
+  user_id: string;
+  rating: FeedbackRating;
+  reasons: string[];
+  source: "user" | "operator" | "qa";
+  feedback_created_at: string;
+  current_status: FeedbackReviewQueueStatus;
+  review_count: number;
+  latest_review_id: string | null;
+  latest_review_at: string | null;
+  assignee_user_id: string | null;
+  is_unresolved: boolean;
+  is_unassigned: boolean;
+  is_stale: boolean;
+  age_hours: number;
+};
+
+export type FeedbackReviewQueueSummary = {
+  total_count: number;
+  summary_source_count: number;
+  summary_truncated: boolean;
+  reviewed_count: number;
+  unreviewed_count: number;
+  unresolved_count: number;
+  unassigned_unresolved_count: number;
+  stale_unresolved_count: number;
+  counts_by_status: Record<string, number>;
+  oldest_unresolved_feedback_at: string | null;
+  newest_review_at: string | null;
+};
+
+export type FeedbackReviewQueueResponse = {
+  schema_version: "feedback_review_queue.v1";
+  generated_at: string;
+  stale_after_hours: number;
+  limit: number;
+  order: "asc" | "desc";
+  summary: FeedbackReviewQueueSummary;
+  items: FeedbackReviewQueueItem[];
+};
+
 export type FeedbackReasonSummary = {
   reason: string;
   count: number;
@@ -460,6 +506,7 @@ export type FeedbackSummary = {
 export type FeedbackSearchResponse = {
   items: AgentFeedback[];
   summary: FeedbackSummary;
+  review_queue: FeedbackReviewQueueResponse;
   limit: number;
   order: "asc" | "desc";
 };

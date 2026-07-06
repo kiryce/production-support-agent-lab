@@ -39,6 +39,7 @@ from support_agent_lab.memory.event_store import (
     EventStoreRetentionReport,
     FEEDBACK_EVENT_TYPE,
     FEEDBACK_REVIEW_EVENT_TYPE,
+    FeedbackReviewQueueResponse,
     FeedbackSummary,
     SQLiteBackupReport,
     StoredEvent,
@@ -4436,6 +4437,41 @@ def create_app() -> FastAPI:
             rating=rating.value if rating else None,
             created_after=created_after.isoformat() if created_after else None,
             created_before=created_before.isoformat() if created_before else None,
+        )
+
+    @app.get("/api/v1/admin/feedback/review-queue")
+    def feedback_review_queue(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+        conversation_id: Annotated[str | None, Query()] = None,
+        run_id: Annotated[str | None, Query()] = None,
+        user_id: Annotated[str | None, Query()] = None,
+        rating: Annotated[FeedbackRating | None, Query()] = None,
+        created_after: Annotated[datetime | None, Query()] = None,
+        created_before: Annotated[datetime | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+        order: Annotated[str, Query(pattern="^(asc|desc)$")] = "desc",
+        stale_after_hours: Annotated[int, Query(ge=1, le=720)] = 48,
+    ) -> FeedbackReviewQueueResponse:
+        require_admin(actor)
+        require_scope(actor, "feedback:read")
+        if not deps.event_store:
+            return FeedbackReviewQueueResponse(
+                stale_after_hours=stale_after_hours,
+                limit=limit,
+                order=order,
+            )
+        return deps.event_store.feedback_review_queue(
+            tenant_id=deps.settings.app_tenant_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            user_id=user_id,
+            rating=rating.value if rating else None,
+            created_after=created_after.isoformat() if created_after else None,
+            created_before=created_before.isoformat() if created_before else None,
+            limit=limit,
+            order=order,
+            stale_after_hours=stale_after_hours,
         )
 
     @app.get("/api/v1/admin/feedback/{feedback_id}/reviews")

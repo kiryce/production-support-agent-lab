@@ -189,6 +189,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `GET /api/v1/admin/evals/gates` | `eval:read` |
 | `GET /api/v1/admin/feedback` | `feedback:read` |
 | `GET /api/v1/admin/feedback/summary` | `feedback:read` |
+| `GET /api/v1/admin/feedback/review-queue` | `feedback:read`. Returns compact current-state/backlog projection without comments or review notes. |
 | `GET /api/v1/admin/feedback/{feedback_id}/reviews` | `feedback:read` |
 | `POST /api/v1/admin/feedback/{feedback_id}/reviews` | `feedback:read`, `feedback:write` |
 | `GET /api/v1/admin/promotion/gate` | `admin:read`, `monitor:read`, `audit:read`, `eval:read`, `feedback:read`. Read-only release preflight. |
@@ -222,6 +223,8 @@ retrieval bodies, memory facts, feedback comments, feedback review notes,
 triage notes, and alert delivery error text.
 
 `POST /api/v1/agent/runs/{run_id}/feedback` lets the original actor attach a positive or negative rating, normalized reason codes, and a short comment to their own persisted run. It requires `feedback:write`, appends an `agent.response.feedback` event, and does not mutate the run trace. `source=user` is the default. `source=operator` or `source=qa` requires an admin actor; cross-user feedback must use one of those non-user sources so operators do not impersonate end users.
+
+`GET /api/v1/admin/feedback/review-queue` is the production feedback backlog projection. It derives current status, unresolved count, unassigned unresolved count, stale unresolved count, latest assignee, and review counts from append-only events. The projection deliberately omits feedback comments, review notes, and raw event payloads; use the single-record review trail only when an operator opens a specific feedback record.
 
 `GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` is the production feedback triage loop. Reviews are append-only `agent.response.feedback.reviewed` events with status (`acknowledged`, `investigating`, `resolved`, or `dismissed`), assignee, actor, and operator note. The original feedback event is never mutated, so audit export, incident timeline, regression-draft generation, and promotion checks can replay the same history.
 

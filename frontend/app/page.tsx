@@ -76,6 +76,7 @@ import type {
   AgentRunTrace,
   AgentFeedback,
   FeedbackReviewEvent,
+  FeedbackReviewQueueStatus,
   FeedbackReviewStatus,
   AlertDispatchReport,
   AlertDeliveryRecord,
@@ -655,10 +656,7 @@ export default function Home() {
       }
       const reviews = data as FeedbackReviewEvent[];
       setFeedbackReviews(reviews);
-      const latestAssigned = [...reviews].reverse().find((review) => review.assignee_user_id);
-      if (latestAssigned?.assignee_user_id) {
-        setFeedbackReviewAssignee(latestAssigned.assignee_user_id);
-      }
+      setFeedbackReviewAssignee(reviews.at(-1)?.assignee_user_id ?? "");
     } catch (nextError) {
       if (feedbackReviewRequestId.current !== requestId) {
         return;
@@ -1293,7 +1291,10 @@ export default function Home() {
       );
       setFeedbackReviewAssignee(review.assignee_user_id ?? "");
       setFeedbackReviewNote("");
-      await loadSnapshot({ runId: feedback.run_id, alertKey: selectedAlertKey });
+      await Promise.all([
+        loadSnapshot({ runId: feedback.run_id, alertKey: selectedAlertKey }),
+        searchFeedback()
+      ]);
     } catch (nextError) {
       if (feedbackReviewRequestId.current !== requestId) {
         return;
@@ -3819,7 +3820,12 @@ function FeedbackWorkbenchPanel({
 }) {
   const items = results?.items ?? [];
   const summary = results?.summary ?? null;
+  const reviewQueue = results?.review_queue ?? null;
   const topReasons = summary?.counts_by_reason.slice(0, 4) ?? [];
+  const reviewQueueByFeedbackId = useMemo(
+    () => new Map((reviewQueue?.items ?? []).map((item) => [item.feedback_id, item])),
+    [reviewQueue]
+  );
   return (
     <aside className="alerts-panel run-workbench feedback-workbench">
       <div className="panel-heading">
@@ -3904,6 +3910,15 @@ function FeedbackWorkbenchPanel({
         <Metric label="Window" value={summary?.window_start ? "filtered" : "all"} />
       </div>
 
+      {reviewQueue ? (
+        <div className="run-search-stats feedback-review-stats" aria-label="Feedback review backlog stats">
+          <Metric label="Open" value={String(reviewQueue.summary.unresolved_count)} />
+          <Metric label="Unassigned" value={String(reviewQueue.summary.unassigned_unresolved_count)} />
+          <Metric label="Stale" value={String(reviewQueue.summary.stale_unresolved_count)} />
+          <Metric label="Reviewed" value={String(reviewQueue.summary.reviewed_count)} />
+        </div>
+      ) : null}
+
       {topReasons.length ? (
         <div className="tool-summary-list">
           {topReasons.map((reason) => (
@@ -3929,6 +3944,7 @@ function FeedbackWorkbenchPanel({
         ) : null}
         {items.map((feedback) => {
           const isSelected = feedback.id === selectedFeedbackId;
+          const reviewState = reviewQueueByFeedbackId.get(feedback.id) ?? null;
           return (
             <div className="monitor-event-result" key={feedback.id}>
               <button
@@ -3938,18 +3954,27 @@ function FeedbackWorkbenchPanel({
                 aria-pressed={isSelected}
               >
                 <div className="run-result-top">
-                  <Badge tone={feedback.rating === "positive" ? "success" : "danger"}>{feedback.rating}</Badge>
+                  <div className="feedback-card-badges">
+                    <Badge tone={feedback.rating === "positive" ? "success" : "danger"}>{feedback.rating}</Badge>
+                    {reviewState ? (
+                      <Badge tone={feedbackReviewQueueTone(reviewState.current_status)}>
+                        {reviewState.current_status}
+                      </Badge>
+                    ) : null}
+                  </div>
                   <time title={feedback.created_at}>{ageLabel(feedback.created_at)}</time>
                 </div>
                 <strong>{feedback.run_id}</strong>
                 <span>{feedback.conversation_id}</span>
-                {feedback.reasons.length ? (
+                {feedback.reasons.length || reviewState ? (
                   <div className="tag-row">
                     {feedback.reasons.slice(0, 4).map((reason) => (
                       <Badge tone={feedback.rating === "negative" ? "warn" : "success"} key={reason}>
                         {reason}
                       </Badge>
                     ))}
+                    {reviewState?.is_unassigned ? <Badge tone="warn">unassigned</Badge> : null}
+                    {reviewState?.is_stale ? <Badge tone="danger">stale</Badge> : null}
                   </div>
                 ) : null}
                 {feedback.comment ? <p className="feedback-comment">{feedback.comment}</p> : null}
@@ -3957,6 +3982,8 @@ function FeedbackWorkbenchPanel({
                   <span>{feedback.user_id}</span>
                   <span>{feedback.source}</span>
                   <span>{feedback.id}</span>
+                  {reviewState ? <span>{reviewState.review_count} review events</span> : null}
+                  {reviewState?.assignee_user_id ? <span>assignee {reviewState.assignee_user_id}</span> : null}
                 </div>
               </button>
               {isSelected ? (
@@ -4167,6 +4194,15 @@ function feedbackReviewTone(
     return "neutral";
   }
   return "warn";
+}
+
+function feedbackReviewQueueTone(
+  status: FeedbackReviewQueueStatus
+): "neutral" | "success" | "warn" | "danger" {
+  if (status === "unreviewed") {
+    return "danger";
+  }
+  return feedbackReviewTone(status);
 }
 
 function RunWorkbenchPanel({

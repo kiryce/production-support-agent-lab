@@ -18,6 +18,7 @@ from support_agent_lab.models import (
     EvalGateRecord,
     EvalReport,
     FeedbackRating,
+    FeedbackReviewEvent,
     IntentType,
     MonitorAlertStatus,
     MonitorAlertTriageEvent,
@@ -1957,6 +1958,11 @@ def test_admin_can_review_feedback_append_only(tmp_path, monkeypatch):
             headers={"X-Demo-Role": "admin"},
             params={"order": "asc"},
         )
+        queue = client.get(
+            "/api/v1/admin/feedback/review-queue",
+            headers={"X-Demo-Role": "admin"},
+            params={"run_id": trace_id, "stale_after_hours": 1},
+        )
         listed = client.get(
             "/api/v1/admin/feedback",
             headers={"X-Demo-Role": "admin"},
@@ -1982,6 +1988,16 @@ def test_admin_can_review_feedback_append_only(tmp_path, monkeypatch):
     assert trail.status_code == 200
     assert [event["status"] for event in trail.json()] == ["acknowledged", "resolved"]
     assert [event["feedback_id"] for event in trail.json()] == [feedback["id"], feedback["id"]]
+    assert queue.status_code == 200
+    queue_body = queue.json()
+    serialized_queue = json.dumps(queue_body, ensure_ascii=False)
+    assert queue_body["schema_version"] == "feedback_review_queue.v1"
+    assert queue_body["summary"]["reviewed_count"] == 1
+    assert queue_body["summary"]["counts_by_status"] == {"resolved": 1}
+    assert queue_body["items"][0]["feedback_id"] == feedback["id"]
+    assert queue_body["items"][0]["current_status"] == "resolved"
+    assert "actor_user_id" not in queue_body["items"][0]
+    assert "PRIVATE review note should not leak" not in serialized_queue
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == feedback["id"]
     assert listed.json()[0]["rating"] == "negative"
@@ -2102,6 +2118,10 @@ def test_production_feedback_review_requires_read_and_write_scopes(tmp_path, mon
             f"/api/v1/admin/feedback/{feedback['id']}/reviews",
             headers=_production_headers(scopes="monitor:read"),
         )
+        queue_missing_read = client.get(
+            "/api/v1/admin/feedback/review-queue",
+            headers=_production_headers(scopes="monitor:read"),
+        )
         missing_write = client.post(
             f"/api/v1/admin/feedback/{feedback['id']}/reviews",
             headers=_production_headers(scopes="feedback:read"),
@@ -2135,12 +2155,19 @@ def test_production_feedback_review_requires_read_and_write_scopes(tmp_path, mon
             headers=_production_headers(scopes="events:read,feedback:read"),
             params={"event_type": "agent.response.feedback.reviewed"},
         )
+        queue_allowed = client.get(
+            "/api/v1/admin/feedback/review-queue",
+            headers=_production_headers(scopes="feedback:read"),
+            params={"run_id": message["trace_id"]},
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
 
     assert missing_read.status_code == 403
     assert missing_read.json()["detail"] == "Missing required scope: feedback:read"
+    assert queue_missing_read.status_code == 403
+    assert queue_missing_read.json()["detail"] == "Missing required scope: feedback:read"
     assert missing_write.status_code == 403
     assert missing_write.json()["detail"] == "Missing required scope: feedback:write"
     assert allowed.status_code == 200
@@ -2157,6 +2184,9 @@ def test_production_feedback_review_requires_read_and_write_scopes(tmp_path, mon
     assert raw_review_allowed.status_code == 200
     assert raw_review_allowed.json()[0]["event_type"] == "agent.response.feedback.reviewed"
     assert raw_review_allowed.json()[0]["payload"]["note"] == "Checking regression coverage."
+    assert queue_allowed.status_code == 200
+    assert queue_allowed.json()["summary"]["reviewed_count"] == 1
+    assert queue_allowed.json()["items"][0]["current_status"] == "investigating"
 
 
 def test_admin_can_list_persisted_events():
@@ -2226,6 +2256,28 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
             created_at=created_at,
         )
     )
+    feedback = AgentFeedback(
+        tenant_id="demo_tenant",
+        conversation_id="conv_sensitive_export",
+        run_id="run_sensitive_export",
+        user_id="user_sensitive_export",
+        rating=FeedbackRating.negative,
+        reasons=["wrong_order"],
+        comment="PRIVATE feedback comment should not leak into audit export.",
+    )
+    event_store.append_agent_feedback(feedback)
+    event_store.append_feedback_review(
+        FeedbackReviewEvent(
+            tenant_id="demo_tenant",
+            feedback_id=feedback.id,
+            conversation_id=feedback.conversation_id,
+            run_id=feedback.run_id,
+            status="investigating",
+            assignee_user_id="assignee_sensitive_review",
+            actor_user_id="operator_sensitive_review",
+            note="PRIVATE review note should not leak into audit export.",
+        )
+    )
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
@@ -2240,18 +2292,31 @@ def test_admin_can_export_sanitized_audit_ndjson(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
-    assert response.headers["x-audit-export-records"] == "2"
+    assert response.headers["x-audit-export-records"] == "4"
     assert "4111" not in response.text
     assert "A1001" not in response.text
+    assert "PRIVATE feedback comment should not leak" not in response.text
+    assert "PRIVATE review note should not leak" not in response.text
     assert "user_sensitive_export" not in response.text
     assert "operator_sensitive_export" not in response.text
+    assert "operator_sensitive_review" not in response.text
+    assert "assignee_sensitive_review" not in response.text
     rows = [json.loads(line) for line in response.text.splitlines()]
     assert {row["record_type"] for row in rows} == {"event", "tool_audit"}
-    event_row = next(row for row in rows if row["record_type"] == "event")
+    event_row = next(row for row in rows if row.get("event_type") == "message.user")
+    feedback_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback")
+    review_row = next(row for row in rows if row.get("event_type") == "agent.response.feedback.reviewed")
     tool_row = next(row for row in rows if row["record_type"] == "tool_audit")
     assert event_row["event_type"] == "message.user"
     assert "content" not in event_row["payload_summary"]
     assert event_row["correlation"]["user_hash"]
+    assert feedback_row["payload_summary"]["rating"] == "negative"
+    assert feedback_row["payload_summary"]["reasons"] == ["wrong_order"]
+    assert "comment" not in feedback_row["payload_summary"]
+    assert review_row["payload_summary"]["status"] == "investigating"
+    assert "note" not in review_row["payload_summary"]
+    assert "assignee_user_id" not in review_row["payload_summary"]
+    assert "actor_user_id" not in review_row["payload_summary"]
     assert tool_row["tool_name"] == "order.get"
     assert tool_row["argument_hash"] == "argument_hash_only"
     assert tool_row["correlation"]["user_hash"]

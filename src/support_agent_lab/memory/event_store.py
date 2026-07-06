@@ -71,6 +71,50 @@ class FeedbackSummary(BaseModel):
     window_end: str | None = None
 
 
+class FeedbackReviewQueueItem(BaseModel):
+    feedback_id: str
+    run_id: str
+    conversation_id: str
+    user_id: str
+    rating: str
+    reasons: list[str] = Field(default_factory=list)
+    source: str
+    feedback_created_at: datetime
+    current_status: str
+    review_count: int = 0
+    latest_review_id: str | None = None
+    latest_review_at: datetime | None = None
+    assignee_user_id: str | None = None
+    is_unresolved: bool = True
+    is_unassigned: bool = True
+    is_stale: bool = False
+    age_hours: float = 0.0
+
+
+class FeedbackReviewQueueSummary(BaseModel):
+    total_count: int = 0
+    summary_source_count: int = 0
+    summary_truncated: bool = False
+    reviewed_count: int = 0
+    unreviewed_count: int = 0
+    unresolved_count: int = 0
+    unassigned_unresolved_count: int = 0
+    stale_unresolved_count: int = 0
+    counts_by_status: dict[str, int] = Field(default_factory=dict)
+    oldest_unresolved_feedback_at: datetime | None = None
+    newest_review_at: datetime | None = None
+
+
+class FeedbackReviewQueueResponse(BaseModel):
+    schema_version: str = "feedback_review_queue.v1"
+    generated_at: datetime = Field(default_factory=utc_now)
+    stale_after_hours: int = 48
+    limit: int = 100
+    order: str = "desc"
+    summary: FeedbackReviewQueueSummary = Field(default_factory=FeedbackReviewQueueSummary)
+    items: list[FeedbackReviewQueueItem] = Field(default_factory=list)
+
+
 class SQLiteBackupReport(BaseModel):
     source_path: str
     backup_path: str
@@ -359,6 +403,183 @@ class SQLiteEventStore:
             ],
             window_start=totals["window_start"],
             window_end=totals["window_end"],
+        )
+
+    def count_agent_feedback(
+        self,
+        *,
+        tenant_id: str | None = None,
+        conversation_id: str | None = None,
+        run_id: str | None = None,
+        user_id: str | None = None,
+        rating: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+    ) -> int:
+        params, clauses = self._feedback_filter_params(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            user_id=user_id,
+            rating=rating,
+            created_after=created_after,
+            created_before=created_before,
+        )
+        sql = "select count(*) as total_count from events where event_type = ?"
+        query_params: list[Any] = [FEEDBACK_EVENT_TYPE, *params]
+        if clauses:
+            sql += " and " + " and ".join(clauses)
+        with self._connect() as conn:
+            row = conn.execute(sql, query_params).fetchone()
+        return int(row["total_count"] or 0)
+
+    def feedback_review_queue(
+        self,
+        *,
+        tenant_id: str | None = None,
+        conversation_id: str | None = None,
+        run_id: str | None = None,
+        user_id: str | None = None,
+        rating: str | None = None,
+        created_after: str | None = None,
+        created_before: str | None = None,
+        limit: int = 100,
+        order: str = "desc",
+        stale_after_hours: int = 48,
+    ) -> FeedbackReviewQueueResponse:
+        filtered_count = self.count_agent_feedback(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            user_id=user_id,
+            rating=rating,
+            created_after=created_after,
+            created_before=created_before,
+        )
+        summary_limit = 5000
+        summary_source_count = min(filtered_count, summary_limit)
+        feedback_for_summary = self.list_agent_feedback(
+            tenant_id=tenant_id,
+            conversation_id=conversation_id,
+            run_id=run_id,
+            user_id=user_id,
+            rating=rating,
+            created_after=created_after,
+            created_before=created_before,
+            limit=max(summary_source_count, limit),
+            order=order,
+        )
+        if not feedback_for_summary:
+            return FeedbackReviewQueueResponse(
+                stale_after_hours=stale_after_hours,
+                limit=limit,
+                order=order,
+                summary=FeedbackReviewQueueSummary(
+                    total_count=filtered_count,
+                    summary_source_count=0,
+                    summary_truncated=False,
+                ),
+            )
+
+        feedback_ids = [feedback.id for feedback in feedback_for_summary]
+        placeholders = ", ".join("?" for _ in feedback_ids)
+        sql = f"""
+            select payload_json
+            from events
+            where event_type = ?
+              and json_extract(payload_json, '$.feedback_id') in ({placeholders})
+        """
+        params: list[Any] = [FEEDBACK_REVIEW_EVENT_TYPE, *feedback_ids]
+        if tenant_id:
+            sql += " and tenant_id = ?"
+            params.append(tenant_id)
+        sql += " order by created_at asc, rowid asc"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        reviews_by_feedback: dict[tuple[str, str], list[FeedbackReviewEvent]] = {
+            (feedback.tenant_id, feedback.id): [] for feedback in feedback_for_summary
+        }
+        for row in rows:
+            review = FeedbackReviewEvent.model_validate(json.loads(row["payload_json"]))
+            review_key = (review.tenant_id, review.feedback_id)
+            if review_key in reviews_by_feedback:
+                reviews_by_feedback[review_key].append(review)
+
+        generated_at = utc_now()
+        stale_cutoff = generated_at - timedelta(hours=stale_after_hours)
+        counts_by_status: dict[str, int] = {}
+        oldest_unresolved_feedback_at: datetime | None = None
+        newest_review_at: datetime | None = None
+        reviewed_count = 0
+        unresolved_count = 0
+        unassigned_unresolved_count = 0
+        stale_unresolved_count = 0
+
+        all_items: list[FeedbackReviewQueueItem] = []
+        for feedback in feedback_for_summary:
+            reviews = reviews_by_feedback[(feedback.tenant_id, feedback.id)]
+            latest = reviews[-1] if reviews else None
+            status = latest.status if latest else "unreviewed"
+            is_unresolved = status in {"unreviewed", "acknowledged", "investigating"}
+            is_unassigned = is_unresolved and not (latest and latest.assignee_user_id)
+            is_stale = is_unresolved and feedback.created_at <= stale_cutoff
+            age_hours = max((generated_at - feedback.created_at).total_seconds() / 3600, 0)
+            counts_by_status[status] = counts_by_status.get(status, 0) + 1
+            if latest:
+                reviewed_count += 1
+                if newest_review_at is None or latest.created_at > newest_review_at:
+                    newest_review_at = latest.created_at
+            if is_unresolved:
+                unresolved_count += 1
+                if oldest_unresolved_feedback_at is None or feedback.created_at < oldest_unresolved_feedback_at:
+                    oldest_unresolved_feedback_at = feedback.created_at
+            if is_unassigned:
+                unassigned_unresolved_count += 1
+            if is_stale:
+                stale_unresolved_count += 1
+            all_items.append(
+                FeedbackReviewQueueItem(
+                    feedback_id=feedback.id,
+                    run_id=feedback.run_id,
+                    conversation_id=feedback.conversation_id,
+                    user_id=feedback.user_id,
+                    rating=feedback.rating.value,
+                    reasons=feedback.reasons,
+                    source=feedback.source,
+                    feedback_created_at=feedback.created_at,
+                    current_status=status,
+                    review_count=len(reviews),
+                    latest_review_id=latest.id if latest else None,
+                    latest_review_at=latest.created_at if latest else None,
+                    assignee_user_id=latest.assignee_user_id if latest else None,
+                    is_unresolved=is_unresolved,
+                    is_unassigned=is_unassigned,
+                    is_stale=is_stale,
+                    age_hours=round(age_hours, 2),
+                )
+            )
+
+        summary = FeedbackReviewQueueSummary(
+            total_count=filtered_count,
+            summary_source_count=len(all_items),
+            summary_truncated=filtered_count > len(all_items),
+            reviewed_count=reviewed_count,
+            unreviewed_count=counts_by_status.get("unreviewed", 0),
+            unresolved_count=unresolved_count,
+            unassigned_unresolved_count=unassigned_unresolved_count,
+            stale_unresolved_count=stale_unresolved_count,
+            counts_by_status=counts_by_status,
+            oldest_unresolved_feedback_at=oldest_unresolved_feedback_at,
+            newest_review_at=newest_review_at,
+        )
+        return FeedbackReviewQueueResponse(
+            generated_at=generated_at,
+            stale_after_hours=stale_after_hours,
+            limit=limit,
+            order=order,
+            summary=summary,
+            items=all_items[:limit],
         )
 
     def _feedback_filter_params(

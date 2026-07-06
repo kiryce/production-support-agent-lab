@@ -211,7 +211,7 @@ curl "http://127.0.0.1:8000/api/v1/admin/monitor/alerts/agent_2026_07_lab:genera
 
 生产模式下，读 monitor summary/events/triage history 需要 `monitor:read`，写 triage action 需要 `monitor:write`。`admin` role 只是进入管理面的身份标记，不替代 scope。
 
-用户或坐席给单次回答打 thumbs up/down 时，`POST /api/v1/agent/runs/{run_id}/feedback` 会写入 `agent.response.feedback` 事件。管理侧用 `GET /api/v1/admin/feedback` 查明细，用 `GET /api/v1/admin/feedback/summary` 看 negative rate 和 reason 分布，再用 `GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` 追加 `acknowledged`、`investigating`、`resolved` 或 `dismissed` 的复核事件。负反馈本身不直接等同于告警，因为它可能是业务预期、用户不满或真实错误；正确流程是先打开关联 run trace，看 intent、route、tool、retrieval 和 policy，记录 review trail，再用 `POST /api/v1/admin/evals/regression-drafts` 传入 `run_id` + `feedback_id` 生成可审阅的 regression draft。
+用户或坐席给单次回答打 thumbs up/down 时，`POST /api/v1/agent/runs/{run_id}/feedback` 会写入 `agent.response.feedback` 事件。管理侧用 `GET /api/v1/admin/feedback` 查明细，用 `GET /api/v1/admin/feedback/summary` 看 negative rate 和 reason 分布，用 `GET /api/v1/admin/feedback/review-queue` 看未解决、未分配、过期和已复核积压，再用 `GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` 追加 `acknowledged`、`investigating`、`resolved` 或 `dismissed` 的复核事件。负反馈本身不直接等同于告警，因为它可能是业务预期、用户不满或真实错误；正确流程是先看队列优先级，再打开关联 run trace，看 intent、route、tool、retrieval 和 policy，记录 review trail，再用 `POST /api/v1/admin/evals/regression-drafts` 传入 `run_id` + `feedback_id` 生成可审阅的 regression draft。队列接口只返回状态投影和计数，不返回用户 comment、operator note 或 raw payload；单条 review trail 才用于人工复核详情。
 
 主动通知走 durable outbox，而不是在 chat 请求里同步调用 webhook：
 

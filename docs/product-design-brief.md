@@ -22,6 +22,7 @@ The console should help an on-call operator or Agent beginner answer:
   execute automatically?
 - Are the service objectives healthy, at risk, breached, or missing enough data?
 - Has someone acknowledged, investigated, or resolved a monitor alert?
+- Which feedback records are unresolved, unassigned, stale, or already reviewed?
 - Has a negative feedback record been acknowledged, assigned, investigated, or resolved?
 - Did proactive alert delivery fail, and should a dead-letter row be replayed or closed?
 
@@ -46,6 +47,7 @@ The console should help an on-call operator or Agent beginner answer:
 | Operations automation | `GET /api/v1/admin/operations/automation-plan` | Prioritized next-action plan with runnable commands, scopes, guardrails, and auto-execution safety labels. |
 | Event log | `GET /api/v1/admin/events?conversation_id=...` | Auditable event stream for messages, runs, monitor, and triage. |
 | Memory replay | `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` | Rebuilds conversation facts after restart. |
+| Feedback review queue | `GET /api/v1/admin/feedback/review-queue` | Compact backlog projection for unresolved, unassigned, stale, and reviewed response feedback. |
 | Feedback reviews | `GET/POST /api/v1/admin/feedback/{feedback_id}/reviews` | Append-only operator review trail for response feedback. |
 
 ## Design QA evidence

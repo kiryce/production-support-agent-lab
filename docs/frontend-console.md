@@ -77,19 +77,21 @@ real local FastAPI endpoints:
 17. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.
-18. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
+18. `GET /api/v1/admin/feedback/review-queue` when the `Feedback` workbench
+   shows unresolved, unassigned, stale, and reviewed backlog metrics.
+19. `GET /api/v1/admin/feedback/{feedback_id}/reviews` and
    `POST /api/v1/admin/feedback/{feedback_id}/reviews` when the `Feedback`
    workbench loads or records the append-only operator review trail.
-19. `GET /api/v1/admin/promotion/decisions` and
+20. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
    append-only release decisions tied to a fresh promotion-gate snapshot.
-20. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
+21. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
-21. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
+22. `GET /api/v1/admin/operations/automation-plan` when `Settings` shows the
    read-only next-action queue for monitor, delivery, release, eval, feedback,
    tool-audit, and retrieval follow-up.
-22. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
+23. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
 
 ## Production Run
@@ -172,9 +174,10 @@ machine.
   run count, and ignored event count without mutating live memory.
 - Feedback workbench backed by persisted `agent.response.feedback` and
   `agent.response.feedback.reviewed` events. It filters ratings by run,
-  user, conversation, rating, and time window, shows reason aggregates, records
-  append-only operator review states with assignee and note, and can generate a
-  regression draft from the selected feedback record.
+  user, conversation, rating, and time window, shows reason aggregates and
+  backend-derived review backlog metrics, records append-only operator review
+  states with assignee and note, and can generate a regression draft from the
+  selected feedback record.
 - Settings workbench for release and event-store operations. It expands the
   read-only promotion gate into per-check readiness, monitor, tool-audit,
   feedback, and eval evidence, records approve/reject/defer decisions as
