@@ -40,6 +40,31 @@ describe("audit export BFF route", () => {
     expect(url.searchParams.get("include_operations_automation_executions")).toBe("false");
     expect(url.searchParams.get("event_type")).toBe("message.user");
   });
+
+  it("allows automation execution rows as the only selected source", async () => {
+    process.env.AGENT_API_BASE_URL = "http://agent.internal";
+    process.env.FRONTEND_AUTH_MODE = "demo";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"record_type":"operations_automation_execution"}\n', {
+        status: 200,
+        headers: { "Content-Type": "application/x-ndjson" }
+      })
+    );
+
+    const response = await GET(
+      getRequest(
+        "/api/console/audit/export?include_events=false&include_tool_audit=false&include_event_store_operations=false&include_operations_automation_executions=true"
+      )
+    );
+
+    expect(response.status).toBe(200);
+    const [target] = fetchMock.mock.calls[0];
+    const url = new URL(String(target));
+    expect(url.searchParams.get("include_events")).toBe("false");
+    expect(url.searchParams.get("include_tool_audit")).toBe("false");
+    expect(url.searchParams.get("include_event_store_operations")).toBe("false");
+    expect(url.searchParams.get("include_operations_automation_executions")).toBe("true");
+  });
 });
 
 function getRequest(path: string) {

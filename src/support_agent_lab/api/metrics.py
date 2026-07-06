@@ -8,6 +8,7 @@ from threading import Lock
 from typing import Literal
 
 from support_agent_lab.api.rate_limit import rate_limit_backend, route_family
+from support_agent_lab.audit.export_batch import summarize_audit_export_batches
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.models import (
@@ -33,6 +34,7 @@ PROMETHEUS_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 ALERT_DELIVERY_HEALTH_STATUSES = ("ok", "queued", "degraded", "failed", "disabled", "unknown")
 ALERT_DISPATCHER_HEALTH_STATUSES = ("active", "stale", "missing", "disabled", "unknown")
 MONITOR_REVIEW_WORKER_HEALTH_STATUSES = ("active", "stale", "missing", "unknown")
+AUDIT_EXPORT_BATCH_HEALTH_STATUSES = ("fresh", "stale", "missing", "failed", "unknown")
 ALERT_DELIVERY_SEVERITIES = ("P0", "P1", "P2", "P3")
 FEEDBACK_REVIEW_STATUSES = ("unreviewed", "acknowledged", "investigating", "resolved", "dismissed")
 OPERATIONS_AUTOMATION_EXECUTION_STATUSES = ("completed", "failed", "rejected")
@@ -152,6 +154,7 @@ def render_prometheus_metrics(
     _add_http_metrics(metrics, http_metrics)
     _add_alert_delivery_metrics(metrics, deps, now=now)
     _add_monitor_review_worker_metrics(metrics, deps, now=now)
+    _add_audit_export_batch_metrics(metrics, deps, now=now)
     _add_feedback_review_metrics(metrics, deps, now=now)
     _add_operations_automation_metrics(metrics, deps, created_after=created_after)
     _add_monitor_triage_metrics(metrics, triage_metrics, now=now)
@@ -566,6 +569,78 @@ def _add_monitor_review_worker_health_metrics(
         "support_agent_monitor_review_worker_last_success_timestamp_seconds",
         last_success_at,
     )
+
+
+def _add_audit_export_batch_metrics(metrics: "_MetricWriter", deps: AppContainer, *, now: datetime) -> None:
+    metrics.add(
+        "support_agent_audit_export_batch_configured",
+        _bool(bool(deps.event_store)),
+        metric_type="gauge",
+        help_text="Whether sanitized audit export batch health can read a durable event store.",
+    )
+    summary = summarize_audit_export_batches(
+        event_store=deps.event_store,
+        tenant_id=deps.settings.app_tenant_id,
+        stale_after_seconds=deps.settings.app_audit_export_batch_stale_seconds,
+        now=now,
+    )
+    for status in AUDIT_EXPORT_BATCH_HEALTH_STATUSES:
+        metrics.add(
+            "support_agent_audit_export_batch_health_status",
+            _bool(status == summary.status),
+            {"status": status},
+            metric_type="gauge",
+            help_text="Current sanitized audit export batch health as a one-hot gauge.",
+        )
+    metrics.add(
+        "support_agent_audit_export_batch_stale_after_seconds",
+        summary.stale_after_seconds,
+        metric_type="gauge",
+        help_text="Configured age after which the latest audit export batch is considered stale.",
+    )
+    metrics.add(
+        "support_agent_audit_export_batches_window",
+        summary.total_batch_count,
+        metric_type="gauge",
+        help_text="Recent audit export batch ledger rows inspected for health.",
+    )
+    metrics.add(
+        "support_agent_audit_export_batch_failed_records",
+        summary.failed_batch_count,
+        metric_type="gauge",
+        help_text="Recent failed or rejected audit export batch ledger rows.",
+    )
+    metrics.add(
+        "support_agent_audit_export_batch_last_records",
+        summary.last_record_count,
+        metric_type="gauge",
+        help_text="Rows written by the latest sanitized audit export batch.",
+    )
+    metrics.add(
+        "support_agent_audit_export_batch_last_bytes",
+        summary.last_bytes_written,
+        metric_type="gauge",
+        help_text="Bytes written by the latest sanitized audit export batch.",
+    )
+    metrics.add(
+        "support_agent_audit_export_batch_last_partial",
+        _bool(summary.last_partial),
+        metric_type="gauge",
+        help_text="Whether the latest sanitized audit export batch reached its row limit.",
+    )
+    if summary.last_exported_at:
+        metrics.add(
+            "support_agent_audit_export_batch_last_timestamp_seconds",
+            _timestamp_seconds(summary.last_exported_at),
+            metric_type="gauge",
+            help_text="Unix timestamp for the latest sanitized audit export batch.",
+        )
+        metrics.add(
+            "support_agent_audit_export_batch_age_seconds",
+            _age_seconds(summary.last_exported_at, now),
+            metric_type="gauge",
+            help_text="Age of the latest sanitized audit export batch.",
+        )
 
 
 def _alert_delivery_health_status(

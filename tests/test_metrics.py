@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.api.metrics import render_prometheus_metrics
+from support_agent_lab.audit.export_batch import AuditExportBatchOptions, run_audit_export_batch
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.config import Settings, get_settings
 from support_agent_lab.llm.gateway import LLMGateway, LocalDeterministicProvider
@@ -295,6 +296,43 @@ def test_prometheus_metrics_exports_monitor_review_worker_health_without_worker_
     assert "support_agent_monitor_review_worker_last_heartbeat_timestamp_seconds" in body
     assert "support_agent_monitor_review_worker_heartbeat_age_seconds" in body
     assert "monitor-review-private-host-123" not in body
+
+
+def test_prometheus_metrics_exports_audit_export_batch_health_without_paths(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    event_store.append(
+        tenant_id="demo_tenant",
+        conversation_id="conv_export_metrics",
+        user_id="user_export_metrics",
+        run_id="run_export_metrics",
+        event_type="message.user",
+        payload={"role": "user", "content": "PRIVATE audit export metric payload"},
+    )
+    report = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        actor_user_id="audit_metric_actor_private",
+        owner_id="audit_metric_worker_private",
+        options=AuditExportBatchOptions(include_tool_audit=False, limit=10),
+    )
+    container = _metrics_container(event_store=event_store)
+
+    body = render_prometheus_metrics(container, source="event_store", window_hours=1)
+
+    assert "support_agent_audit_export_batch_configured 1" in body
+    assert 'support_agent_audit_export_batch_health_status{status="fresh"} 1' in body
+    assert "support_agent_audit_export_batch_last_records" in body
+    assert "support_agent_audit_export_batch_last_bytes" in body
+    assert "support_agent_audit_export_batch_last_partial 0" in body
+    assert "support_agent_audit_export_batch_last_timestamp_seconds" in body
+    assert "support_agent_audit_export_batch_age_seconds" in body
+    assert report.output_file not in body
+    assert str(tmp_path / "exports") not in body
+    assert report.content_sha256 not in body
+    assert "PRIVATE audit export metric payload" not in body
+    assert "audit_metric_actor_private" not in body
+    assert "audit_metric_worker_private" not in body
 
 
 def test_prometheus_metrics_degrades_alert_delivery_when_receiver_misses_receipt(tmp_path):

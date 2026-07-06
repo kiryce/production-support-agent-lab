@@ -85,6 +85,7 @@ import type {
   AgentRunSearchResponse,
   AgentRunTrace,
   AgentFeedback,
+  AuditExportBatchSummary,
   FeedbackReviewEvent,
   FeedbackReviewQueueItem,
   FeedbackReviewQueueStatus,
@@ -1532,7 +1533,8 @@ export default function Home() {
     if (
       !auditExportIncludeEvents &&
       !auditExportIncludeToolAudit &&
-      !auditExportIncludeEventStoreOperations
+      !auditExportIncludeEventStoreOperations &&
+      !auditExportIncludeAutomationExecutions
     ) {
       setEventOpsError("Select at least one audit source.");
       return;
@@ -2415,6 +2417,7 @@ export default function Home() {
               auditExportIncludeEventStoreOperations={auditExportIncludeEventStoreOperations}
               auditExportIncludeAutomationExecutions={auditExportIncludeAutomationExecutions}
               auditExportStatus={auditExportStatus}
+              auditExportBatch={snapshot?.auditExportBatch ?? null}
               eventRetentionDays={eventRetentionDays}
               toolAuditRetentionDays={toolAuditRetentionDays}
               idempotencyRetentionDays={idempotencyRetentionDays}
@@ -2736,6 +2739,7 @@ function OpsOverview({
   const promotionGate = snapshot?.promotionGate ?? null;
   const sloReport = snapshot?.sloReport ?? null;
   const monitorReviewWorker = snapshot?.monitorReviewWorker ?? null;
+  const auditExportBatch = snapshot?.auditExportBatch ?? null;
   return (
     <section className="ops-strip" aria-label="Operations overview">
       <div className="ops-tile">
@@ -2785,6 +2789,14 @@ function OpsOverview({
         <RefreshCw size={16} />
         <span>Review Worker</span>
         <strong>{monitorReviewWorker?.status ?? "unknown"}</strong>
+      </div>
+      <div
+        className={`ops-tile ${auditExportBatchTileClass(auditExportBatch)}`}
+        title={auditExportBatchTitle(auditExportBatch)}
+      >
+        <Download size={16} />
+        <span>Audit Export</span>
+        <strong>{auditExportBatch?.status ?? "unknown"}</strong>
       </div>
       <div className={`ops-tile ${metrics.readinessFailed ? "is-bad" : ""}`}>
         <Activity size={16} />
@@ -3764,6 +3776,7 @@ function SettingsWorkbenchPanel({
   auditExportIncludeEventStoreOperations,
   auditExportIncludeAutomationExecutions,
   auditExportStatus,
+  auditExportBatch,
   eventRetentionDays,
   toolAuditRetentionDays,
   idempotencyRetentionDays,
@@ -3842,6 +3855,7 @@ function SettingsWorkbenchPanel({
   auditExportIncludeEventStoreOperations: boolean;
   auditExportIncludeAutomationExecutions: boolean;
   auditExportStatus: string | null;
+  auditExportBatch: AuditExportBatchSummary | null;
   eventRetentionDays: string;
   toolAuditRetentionDays: string;
   idempotencyRetentionDays: string;
@@ -4372,6 +4386,7 @@ function SettingsWorkbenchPanel({
           <strong>Audit Export</strong>
           <Badge>NDJSON</Badge>
         </div>
+        <AuditExportBatchStatus summary={auditExportBatch} />
         <div className="settings-action-row">
           <label className="field-label compact">
             Limit
@@ -4575,6 +4590,50 @@ function SettingsWorkbenchPanel({
         {error ?? "Event-store operation status"}
       </div>
     </aside>
+  );
+}
+
+function AuditExportBatchStatus({ summary }: { summary: AuditExportBatchSummary | null }) {
+  if (!summary) {
+    return (
+      <div className="event-op-result audit-export-batch state-warn">
+        <div className="event-op-copy">
+          <strong>Batch unknown</strong>
+          <span>No durable audit export batch summary is available.</span>
+        </div>
+      </div>
+    );
+  }
+
+  const typeCounts = Object.entries(summary.last_record_type_counts)
+    .slice(0, 4)
+    .map(([type, count]) => `${type} ${count}`)
+    .join(" / ");
+  const heading = summary.last_partial ? `${summary.status} partial` : summary.status;
+
+  return (
+    <div className={`event-op-result audit-export-batch ${auditExportBatchResultClass(summary)}`}>
+      <div className="event-op-copy">
+        <strong>Batch {heading}</strong>
+        <span>
+          {summary.last_exported_at
+            ? `${ageLabel(summary.last_exported_at)} ago / ${summary.last_output_file ?? "no file"}`
+            : "No completed batch recorded"}
+        </span>
+      </div>
+      <div className="run-search-stats event-op-stats audit-export-batch-stats">
+        <Metric label="Records" value={String(summary.last_record_count)} />
+        <Metric label="Size" value={formatBytes(summary.last_bytes_written)} />
+        <Metric label="Failures" value={String(summary.failed_batch_count)} />
+        <Metric label="Ledger" value={summary.last_status ?? "none"} />
+      </div>
+      <div className="preflight-meta audit-export-batch-meta">
+        <span>Manifest {summary.last_manifest_file ?? "n/a"}</span>
+        <span>SHA {summary.last_content_sha256 ? summary.last_content_sha256.slice(0, 12) : "n/a"}</span>
+        <span>{typeCounts || "No record types"}</span>
+        {summary.last_error_type ? <span>Error {summary.last_error_type}</span> : null}
+      </div>
+    </div>
   );
 }
 
@@ -7558,6 +7617,41 @@ function monitorReviewWorkerTileClass(summary: MonitorReviewWorkerSummary | null
     return "is-warn";
   }
   return "";
+}
+
+function auditExportBatchTileClass(summary: AuditExportBatchSummary | null) {
+  if (!summary) {
+    return "is-warn";
+  }
+  if (summary.status === "missing" || summary.status === "stale" || summary.status === "failed") {
+    return "is-bad";
+  }
+  if (summary.status === "unknown" || summary.last_partial) {
+    return "is-warn";
+  }
+  return "";
+}
+
+function auditExportBatchResultClass(summary: AuditExportBatchSummary | null) {
+  if (!summary) {
+    return "state-warn";
+  }
+  if (summary.status === "missing" || summary.status === "stale" || summary.status === "failed") {
+    return "state-danger";
+  }
+  if (summary.status === "unknown" || summary.last_partial) {
+    return "state-warn";
+  }
+  return "state-success";
+}
+
+function auditExportBatchTitle(summary: AuditExportBatchSummary | null) {
+  if (!summary) {
+    return "Audit export batch summary unavailable";
+  }
+  const age = summary.last_exported_at ? `Last batch ${ageLabel(summary.last_exported_at)} ago` : "No completed batch";
+  const partial = summary.last_partial ? "partial" : "complete";
+  return `${age}; ${summary.last_record_count} records; ${partial}`;
 }
 
 function gateHistoryTitle(record: EvalGateRecord) {

@@ -44,9 +44,11 @@ APP_TOOL_AUDIT_RETENTION_DAYS=180
 APP_IDEMPOTENCY_RETENTION_DAYS=30
 APP_ALERT_DELIVERY_RETENTION_DAYS=90
 APP_MONITOR_REVIEW_WORKER_HEARTBEAT_STALE_SECONDS=180
+APP_AUDIT_EXPORT_DIR=./data/audit-exports
+APP_AUDIT_EXPORT_BATCH_STALE_SECONDS=86400
 ```
 
-`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, async monitor review worker heartbeats, inbound alert webhook receipt summaries, event-store operation ledger rows, and operations automation execution ledger rows. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend, alert dispatcher, and monitor review worker can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
+`APP_DATABASE_URL` currently supports SQLite. It stores the append-only event log, monitor triage events, tool idempotency records, tool audit records, alert delivery outbox, dispatcher heartbeats, async monitor review worker heartbeats, inbound alert webhook receipt summaries, event-store operation ledger rows, audit export batch ledger rows, and operations automation execution ledger rows. `SQLiteEventStore` enables WAL mode for the database file, plus a 5-second busy timeout, `synchronous=NORMAL`, and foreign-key enforcement on each connection so the backend, alert dispatcher, monitor review worker, and audit export worker can share the same database file more reliably in a single-instance deployment or staging environment. For multi-instance production, replace `SQLiteEventStore` with a Postgres/Kafka-backed implementation before scaling horizontally.
 
 Retention knobs are intentionally conservative. They control the default window for event rows, durable tool audit rows, tool idempotency replay rows, terminal alert-delivery rows, and alert webhook receipt summaries. Event rows are never deleted by the retention operation unless the operator explicitly sets `include_events=true` or passes `--include-events` in the CLI.
 
@@ -198,6 +200,7 @@ Admin role is not a wildcard. Production admin endpoints also require explicit m
 | `POST /api/v1/admin/event-store/restore-drills` | `admin:write`, `audit:read`, `events:read`; requires a server-issued `backup_token`, then copies the backup to a scratch database and verifies it without overwriting live data. |
 | `POST /api/v1/admin/event-store/retention` | `admin:write`, `audit:read`, `events:read`; dry-run by default. |
 | `GET /api/v1/admin/event-store/operations` | `admin:read`, `audit:read`, `events:read`; returns the durable event-store operation ledger without granting write access. |
+| `GET /api/v1/admin/audit/export-batches/summary` | `audit:read`, `events:read`; returns durable sanitized audit export batch health without full filesystem paths. |
 | `POST /api/v1/admin/evals/regression-drafts` | `events:read`, `monitor:read`; add `feedback:read` when `feedback_id` is supplied |
 | `POST /api/v1/admin/evals/golden` | `eval:run`; local/staging only. Disabled when `APP_ENV=production`. |
 | `POST /api/v1/admin/evals/staging` | `eval:run`; local/staging only. Runs bundled golden/security/tool/memory/routing/monitor/retrieval suites and appends suite + aggregate gate records. Disabled when `APP_ENV=production`. |
@@ -322,6 +325,22 @@ policy code. It deliberately omits user text, feedback comments, tool
 arguments, raw operation tokens, raw automation command body, raw automation
 result payload, full filesystem paths, knowledge snippets, and eval answer
 text.
+
+For production SIEM or warehouse ingestion, run
+`support-agent-audit-export-worker --interval-seconds 86400 --json` or start
+the Compose `audit` profile with
+`docker compose --profile audit up --build`. The worker reuses the same
+sanitized export rows, writes `.ndjson` plus `.manifest.json` under
+`APP_AUDIT_EXPORT_DIR`, and records `operation=audit_export_batch` in
+`event_store_operations`. The manifest contains batch id, tenant id, file
+names, path hashes, SHA-256, byte count, record count, record-type counts,
+window/options, and `partial`. It never stores full local paths, actor ids,
+user text, tool arguments, raw automation command bodies/results, or eval
+answers. `GET /api/v1/admin/audit/export-batches/summary`, the console
+Overview/Settings surfaces, `/metrics`, and the bundled Prometheus rules read
+the operation ledger to report fresh/stale/missing/failed and partial status.
+If `partial=true`, downstream consumers should not advance watermarks from
+that manifest; rerun with a narrower time window or higher `--limit`.
 
 ## Event Store Operations
 
@@ -490,6 +509,20 @@ returns only heartbeat health, active/stale worker counts, latest cycle counts,
 and last success/error type; it does not expose worker id, user text, tool
 arguments, retrieved snippets, or run ids. The stale threshold is
 `APP_MONITOR_REVIEW_WORKER_HEARTBEAT_STALE_SECONDS`, defaulting to 180 seconds.
+
+`support-agent-audit-export-worker` is the durable batch companion for
+sanitized audit exports. Run it with
+`support-agent-audit-export-worker --interval-seconds 86400 --json` or the
+Compose `audit` profile. Each cycle acquires the same
+`event_store_maintenance` operation lock used by backup, restore-drill, and
+retention, then writes an NDJSON file, a manifest, and an
+`audit_export_batch` operation ledger row. Lock conflicts are rejected and
+audited without creating partial files; failures write a safe error type and
+path hash. `GET /api/v1/admin/audit/export-batches/summary` returns recent
+batch health, last file names, counts, size, checksum, and partial status, but
+not full paths, actor ids, worker ids, customer text, or tool arguments. The
+stale threshold is `APP_AUDIT_EXPORT_BATCH_STALE_SECONDS`, defaulting to 86400
+seconds.
 
 `POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox
 dispatcher for proactive alert notification. It projects active P0/P1 alerts
@@ -716,13 +749,16 @@ HTTP request counts by method/route family/status, rate-limit decision counts,
 monitor event counts, monitor triage health by status/severity, active/stale
 alert counts, MTTA/MTTR, alert delivery outbox counts by status/severity,
 alert delivery health, alert dispatcher heartbeat health, async monitor review
-worker heartbeat health and latest cycle counts, feedback review backlog counts by current status,
-stale/unassigned unresolved feedback counts, automation execution totals/failure rate/source/status counts,
-grounded/policy/human-review rates, tool audit totals and latency summaries, adapter circuit state, LLM
-fallback counts, effective rate-limit backend, and rate-limit configuration. It does not include user ids,
-assignees, trace ids, alert keys, triage notes, feedback comments, review notes,
-automation action ids, raw automation command bodies/results, raw tool arguments,
-request bodies, retrieved snippets, or monitor summaries.
+worker heartbeat health and latest cycle counts, audit export batch health,
+last record/byte/partial counts, feedback review backlog counts by current
+status, stale/unassigned unresolved feedback counts, automation execution
+totals/failure rate/source/status counts, grounded/policy/human-review rates,
+tool audit totals and latency summaries, adapter circuit state, LLM fallback
+counts, effective rate-limit backend, and rate-limit configuration. It does
+not include user ids, assignees, trace ids, alert keys, triage notes, feedback
+comments, review notes, automation action ids, raw automation command
+bodies/results, raw tool arguments, request bodies, retrieved snippets, full
+filesystem paths, checksum labels, or monitor summaries.
 
 The minimal Prometheus example lives in `deploy/prometheus/prometheus.yml`, the
 production alert rules live in `deploy/prometheus/support-agent-alerts.yml`, and
@@ -750,6 +786,8 @@ Every rule links to a runbook section and uses only low-cardinality labels such
 as status, severity, adapter, route family, method, and decision. Do not add
 alert keys, run ids, user ids, assignees, notes, or trace ids as Prometheus
 labels; keep those details inside the authenticated console and incident APIs.
+The bundled rules include sanitized audit export batch stale, failed, and
+partial coverage through `support_agent_audit_export_batch_*` metrics.
 
 ## Startup checks
 

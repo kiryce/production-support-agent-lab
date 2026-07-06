@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { agentFetch, getConsoleConnection, issueFrom } from "@/src/server/agentApi";
 import type {
+  AuditExportBatchSummary,
   ConsoleSnapshot,
   EvalGateRecord,
   IncidentBriefResponse,
@@ -61,6 +62,10 @@ export async function GET(request: NextRequest) {
   );
   const monitorReviewWorker = await optional<MonitorReviewWorkerSummary>(
     () => agentFetch("/api/v1/admin/monitor/review-worker/summary"),
+    issues
+  );
+  const auditExportBatch = await optional<AuditExportBatchSummary>(
+    () => agentFetch("/api/v1/admin/audit/export-batches/summary"),
     issues
   );
   const promotionGate = await optional<PromotionGateResponse>(
@@ -215,6 +220,7 @@ export async function GET(request: NextRequest) {
     incidentTimeline,
     triageMetrics,
     monitorReviewWorker,
+    auditExportBatch,
     promotionGate,
     promotionDecisions: promotionDecisions ?? [],
     operationsAutomation,

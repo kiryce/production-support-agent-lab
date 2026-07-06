@@ -68,6 +68,25 @@ services:
       disable: true
     restart: unless-stopped
 
+  audit-export-worker:
+    build: .
+    profiles:
+      - audit
+    depends_on:
+      - app
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command:
+      - support-agent-audit-export-worker
+      - --interval-seconds
+      - "86400"
+      - --json
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:v3.13.0
     profiles:

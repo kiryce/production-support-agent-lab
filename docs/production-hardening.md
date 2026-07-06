@@ -11,8 +11,8 @@
 | Knowledge | HTTPKnowledgeIndex 调真实 knowledge service，内置有限重试和进程内断路器 | pgvector + BM25 + reranker |
 | OnlineMonitorAgent | 同进程 summary + SQLite event-store summary + async monitor review worker + append-only triage events + alert delivery outbox | Distributed queue worker + OLAP/dashboard + notification gateway |
 | LLMGateway | OpenAI Responses API，内置有限重试、grounded draft fallback 和进程内断路器 | Provider routing + fallback model + budget |
-| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + dispatcher/review-worker heartbeats + event-store operation ledger + automation execution ledger + operation lease lock + production rate-limit buckets; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox + distributed lease |
-| Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + `operations_automation_executions` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/operations/automation-executions` + `/api/v1/admin/operations/automation-executions/summary` + `/api/v1/admin/audit/export` | SIEM / warehouse / audit center |
+| SQLiteEventStore | local/production SQLite events + tool idempotency records + tool audit records + alert delivery outbox + dispatcher/review-worker heartbeats + event-store operation ledger + audit export batch ledger + automation execution ledger + operation lease lock + production rate-limit buckets; WAL, busy timeout, `synchronous=NORMAL` | Postgres append-only events + Kafka stream + distributed outbox + distributed lease |
+| Tool and operation audit | SQLite `tool_audit_records` + `event_store_operations` + `operations_automation_executions` + 进程内 recent audit_log + `/api/v1/admin/tools/audit` + `/api/v1/admin/event-store/operations` + `/api/v1/admin/operations/automation-executions` + `/api/v1/admin/operations/automation-executions/summary` + `/api/v1/admin/audit/export` + `support-agent-audit-export-worker` NDJSON/manifest batch | SIEM / warehouse / audit center |
 | PolicyEngine | regex + rule | PII detector + RBAC + compliance engine |
 | API auth | `X-Internal-Auth` + HMAC-signed `X-Actor-*` claims + request method/path/body hash/nonce signature + SQLite nonce replay table + local memory / production SQLite rate limit | mTLS/JWT, centralized Redis/Postgres nonce and rate-limit state, tenant isolation |
 | Trace | Pydantic object | OpenTelemetry spans |
@@ -87,6 +87,8 @@ monitor.review
 - monitor review worker: run `support-agent-monitor-review-worker --interval-seconds 30 --json` or the Compose `alerts` profile so durable `monitor.reviewed` events do not depend only on the request path
 - alert delivery outbox health: pending/in-progress/failed/dead rows, due rows, dispatcher heartbeat active/stale/missing status, and last success/dead-letter timestamp from `/metrics`
 - alert delivery worker: run `support-agent-alert-dispatcher --interval-seconds 30 --json` or the Compose `alerts` profile so P0/P1 notification does not depend on a human clicking `Dispatch now`
+- audit export batch health: fresh/stale/missing/failed status, last record/byte counts, partial flag, and failed/rejected ledger count from `/metrics` and `/api/v1/admin/audit/export-batches/summary`
+- audit export worker: run `support-agent-audit-export-worker --interval-seconds 86400 --json` or the Compose `audit` profile so SIEM/warehouse export does not depend on a browser download
 - feedback review backlog health: unresolved, unassigned unresolved, stale unresolved, reviewed/unreviewed, and bounded status counts from `/metrics`
 - automation execution health: total/completed/failed/rejected execution rows, failure rate, source counts, and latest failure timestamp from `/metrics` and `/api/v1/admin/operations/automation-executions/summary`
 - Prometheus rules: load `deploy/prometheus/support-agent-alerts.yml` through managed Prometheus or `docker compose --profile observability up --build`, and keep every alert linked to `docs/alerting-runbook.md`
@@ -98,7 +100,7 @@ monitor.review
 - local/staging 控制台可用 `/api/v1/admin/evals/staging` 重跑同一批 bundled eval suites，并把 suite + aggregate gate history 写入事件流。
 - merge/release 前检查 `/api/v1/admin/promotion/gate`，确认 readiness、monitor pressure、tool failure rate、feedback negative rate 和最新 staging eval 都没有阻断项。
 - release approver 用 `/api/v1/admin/promotion/decisions` 记录 approve/reject/defer、target version、备注和当时的 gate snapshot；blocked gate 只能通过显式 override 审计。
-- 每次 release 后把 `/api/v1/admin/audit/export` 的 NDJSON 送进 SIEM/warehouse；它只含安全摘要和哈希 correlation id。
+- 每次 release 后确认 `support-agent-audit-export-worker` 产出的 manifest 是 fresh 且 `partial=false`，再把 NDJSON 送进 SIEM/warehouse；需要临时人工导出时可用 `/api/v1/admin/audit/export`，它只含安全摘要和哈希 correlation id。
 - merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
 - 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --base-url <staging-url>`。
 - canary 1% 流量。

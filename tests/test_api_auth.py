@@ -2749,6 +2749,18 @@ def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monk
             "/api/v1/admin/audit/export",
             headers=_production_headers(scopes="audit:read,events:read"),
         )
+        summary_missing_audit = client.get(
+            "/api/v1/admin/audit/export-batches/summary",
+            headers=_production_headers(scopes="events:read"),
+        )
+        summary_missing_events = client.get(
+            "/api/v1/admin/audit/export-batches/summary",
+            headers=_production_headers(scopes="audit:read"),
+        )
+        summary_allowed = client.get(
+            "/api/v1/admin/audit/export-batches/summary",
+            headers=_production_headers(scopes="audit:read,events:read"),
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -2758,6 +2770,12 @@ def test_production_audit_export_requires_audit_and_events_scopes(tmp_path, monk
     assert missing_events.status_code == 403
     assert missing_events.json()["detail"] == "Missing required scope: events:read"
     assert allowed.status_code == 200
+    assert summary_missing_audit.status_code == 403
+    assert summary_missing_audit.json()["detail"] == "Missing required scope: audit:read"
+    assert summary_missing_events.status_code == 403
+    assert summary_missing_events.json()["detail"] == "Missing required scope: events:read"
+    assert summary_allowed.status_code == 200
+    assert summary_allowed.json()["status"] == "missing"
 
 
 def test_production_event_store_operations_requires_read_audit_and_events_scopes(tmp_path, monkeypatch):

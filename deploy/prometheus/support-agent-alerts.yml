@@ -145,6 +145,28 @@ groups:
           description: "The latest worker cycle could not review one or more completed agent runs."
           runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentmonitorreviewworkerfailures"
 
+      - alert: SupportAgentAuditExportBatchStale
+        expr: support_agent_audit_export_batch_health_status{status=~"missing|stale"} == 1
+        for: 30m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Sanitized audit export batch is missing or stale"
+          description: "No fresh durable sanitized audit export batch has been recorded within the configured stale window."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentauditexportbatchstale"
+
+      - alert: SupportAgentAuditExportBatchFailed
+        expr: support_agent_audit_export_batch_health_status{status="failed"} == 1 or support_agent_audit_export_batch_last_partial == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: production-support-agent-lab
+        annotations:
+          summary: "Sanitized audit export batch failed or was partial"
+          description: "The latest durable sanitized audit export batch failed, was rejected, or reached its row limit and should not advance downstream watermarks."
+          runbook_url: "https://github.com/kiryce/production-support-agent-lab/blob/master/docs/alerting-runbook.md#supportagentauditexportbatchfailed"
+
       - alert: SupportAgentAlertDeliveryReceiptMissing
         expr: support_agent_alert_webhook_receiver_enabled == 1 and support_agent_alert_delivery_sent_without_receipt > 0
         for: 10m

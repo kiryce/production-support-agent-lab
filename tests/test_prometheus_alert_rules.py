@@ -29,6 +29,8 @@ EXPECTED_ALERTS = {
     "SupportAgentAlertDispatcherStale",
     "SupportAgentMonitorReviewWorkerStale",
     "SupportAgentMonitorReviewWorkerFailures",
+    "SupportAgentAuditExportBatchStale",
+    "SupportAgentAuditExportBatchFailed",
     "SupportAgentAlertDeliveryReceiptMissing",
     "SupportAgentFeedbackReviewStale",
     "SupportAgentFeedbackReviewUnassigned",
@@ -55,6 +57,8 @@ EXPORTED_METRICS_USED_BY_RULES = {
     "support_agent_monitor_triage_stale_active_alerts",
     "support_agent_monitor_review_worker_health_status",
     "support_agent_monitor_review_worker_last_failed_runs",
+    "support_agent_audit_export_batch_health_status",
+    "support_agent_audit_export_batch_last_partial",
     "support_agent_rate_limit_decisions_total",
     "support_agent_tool_calls_window",
     "support_agent_tool_failure_rate",
@@ -147,7 +151,7 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     data = yaml.safe_load(COMPOSE_PATH.read_text(encoding="utf-8"))
 
     services = data["services"]
-    assert {"app", "frontend", "alert-dispatcher", "monitor-review-worker", "prometheus"} <= set(services)
+    assert {"app", "frontend", "alert-dispatcher", "monitor-review-worker", "audit-export-worker", "prometheus"} <= set(services)
     assert "profiles" not in services["app"]
     assert "profiles" not in services["frontend"]
 
@@ -181,6 +185,21 @@ def test_docker_compose_wires_optional_prometheus_observability_profile():
     assert review_worker["healthcheck"] == {"disable": True}
     assert review_worker["restart"] == "unless-stopped"
 
+    audit_export_worker = services["audit-export-worker"]
+    assert audit_export_worker["build"] == "."
+    assert audit_export_worker["profiles"] == ["audit"]
+    assert audit_export_worker["depends_on"] == ["app"]
+    assert audit_export_worker["env_file"] == [".env"]
+    assert "./data:/app/data" in audit_export_worker["volumes"]
+    assert audit_export_worker["command"] == [
+        "support-agent-audit-export-worker",
+        "--interval-seconds",
+        "86400",
+        "--json",
+    ]
+    assert audit_export_worker["healthcheck"] == {"disable": True}
+    assert audit_export_worker["restart"] == "unless-stopped"
+
     prometheus = services["prometheus"]
     assert prometheus["image"] == "prom/prometheus:v3.13.0"
     assert prometheus["profiles"] == ["observability"]
@@ -213,6 +232,10 @@ def test_prometheus_compose_docs_stay_consistent():
     assert "support-agent-alert-dispatcher" in runbook
     assert "support-agent-monitor-review-worker" in frontend
     assert "support-agent-monitor-review-worker" in runbook
+    assert "support-agent-audit-export-worker" in frontend
+    assert "support-agent-audit-export-worker" in runbook
+    assert "docker compose --profile audit up --build" in readme
+    assert "docker compose --profile audit up --build" in deployment
 
     for text in (runbook, deployment, frontend):
         assert "app:8000" in text

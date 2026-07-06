@@ -204,6 +204,33 @@ First response:
 
 Escalate when: failed counts continue across two cycles or block P0/P1 monitor event visibility.
 
+## SupportAgentAuditExportBatchStale
+
+Meaning: the durable sanitized audit export batch is missing or older than `APP_AUDIT_EXPORT_BATCH_STALE_SECONDS`.
+
+First response:
+
+- Confirm `support-agent-audit-export-worker` is running, or that the Compose `audit` profile is enabled with `docker compose --profile audit up --build`.
+- Check `/api/v1/admin/audit/export-batches/summary` for status, latest batch time, record count, file name, manifest file, and partial flag.
+- If the worker is missing but the API is healthy, run `support-agent-audit-export-worker --once --json` against the same SQLite `APP_DATABASE_URL` and `APP_AUDIT_EXPORT_DIR`.
+- Check shared data volume permissions; the worker must write NDJSON and `.manifest.json` files under the mounted audit export directory.
+
+Escalate when: downstream SIEM or warehouse ingestion depends on the batch and no fresh manifest exists after one scheduled interval.
+
+## SupportAgentAuditExportBatchFailed
+
+Meaning: the latest sanitized audit export batch failed, was rejected by the maintenance lock, or reached its row limit and marked `partial=true`.
+
+First response:
+
+- Check `/api/v1/admin/audit/export-batches/summary` and the `event_store_operations` ledger for `operation=audit_export_batch`.
+- If status is `failed`, inspect worker logs for the sanitized `error_type`, then verify database URL, output directory permissions, and available disk.
+- If status is `rejected`, another event-store maintenance operation held the lock. Wait for retention, backup, or restore-drill work to finish, then rerun the worker.
+- If the latest batch is partial, do not advance SIEM or warehouse watermarks from that manifest. Rerun with a narrower `created_after` / `created_before` window or a higher `--limit`, then verify `content_sha256`, `record_count`, and `record_type_counts` in the manifest.
+- Keep the generated `.ndjson` and `.manifest.json` together; the manifest stores file names, path hashes, SHA-256, byte count, record counts, and the partial flag without exposing full local paths.
+
+Escalate when: failed or partial batches repeat across two attempts or block compliance export delivery.
+
 ## SupportAgentAlertDeliveryReceiptMissing
 
 Meaning: the signed alert webhook receiver is enabled, but at least one sent

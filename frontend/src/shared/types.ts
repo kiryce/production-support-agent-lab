@@ -308,6 +308,25 @@ export type MonitorReviewWorkerSummary = {
   last_failed_count: number;
 };
 
+export type AuditExportBatchSummary = {
+  schema_version: "audit_export_batch_summary.v1" | string;
+  status: "fresh" | "stale" | "missing" | "failed" | "unknown" | string;
+  stale_after_seconds: number;
+  total_batch_count: number;
+  completed_batch_count: number;
+  failed_batch_count: number;
+  last_status: string | null;
+  last_exported_at: string | null;
+  last_record_count: number;
+  last_record_type_counts: Record<string, number>;
+  last_bytes_written: number;
+  last_output_file: string | null;
+  last_manifest_file: string | null;
+  last_content_sha256: string | null;
+  last_partial: boolean;
+  last_error_type: string | null;
+};
+
 export type EvalCaseDraft = {
   case_id: string;
   scenario: string;
@@ -953,6 +972,7 @@ export type ConsoleSnapshot = {
   incidentTimeline: IncidentTimelineResponse | null;
   triageMetrics: MonitorTriageMetricsResponse | null;
   monitorReviewWorker: MonitorReviewWorkerSummary | null;
+  auditExportBatch: AuditExportBatchSummary | null;
   promotionGate: PromotionGateResponse | null;
   promotionDecisions: PromotionDecisionRecord[];
   operationsAutomation: OperationsAutomationPlan | null;

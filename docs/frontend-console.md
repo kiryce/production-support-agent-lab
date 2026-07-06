@@ -131,6 +131,9 @@ real local FastAPI endpoints:
    feeds the Settings execution-health strip and SLO evidence.
 28. `GET /api/v1/admin/audit/export` when `Settings` downloads sanitized
    NDJSON for SIEM or warehouse ingestion.
+29. `GET /api/v1/admin/audit/export-batches/summary` when `Overview` and
+   `Settings` show durable audit export batch status, manifest file, counts,
+   bytes, checksum, and partial flag.
 
 ## Production Run
 
@@ -185,6 +188,17 @@ That profile starts `support-agent-alert-dispatcher` and
 `support-agent-monitor-review-worker`; the console stays a trusted operator
 surface rather than the only process responsible for durable monitoring work.
 
+To start the durable sanitized audit export batch worker with the same SQLite
+event store and shared `./data` volume, run:
+
+```bash
+docker compose --profile audit up --build
+```
+
+That profile starts `support-agent-audit-export-worker`, which writes NDJSON
+and manifest files under `APP_AUDIT_EXPORT_DIR` and records batch health in
+the event-store operation ledger.
+
 ## What The Console Shows
 
 - Monitor alert queue from `MonitorSummary`.
@@ -231,6 +245,13 @@ surface rather than the only process responsible for durable monitoring work.
   state. The backend summary includes only aggregate cycle counts such as
   inspected, reviewed, skipped, and failed runs; it does not expose worker id,
   run id, user text, tool arguments, or retrieved snippets.
+- Audit export batch health from `GET /api/v1/admin/audit/export-batches/summary`.
+  The Overview strip shows whether the latest durable sanitized export batch
+  is `fresh`, `stale`, `missing`, `failed`, or unavailable. The Settings
+  workbench shows latest file name, manifest file, record count, byte count,
+  checksum prefix, ledger status, error type, and partial flag without full
+  filesystem paths, actors, customer text, tool arguments, or automation
+  command bodies/results.
 - Delivery ledger from `GET /api/v1/admin/monitor/alert-deliveries`. The
   `Delivery` workbench tab filters outbox rows by status and lets an operator
   run `Dispatch now`, replay/requeue dead rows, or close `dead` rows through
@@ -276,8 +297,8 @@ surface rather than the only process responsible for durable monitoring work.
 - Settings workbench for release and event-store operations. It expands the
   read-only promotion gate into per-check readiness, monitor, tool-audit,
   feedback, and eval evidence, records approve/reject/defer decisions as
-  append-only audit events, downloads sanitized audit NDJSON, creates verified
-  backups through a label-only BFF call, runs restore drills through a
+  append-only audit events, shows durable audit export batch health, downloads
+  sanitized audit NDJSON, creates verified backups through a label-only BFF call, runs restore drills through a
   token-only BFF call, previews retention, and only enables apply after a
   verified backup, passed restore drill, matching dry-run report, server-issued
   tokens, and operator confirmation. The backend also requires the restore
@@ -315,8 +336,8 @@ surface rather than the only process responsible for durable monitoring work.
   context and reloads the matching backend snapshot.
 - Operations overview for active alerts, P0/P1 pressure, readiness, grounded
   rate, policy compliance, the latest persisted staging eval gate status, the
-  async monitor review worker heartbeat, SLO report status, and the read-only
-  promotion gate status.
+  async monitor review worker heartbeat, audit export batch health, SLO report
+  status, and the read-only promotion gate status.
 - Incident brief with owner, risk, recommended next actions, readiness checks,
   promotion checks, latest eval gate audit, recent gate history, and backend
   generated Markdown that can be copied or downloaded without message content,
@@ -376,6 +397,10 @@ surface rather than the only process responsible for durable monitoring work.
   rows, and operations automation execution ledger rows; raw messages,
   comments, tool arguments, automation command bodies, raw automation results,
   operation tokens, full filesystem paths, and eval answers are not included.
+  For unattended SIEM or warehouse ingestion, the production path is the
+  `support-agent-audit-export-worker` batch plus manifest. The console reads
+  `/api/v1/admin/audit/export-batches/summary` so operators can see whether the
+  latest manifest is fresh and complete before trusting downstream ingestion.
 
 The console is intentionally detail-heavy because it is meant to teach how a
 production-shaped agent behaves across intent detection, routing, tools, RAG,

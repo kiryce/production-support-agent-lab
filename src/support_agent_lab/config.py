@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     app_idempotency_retention_days: int = Field(default=30, ge=1, le=3650)
     app_alert_delivery_retention_days: int = Field(default=90, ge=7, le=3650)
     app_event_store_backup_dir: str = "./data/backups"
+    app_audit_export_dir: str = "./data/audit-exports"
+    app_audit_export_batch_stale_seconds: int = Field(default=86400, ge=300, le=2592000)
     app_event_store_operation_lock_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

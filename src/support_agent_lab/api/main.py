@@ -41,6 +41,12 @@ from support_agent_lab.api.rate_limit import (
     should_rate_limit,
 )
 from support_agent_lab.api.metrics import InMemoryHTTPMetrics, PROMETHEUS_CONTENT_TYPE, render_prometheus_metrics
+from support_agent_lab.audit.export import (
+    AUDIT_EXPORT_MEDIA_TYPE,
+    audit_export_rows as build_audit_export_rows,
+    ndjson as audit_ndjson,
+)
+from support_agent_lab.audit.export_batch import AuditExportBatchSummary, summarize_audit_export_batches
 from support_agent_lab.evals.suites import STAGING_EVAL_SUITES
 from support_agent_lab.memory.event_store import (
     EVAL_GATE_EVENT_TYPE,
@@ -440,7 +446,6 @@ class SloReportResponse(BaseModel):
 
 
 PROMOTION_DECISION_EVENT_TYPE = "release.promotion.decision"
-AUDIT_EXPORT_MEDIA_TYPE = "application/x-ndjson"
 EVENT_STORE_BACKUP_TOKEN_KIND = "event_store.backup.v1"
 EVENT_STORE_RESTORE_DRILL_TOKEN_KIND = "event_store.restore_drill.v1"
 EVENT_STORE_RETENTION_PREVIEW_TOKEN_KIND = "event_store.retention_preview.v1"
@@ -2125,6 +2130,14 @@ def _operations_automation_execution_summary(
     )
 
 
+def _audit_export_batch_summary(deps: AppContainer) -> AuditExportBatchSummary:
+    return summarize_audit_export_batches(
+        event_store=deps.event_store,
+        tenant_id=deps.settings.app_tenant_id,
+        stale_after_seconds=deps.settings.app_audit_export_batch_stale_seconds,
+    )
+
+
 def _empty_tool_audit_summary() -> ToolAuditSummary:
     return ToolAuditSummary(
         total_calls=0,
@@ -2477,57 +2490,19 @@ def _audit_export_rows(
     limit: int,
     order: Literal["asc", "desc"],
 ) -> list[dict[str, Any]]:
-    if not deps.event_store:
-        return []
-    rows: list[dict[str, Any]] = []
-    if include_events:
-        rows.extend(
-            _audit_event_row(event)
-            for event in deps.event_store.list_events(
-                tenant_id=deps.settings.app_tenant_id,
-                event_type=event_type,
-                created_after=created_after,
-                created_before=created_before,
-                limit=limit,
-                order=order,
-            )
-        )
-    if include_tool_audit:
-        rows.extend(
-            _audit_tool_row(record)
-            for record in deps.event_store.list_tool_audit_records(
-                tenant_id=deps.settings.app_tenant_id,
-                created_after=created_after,
-                created_before=created_before,
-                limit=limit,
-                order=order,
-            )
-        )
-    if include_event_store_operations:
-        rows.extend(
-            _audit_event_store_operation_row(record)
-            for record in deps.event_store.list_event_store_operations(
-                tenant_id=deps.settings.app_tenant_id,
-                created_after=created_after,
-                created_before=created_before,
-                limit=limit,
-                order=order,
-            )
-        )
-    if include_operations_automation_executions:
-        rows.extend(
-            _audit_operations_automation_execution_row(record)
-            for record in deps.event_store.list_operations_automation_executions(
-                tenant_id=deps.settings.app_tenant_id,
-                created_after=created_after,
-                created_before=created_before,
-                limit=limit,
-                order=order,
-            )
-        )
-    reverse = order == "desc"
-    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=reverse)
-    return rows[:limit]
+    return build_audit_export_rows(
+        event_store=deps.event_store,
+        tenant_id=deps.settings.app_tenant_id,
+        include_events=include_events,
+        include_tool_audit=include_tool_audit,
+        include_event_store_operations=include_event_store_operations,
+        include_operations_automation_executions=include_operations_automation_executions,
+        event_type=event_type,
+        created_after=created_after,
+        created_before=created_before,
+        limit=limit,
+        order=order,
+    )
 
 
 def _audit_event_row(event: StoredEvent) -> dict[str, Any]:
@@ -6657,13 +6632,23 @@ def create_app() -> FastAPI:
             order=order,
         )
         return PlainTextResponse(
-            _ndjson(rows),
+            audit_ndjson(rows),
             media_type=AUDIT_EXPORT_MEDIA_TYPE,
             headers={
                 "Content-Disposition": "attachment; filename=support-agent-audit-export.ndjson",
                 "X-Audit-Export-Records": str(len(rows)),
             },
         )
+
+    @app.get("/api/v1/admin/audit/export-batches/summary")
+    def audit_export_batch_summary(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> AuditExportBatchSummary:
+        require_admin(actor)
+        require_scope(actor, "audit:read")
+        require_scope(actor, "events:read")
+        return _audit_export_batch_summary(deps)
 
     @app.get("/api/v1/admin/event-store/operations")
     def list_event_store_operations(
