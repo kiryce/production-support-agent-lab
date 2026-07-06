@@ -76,6 +76,22 @@ export type KnowledgeSearchResponse = {
   dropped_candidates: string[];
 };
 
+export type KnowledgeIndexSummary = {
+  schema_version: "knowledge_index_summary.v1";
+  provider: "memory" | "http" | "sqlite";
+  status: "ready" | "missing" | "external" | "unknown";
+  tenant_id: string;
+  document_count: number | null;
+  chunk_count: number | null;
+  source_count: number | null;
+  last_ingested_at: string | null;
+  last_updated_at: string | null;
+  fts_enabled: boolean | null;
+  database_file: string | null;
+  database_path_hash: string | null;
+  min_ready_documents: number | null;
+};
+
 export type ToolResult = {
   id: string;
   name: string;

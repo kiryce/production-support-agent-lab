@@ -116,3 +116,20 @@ python scripts/run_retrieval_eval.py
 - reranker 统一输入 query + chunk + metadata。
 - 所有回答带 citation。
 - 用户点“没解决”后，把 query、候选、答案放入 hard query set。
+
+## SQLite Knowledge Index
+
+For a real local or staging knowledge base, set `APP_KNOWLEDGE_BACKEND=sqlite`
+and ingest Markdown/text files before running the agent:
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json ingest --source ./examples/knowledge --source-label policies --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json search "refund damaged headphones"
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id demo_tenant --json stats
+```
+
+The SQLite backend writes durable `knowledge_documents`, `knowledge_chunks`, and
+`knowledge_ingest_batches` tables. The console Knowledge workbench shows only
+provider/status/counts/timestamps and snippets, not raw file paths, metadata, or
+full document bodies. This keeps the learner path real while preserving the same
+`RetrievalTrace` shape used by `HTTPKnowledgeIndex`.

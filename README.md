@@ -317,8 +317,15 @@ APP_BUSINESS_API_RETRY_ATTEMPTS=2
 APP_BUSINESS_API_RETRY_BACKOFF_MS=100
 APP_BUSINESS_API_CIRCUIT_FAILURE_THRESHOLD=5
 APP_BUSINESS_API_CIRCUIT_RESET_SECONDS=30
+APP_KNOWLEDGE_BACKEND=auto
 APP_KNOWLEDGE_API_BASE_URL=https://knowledge.example.com
 APP_KNOWLEDGE_API_KEY=...
+APP_KNOWLEDGE_DATABASE_URL=sqlite:///./data/knowledge/support-agent-knowledge.db
+APP_KNOWLEDGE_INGEST_SOURCE_DIR=./examples/knowledge
+APP_KNOWLEDGE_CHUNK_CHARS=1200
+APP_KNOWLEDGE_CHUNK_OVERLAP_CHARS=160
+APP_KNOWLEDGE_FTS_ENABLED=true
+APP_KNOWLEDGE_MIN_READY_DOCUMENTS=1
 APP_KNOWLEDGE_API_RETRY_ATTEMPTS=2
 APP_KNOWLEDGE_API_RETRY_BACKOFF_MS=100
 APP_KNOWLEDGE_API_CIRCUIT_FAILURE_THRESHOLD=5
@@ -434,6 +441,20 @@ python scripts/event_store_ops.py --database-url sqlite:///./data/production/sup
 `restore-drill` 会把备份复制到临时 SQLite 文件，执行 `quick_check`、schema 校验、健康写探针回滚、表计数和 tenant high-water mark 查询；默认不保留临时库，除非传 `--restore-output`。API 版本是 `POST /api/v1/admin/event-store/restore-drills`，需要 `admin:write`、`audit:read` 和 `events:read`，并且只接受备份接口返回的 `backup_token`，不会让调用方传任意文件路径。Console 的 Settings 页面也提供同一条链路：Create backup -> Run drill -> Preview retention -> Apply retention。`retention` 默认 dry-run，事件日志默认不会删除；只有显式加 `--include-events` 才会清理旧 message/run/monitor/eval 事件。API 版本是 `POST /api/v1/admin/event-store/retention`，需要同样的管理 scope。真正 apply 必须带服务端签发的 verified backup token、restore drill token、matching dry-run preview token 和显式确认；如果预演后 event store 有新写入或状态变化，后端会返回 `409 Conflict`，要求重新备份、恢复演练和预演。生产环境推荐用 Console/API 执行 apply；CLI 直连 `retention --apply` 默认拒绝并写入 `rejected` 台账，只有应急本地操作显式加 `--unsafe-local-apply` 才会绕过 API token 链路。
 
 `GET /api/v1/admin/event-store/operations` 是独立的运维台账接口，需要 `admin:read`、`audit:read` 和 `events:read`。它记录已鉴权操作者或 CLI `--actor-user-id`、operation、status、时间和安全摘要：备份只暴露文件名与路径哈希，恢复演练只暴露 token 哈希、表计数和 high-water 摘要，retention 只暴露参数、候选/删除计数和表级动作；原始 token 与完整文件路径不会进入台账。CLI 的 backup、restore-drill、retention preview/apply，以及失败或生产 guard 拒绝也会写同一张台账。API 和 CLI 共享 `event_store_operation_locks` 租约锁，同一个 tenant 同时只允许一个 event-store 维护操作；锁冲突返回 `409 Conflict` 或 CLI 非零退出，并在台账里记录 active operation、过期时间和 owner hash。锁 TTL 由 `APP_EVENT_STORE_OPERATION_LOCK_TTL_SECONDS` 控制，默认 1800 秒，进程崩溃后会自动过期。台账和锁表会被备份和恢复演练校验，但不会纳入 retention high-water mark，避免“写审计记录”或“持有锁”让备份/预演 token 自己失效。
+
+### SQLite knowledge index
+
+Knowledge has two production-shaped backends. `APP_KNOWLEDGE_BACKEND=http` or
+`auto` in production calls your real Knowledge API. `APP_KNOWLEDGE_BACKEND=sqlite`
+uses a durable local SQLite index for single-instance deployments, staging, and
+learners who want to ingest real documents before wiring a separate knowledge
+platform.
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json ingest --source ./examples/knowledge --source-label policies --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json search "invoice policy"
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json stats
+```
 
 ## Docker
 

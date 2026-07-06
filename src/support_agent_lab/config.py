@@ -16,8 +16,15 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     app_business_api_base_url: str | None = None
     app_business_api_key: str | None = None
+    app_knowledge_backend: Literal["auto", "memory", "http", "sqlite"] = "auto"
     app_knowledge_api_base_url: str | None = None
     app_knowledge_api_key: str | None = None
+    app_knowledge_database_url: str = "sqlite:///./data/local/support-agent-knowledge.db"
+    app_knowledge_ingest_source_dir: str = "./examples/knowledge"
+    app_knowledge_chunk_chars: int = Field(default=1200, ge=400, le=8000)
+    app_knowledge_chunk_overlap_chars: int = Field(default=160, ge=0, le=2000)
+    app_knowledge_fts_enabled: bool = True
+    app_knowledge_min_ready_documents: int = Field(default=1, ge=0, le=1000000)
     app_internal_api_key: str | None = None
     app_actor_signature_secret: str | None = None
     app_actor_signature_max_age_seconds: int = Field(default=300, ge=30, le=3600)
@@ -86,10 +93,16 @@ class Settings(BaseSettings):
             missing.append("APP_BUSINESS_API_BASE_URL")
         if not self.app_business_api_key:
             missing.append("APP_BUSINESS_API_KEY")
-        if not self.app_knowledge_api_base_url:
-            missing.append("APP_KNOWLEDGE_API_BASE_URL")
-        if not self.app_knowledge_api_key:
-            missing.append("APP_KNOWLEDGE_API_KEY")
+        knowledge_backend = self.resolved_knowledge_backend
+        if knowledge_backend == "memory":
+            missing.append("APP_KNOWLEDGE_BACKEND must be http or sqlite in production")
+        if knowledge_backend == "http":
+            if not self.app_knowledge_api_base_url:
+                missing.append("APP_KNOWLEDGE_API_BASE_URL")
+            if not self.app_knowledge_api_key:
+                missing.append("APP_KNOWLEDGE_API_KEY")
+        if knowledge_backend == "sqlite" and not self.app_knowledge_database_url.startswith("sqlite:///"):
+            missing.append("APP_KNOWLEDGE_DATABASE_URL must use sqlite:///")
         if not self.app_internal_api_key:
             missing.append("APP_INTERNAL_API_KEY")
         if not self.app_actor_signature_secret:
@@ -102,10 +115,11 @@ class Settings(BaseSettings):
             missing.append("APP_BUSINESS_API_BASE_URL must not be a placeholder")
         if self._looks_like_placeholder(self.app_business_api_key):
             missing.append("APP_BUSINESS_API_KEY must not be a placeholder")
-        if self._looks_like_placeholder(self.app_knowledge_api_base_url):
-            missing.append("APP_KNOWLEDGE_API_BASE_URL must not be a placeholder")
-        if self._looks_like_placeholder(self.app_knowledge_api_key):
-            missing.append("APP_KNOWLEDGE_API_KEY must not be a placeholder")
+        if knowledge_backend == "http":
+            if self._looks_like_placeholder(self.app_knowledge_api_base_url):
+                missing.append("APP_KNOWLEDGE_API_BASE_URL must not be a placeholder")
+            if self._looks_like_placeholder(self.app_knowledge_api_key):
+                missing.append("APP_KNOWLEDGE_API_KEY must not be a placeholder")
         if self._looks_like_placeholder(self.app_internal_api_key):
             missing.append("APP_INTERNAL_API_KEY must not be a placeholder")
         if self._looks_like_placeholder(self.app_actor_signature_secret):
@@ -151,6 +165,12 @@ class Settings(BaseSettings):
         if self.app_rate_limit_enabled is not None:
             return self.app_rate_limit_enabled
         return self.is_production
+
+    @property
+    def resolved_knowledge_backend(self) -> Literal["memory", "http", "sqlite"]:
+        if self.app_knowledge_backend == "auto":
+            return "http" if self.is_production else "memory"
+        return self.app_knowledge_backend
 
     def _looks_like_placeholder(self, value: str | None) -> bool:
         if not value:

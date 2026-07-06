@@ -46,6 +46,7 @@ support-agent-event-store = "support_agent_lab.scripts.event_store_ops:main"
 support-agent-alert-dispatcher = "support_agent_lab.scripts.alert_dispatcher_worker:main"
 support-agent-monitor-review-worker = "support_agent_lab.scripts.monitor_review_worker:main"
 support-agent-audit-export-worker = "support_agent_lab.scripts.audit_export_worker:main"
+support-agent-knowledge-index = "support_agent_lab.scripts.knowledge_index_ops:main"
 
 [project.urls]
 Homepage = "https://github.com/kiryce/production-support-agent-lab"

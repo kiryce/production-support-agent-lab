@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
+from support_agent_lab.memory.sqlite_knowledge import SQLiteKnowledgeIndex
 
 
 CheckStatus = Literal["ok", "failed", "skipped"]
@@ -181,6 +182,22 @@ def _business_circuit_detail(container: AppContainer) -> str:
 
 
 async def _check_knowledge_api(container: AppContainer) -> ReadinessCheck:
+    if isinstance(container.knowledge, SQLiteKnowledgeIndex):
+        try:
+            await container.knowledge.health_check(
+                min_documents=container.settings.app_knowledge_min_ready_documents,
+            )
+        except Exception as exc:
+            return ReadinessCheck(
+                name="knowledge_api",
+                status="failed",
+                detail=f"{exc}; {_knowledge_circuit_detail(container)}",
+            )
+        return ReadinessCheck(
+            name="knowledge_api",
+            status="ok",
+            detail=f"sqlite knowledge index ready; {_knowledge_circuit_detail(container)}",
+        )
     if not isinstance(container.knowledge, HTTPKnowledgeIndex):
         if container.settings.is_production:
             return ReadinessCheck(name="knowledge_api", status="failed", detail="HTTP knowledge adapter missing")
@@ -201,10 +218,17 @@ async def _check_knowledge_api(container: AppContainer) -> ReadinessCheck:
 
 
 def _knowledge_circuit_detail(container: AppContainer) -> str:
+    if isinstance(container.knowledge, SQLiteKnowledgeIndex):
+        summary = container.knowledge.summary()
+        return (
+            f"backend=sqlite, documents={summary.document_count}, "
+            f"chunks={summary.chunk_count}, fts_enabled={summary.fts_enabled}"
+        )
     if not isinstance(container.knowledge, HTTPKnowledgeIndex):
-        return "circuit=missing"
+        return "backend=memory"
     status = container.knowledge.circuit_status()
     return (
+        "backend=http, "
         f"circuit={status['state']}, "
         f"failures={status['failure_count']}/{status['failure_threshold']}, "
         f"retry_attempts={status['retry_attempts']}"

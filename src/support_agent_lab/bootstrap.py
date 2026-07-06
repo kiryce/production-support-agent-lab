@@ -8,6 +8,7 @@ from support_agent_lab.data.fixtures import DemoStore
 from support_agent_lab.llm.gateway import LLMGateway, create_llm_gateway
 from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
+from support_agent_lab.memory.sqlite_knowledge import SQLiteKnowledgeIndex
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
 from support_agent_lab.monitoring.monitor import OnlineMonitorAgent
 from support_agent_lab.tools.business_tools import create_registry
@@ -21,7 +22,7 @@ class AppContainer:
     store: DemoStore | None
     business_client: HTTPBusinessClient | None
     memory: ConversationMemory
-    knowledge: KnowledgeIndex | HTTPKnowledgeIndex
+    knowledge: KnowledgeIndex | HTTPKnowledgeIndex | SQLiteKnowledgeIndex
     monitor: OnlineMonitorAgent
     tools: ToolBroker
     llm: LLMGateway
@@ -39,15 +40,7 @@ def create_container() -> AppContainer:
         raise RuntimeError("Production mode requires a configured event store")
     if settings.is_production:
         store = None
-        knowledge = HTTPKnowledgeIndex(
-            base_url=settings.app_knowledge_api_base_url or "",
-            api_key=settings.app_knowledge_api_key,
-            timeout_ms=settings.app_http_timeout_ms,
-            retry_attempts=settings.app_knowledge_api_retry_attempts,
-            retry_backoff_ms=settings.app_knowledge_api_retry_backoff_ms,
-            circuit_failure_threshold=settings.app_knowledge_api_circuit_failure_threshold,
-            circuit_reset_seconds=settings.app_knowledge_api_circuit_reset_seconds,
-        )
+        knowledge = _create_knowledge(settings)
         business_client = HTTPBusinessClient(
             base_url=settings.app_business_api_base_url or "",
             api_key=settings.app_business_api_key,
@@ -64,7 +57,7 @@ def create_container() -> AppContainer:
     else:
         store = DemoStore.seeded()
         business_client = None
-        knowledge = KnowledgeIndex()
+        knowledge = _create_knowledge(settings)
         registry = create_registry(store, knowledge)
         idempotency_store = store.idempotency
     tools = ToolBroker(
@@ -94,6 +87,27 @@ def create_container() -> AppContainer:
         event_store=event_store,
         orchestrator=orchestrator,
     )
+
+
+def _create_knowledge(settings: Settings) -> KnowledgeIndex | HTTPKnowledgeIndex | SQLiteKnowledgeIndex:
+    backend = settings.resolved_knowledge_backend
+    if backend == "http":
+        return HTTPKnowledgeIndex(
+            base_url=settings.app_knowledge_api_base_url or "",
+            api_key=settings.app_knowledge_api_key,
+            timeout_ms=settings.app_http_timeout_ms,
+            retry_attempts=settings.app_knowledge_api_retry_attempts,
+            retry_backoff_ms=settings.app_knowledge_api_retry_backoff_ms,
+            circuit_failure_threshold=settings.app_knowledge_api_circuit_failure_threshold,
+            circuit_reset_seconds=settings.app_knowledge_api_circuit_reset_seconds,
+        )
+    if backend == "sqlite":
+        return SQLiteKnowledgeIndex.from_url(
+            settings.app_knowledge_database_url,
+            tenant_id=settings.app_tenant_id,
+            fts_enabled=settings.app_knowledge_fts_enabled,
+        )
+    return KnowledgeIndex()
 
 
 def create_eval_container(settings: Settings | None = None) -> AppContainer:

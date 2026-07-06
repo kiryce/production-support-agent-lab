@@ -13,8 +13,15 @@ APP_OPENAI_MODEL=gpt-5.5
 OPENAI_API_KEY=...
 APP_BUSINESS_API_BASE_URL=https://support-backend.example.com
 APP_BUSINESS_API_KEY=...
+APP_KNOWLEDGE_BACKEND=auto
 APP_KNOWLEDGE_API_BASE_URL=https://knowledge.example.com
 APP_KNOWLEDGE_API_KEY=...
+APP_KNOWLEDGE_DATABASE_URL=sqlite:///./data/knowledge/support-agent-knowledge.db
+APP_KNOWLEDGE_INGEST_SOURCE_DIR=./examples/knowledge
+APP_KNOWLEDGE_CHUNK_CHARS=1200
+APP_KNOWLEDGE_CHUNK_OVERLAP_CHARS=160
+APP_KNOWLEDGE_FTS_ENABLED=true
+APP_KNOWLEDGE_MIN_READY_DOCUMENTS=1
 APP_INTERNAL_API_KEY=...
 APP_ACTOR_SIGNATURE_SECRET=replace_with_real_actor_signature_secret_min_32_chars
 APP_ACTOR_SIGNATURE_MAX_AGE_SECONDS=300
@@ -621,6 +628,31 @@ The bundled `/api/v1/admin/evals/golden` endpoint runs only `examples/evals/gold
 
 `MCPToolAdapter` defaults to gateway mode: calls must pass `tenant_id`, authenticated `user_id`, and explicit scopes. The bundled `support_agent_lab.mcp.server` is local-only and explicitly opts into demo defaults; production mode refuses to start it to avoid defaulting to `user_demo`. Production MCP gateways should also pass request/trace ids and explicit idempotency keys for write tools.
 
+## SQLite knowledge index
+
+`APP_KNOWLEDGE_BACKEND=sqlite` uses `SQLiteKnowledgeIndex` instead of an
+external Knowledge API. It is a real durable index, not a fixture: documents are
+read from files, chunked, written to `APP_KNOWLEDGE_DATABASE_URL`, and searched
+through the same `RetrievalTrace` contract that the agent and console use.
+
+```bash
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json ingest --source ./examples/knowledge --source-label policies --replace
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json search "shipping delay"
+python scripts/knowledge_index_ops.py --database-url sqlite:///./data/knowledge/support-agent-knowledge.db --tenant-id your_real_tenant --json stats
+```
+
+Production readiness calls the adapter `health_check`. For SQLite, readiness
+requires at least `APP_KNOWLEDGE_MIN_READY_DOCUMENTS` indexed documents. The
+admin `GET /api/v1/admin/knowledge/summary` endpoint and the console Knowledge
+workbench expose only provider, status, counts, timestamps, database file name,
+and path hash. They do not expose source paths, raw document content, chunk
+metadata, API keys, or tenant/actor headers.
+
+Use the SQLite backend for single-instance production, staging, or teams that
+want a deployable baseline before operating a separate retrieval platform. For
+higher traffic or strict document ACLs, move the same contract behind the HTTP
+Knowledge API and keep the console diagnostics unchanged.
+
 ## Knowledge API contract
 
 `HTTPKnowledgeIndex` expects `GET /health` to return 2xx for readiness and `GET /knowledge/search` to return either:
@@ -799,8 +831,12 @@ partial coverage through `support_agent_audit_export_batch_*` metrics.
 - `OPENAI_API_KEY`
 - `APP_BUSINESS_API_BASE_URL`
 - `APP_BUSINESS_API_KEY`
-- `APP_KNOWLEDGE_API_BASE_URL`
-- `APP_KNOWLEDGE_API_KEY`
+- `APP_KNOWLEDGE_BACKEND=http|sqlite` for explicit production deployments. The
+  default `auto` resolves to HTTP in production.
+- For HTTP knowledge: `APP_KNOWLEDGE_API_BASE_URL` and
+  `APP_KNOWLEDGE_API_KEY`.
+- For SQLite knowledge: `APP_KNOWLEDGE_DATABASE_URL=sqlite:///...` and an
+  ingested index that satisfies `APP_KNOWLEDGE_MIN_READY_DOCUMENTS`.
 - `APP_INTERNAL_API_KEY`
 - `APP_ACTOR_SIGNATURE_SECRET` with at least 32 characters
 - `APP_REQUEST_SIGNATURE_REQUIRED=true`; it is implied when `APP_REQUIRE_PRODUCTION=true` and the field is unset, and startup fails if it is explicitly set to `false`
@@ -859,11 +895,11 @@ The default release check is deterministic and local. `--prod-smoke` is intentio
 
 - GitHub Actions passes for unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
-- Business and knowledge URLs are real internal services, not local fixtures or placeholder domains.
-- Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or `APP_KNOWLEDGE_API_BASE_URL` makes startup fail.
-- `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, Knowledge API `/health`, and the SQLite event store.
+- Business URLs are real internal services, not local fixtures or placeholder domains. Knowledge is either a real HTTP service or an ingested SQLite index.
+- Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or the configured knowledge backend requirement makes startup/readiness fail.
+- `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, the configured knowledge backend health check, and the SQLite event store.
 - During a controlled staging failure, repeated Business API `5xx` responses open the adapter circuit and `/api/v1/ready?deep=true` reports `business_api` as failed with `circuit=open`.
-- During a controlled staging failure, repeated Knowledge API `5xx` responses open the adapter circuit and retrieval traces show `knowledge_circuit_open`; `/api/v1/ready?deep=true` reports `knowledge_api` as failed with `circuit=open`.
+- During a controlled staging failure, repeated HTTP Knowledge API `5xx` responses open the adapter circuit and retrieval traces show `knowledge_circuit_open`; `/api/v1/ready?deep=true` reports `knowledge_api` as failed with `circuit=open`. For SQLite knowledge, test an empty index against `APP_KNOWLEDGE_MIN_READY_DOCUMENTS` and verify readiness fails before chat traffic uses it.
 - Removing `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.
 - `python scripts/sign_actor_headers.py --user-id user_prod --roles user --scopes "crm:read,order:read,shipping:read,ticket:write,kb:read,feedback:write" --method POST --path /api/v1/chat/sessions --body '{"user_id":"user_prod"}' --format curl` emits signed actor and request headers when the gateway secrets are present in the environment.
 - Changing `X-Actor-User-Id`, `X-Actor-Roles`, or `X-Actor-Scopes` after signing makes the request fail with `401`.

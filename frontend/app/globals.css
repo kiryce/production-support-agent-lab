@@ -1809,6 +1809,57 @@ textarea:disabled {
   font-size: 11px;
 }
 
+.knowledge-index-strip {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-left: 4px solid #94a3b8;
+  border-radius: 8px;
+  background: white;
+  padding: 9px;
+}
+
+.knowledge-index-strip.state-success {
+  border-left-color: var(--green-700);
+}
+
+.knowledge-index-strip.state-warn {
+  border-left-color: var(--orange);
+}
+
+.knowledge-index-strip.state-danger {
+  border-left-color: var(--red);
+}
+
+.knowledge-index-strip > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.knowledge-index-strip > div:first-child span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.knowledge-index-strip > div:first-child strong {
+  color: #17231e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-index-strip .metric {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8faf9;
+  padding: 7px;
+}
+
 .knowledge-diagnostics {
   display: grid;
   gap: 10px;
@@ -3442,6 +3493,7 @@ textarea {
   }
 
   .audit-export-batch-stats,
+  .knowledge-index-strip,
   .delivery-dispatch-metrics,
   .delivery-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));

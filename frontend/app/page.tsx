@@ -103,6 +103,7 @@ import type {
   IncidentBriefResponse,
   IncidentRunBundle,
   JsonValue,
+  KnowledgeIndexSummary,
   KnowledgeSearchResponse,
   MemoryReplayResult,
   MonitorAlert,
@@ -266,6 +267,9 @@ export default function Home() {
   const [knowledgeQuery, setKnowledgeQuery] = useState("");
   const [knowledgeLimit, setKnowledgeLimit] = useState("4");
   const [knowledgeTrace, setKnowledgeTrace] = useState<KnowledgeSearchResponse | null>(null);
+  const [knowledgeSummary, setKnowledgeSummary] = useState<KnowledgeIndexSummary | null>(null);
+  const [knowledgeSummaryLoading, setKnowledgeSummaryLoading] = useState(false);
+  const [knowledgeSummaryError, setKnowledgeSummaryError] = useState<string | null>(null);
   const [knowledgeLoading, setKnowledgeLoading] = useState(false);
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [memoryConversationId, setMemoryConversationId] = useState("");
@@ -1271,6 +1275,33 @@ export default function Home() {
     }
   }
 
+  const loadKnowledgeSummary = useCallback(async () => {
+    setKnowledgeSummaryLoading(true);
+    setKnowledgeSummaryError(null);
+    try {
+      const response = await fetch("/api/console/knowledge/summary", {
+        cache: "no-store"
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Knowledge index summary failed");
+      }
+      setKnowledgeSummary(data as KnowledgeIndexSummary);
+    } catch (nextError) {
+      setKnowledgeSummaryError(
+        nextError instanceof Error ? nextError.message : "Knowledge index summary failed"
+      );
+    } finally {
+      setKnowledgeSummaryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (workspaceMode === "knowledge" && !knowledgeSummary && !knowledgeSummaryLoading) {
+      void loadKnowledgeSummary();
+    }
+  }, [knowledgeSummary, knowledgeSummaryLoading, loadKnowledgeSummary, workspaceMode]);
+
   async function searchKnowledge(nextQuery = knowledgeQuery, nextLimit = knowledgeLimit) {
     const trimmed = nextQuery.trim();
     if (!trimmed) {
@@ -1297,6 +1328,7 @@ export default function Home() {
       setKnowledgeQuery(trimmed);
       setKnowledgeLimit(nextLimit);
       setKnowledgeTrace(data as KnowledgeSearchResponse);
+      void loadKnowledgeSummary();
     } catch (nextError) {
       setKnowledgeError(nextError instanceof Error ? nextError.message : "Knowledge search failed");
     } finally {
@@ -2310,9 +2342,12 @@ export default function Home() {
           {workspaceMode === "knowledge" ? (
             <KnowledgeWorkbenchPanel
               trace={knowledgeTrace}
+              summary={knowledgeSummary}
               stats={knowledgeStats}
               loading={knowledgeLoading}
+              summaryLoading={knowledgeSummaryLoading}
               error={knowledgeError}
+              summaryError={knowledgeSummaryError}
               query={knowledgeQuery}
               limit={knowledgeLimit}
               currentRetrieval={run?.retrieval ?? null}
@@ -5916,9 +5951,12 @@ function RunWorkbenchPanel({
 
 function KnowledgeWorkbenchPanel({
   trace,
+  summary,
   stats,
   loading,
+  summaryLoading,
   error,
+  summaryError,
   query,
   limit,
   currentRetrieval,
@@ -5929,9 +5967,12 @@ function KnowledgeWorkbenchPanel({
   onUseCurrent
 }: {
   trace: KnowledgeSearchResponse | null;
+  summary: KnowledgeIndexSummary | null;
   stats: KnowledgeSearchStats;
   loading: boolean;
+  summaryLoading: boolean;
   error: string | null;
+  summaryError: string | null;
   query: string;
   limit: string;
   currentRetrieval: RetrievalTrace | null;
@@ -5943,6 +5984,7 @@ function KnowledgeWorkbenchPanel({
 }) {
   const hits = trace?.selected_context ?? [];
   const stages = Object.entries(trace?.candidates_by_stage ?? {});
+  const summaryStatus = knowledgeSummaryStatus(summary, summaryLoading, summaryError);
   return (
     <aside className="alerts-panel run-workbench knowledge-workbench">
       <div className="panel-heading">
@@ -5989,6 +6031,17 @@ function KnowledgeWorkbenchPanel({
           </button>
         ) : null}
       </form>
+
+      <div className={`knowledge-index-strip state-${summaryStatus.tone}`} aria-label="Knowledge index summary">
+        <div>
+          <span>Index</span>
+          <strong>{summaryStatus.title}</strong>
+        </div>
+        <Metric label="Backend" value={summary?.provider ?? "loading"} />
+        <Metric label="Docs" value={summary?.document_count === null || !summary ? "n/a" : String(summary.document_count)} />
+        <Metric label="Chunks" value={summary?.chunk_count === null || !summary ? "n/a" : String(summary.chunk_count)} />
+        <Metric label="Last ingest" value={summary?.last_ingested_at ? formatTime(summary.last_ingested_at) : "n/a"} />
+      </div>
 
       <div className="run-search-stats" aria-label="Knowledge retrieval stats">
         <Metric label="Candidates" value={String(stats.candidateCount)} />
@@ -7652,6 +7705,32 @@ function auditExportBatchTitle(summary: AuditExportBatchSummary | null) {
   const age = summary.last_exported_at ? `Last batch ${ageLabel(summary.last_exported_at)} ago` : "No completed batch";
   const partial = summary.last_partial ? "partial" : "complete";
   return `${age}; ${summary.last_record_count} records; ${partial}`;
+}
+
+function knowledgeSummaryStatus(
+  summary: KnowledgeIndexSummary | null,
+  loading: boolean,
+  error: string | null
+): { title: string; tone: "neutral" | "success" | "warn" | "danger" } {
+  if (loading && !summary) {
+    return { title: "Loading", tone: "neutral" };
+  }
+  if (error) {
+    return { title: "Unavailable", tone: "danger" };
+  }
+  if (!summary) {
+    return { title: "No summary", tone: "neutral" };
+  }
+  if (summary.status === "ready") {
+    return { title: "Ready", tone: "success" };
+  }
+  if (summary.status === "external") {
+    return { title: "External API", tone: "neutral" };
+  }
+  if (summary.status === "missing") {
+    return { title: "Needs ingest", tone: "warn" };
+  }
+  return { title: "Unknown", tone: "warn" };
 }
 
 function gateHistoryTitle(record: EvalGateRecord) {

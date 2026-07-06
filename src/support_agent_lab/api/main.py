@@ -66,7 +66,10 @@ from support_agent_lab.memory.event_store import (
     StoredEvent,
 )
 from support_agent_lab.memory.knowledge_call import call_knowledge_search
+from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.memory.replay import MemoryReplayResult, replay_conversation_memory
+from support_agent_lab.memory.sqlite_knowledge import SQLiteKnowledgeIndex, sanitize_summary as sanitize_knowledge_summary
+from support_agent_lab.memory.store import KnowledgeIndex
 from support_agent_lab.models import (
     AgentFeedback,
     AgentResponse,
@@ -289,6 +292,22 @@ class KnowledgeSearchResponse(BaseModel):
     candidates_by_stage: dict[str, int]
     dropped_candidates: list[str]
     selected_context: list[KnowledgeSearchHit]
+
+
+class KnowledgeIndexSummaryResponse(BaseModel):
+    schema_version: str = "knowledge_index_summary.v1"
+    provider: Literal["memory", "http", "sqlite"]
+    status: Literal["ready", "missing", "external", "unknown"]
+    tenant_id: str
+    document_count: int | None = None
+    chunk_count: int | None = None
+    source_count: int | None = None
+    last_ingested_at: datetime | None = None
+    last_updated_at: datetime | None = None
+    fts_enabled: bool | None = None
+    database_file: str | None = None
+    database_path_hash: str | None = None
+    min_ready_documents: int | None = None
 
 
 class MonitorDrilldownStats(BaseModel):
@@ -572,6 +591,51 @@ def _knowledge_search_response(
             )
             for hit in trace.selected_context
         ],
+    )
+
+
+def _knowledge_index_summary_response(deps: AppContainer) -> KnowledgeIndexSummaryResponse:
+    knowledge = deps.knowledge
+    if isinstance(knowledge, SQLiteKnowledgeIndex):
+        summary = sanitize_knowledge_summary(knowledge.summary())
+        document_count = int(summary["document_count"])
+        min_ready = deps.settings.app_knowledge_min_ready_documents
+        return KnowledgeIndexSummaryResponse(
+            provider="sqlite",
+            status="ready" if document_count >= min_ready else "missing",
+            tenant_id=deps.settings.app_tenant_id,
+            document_count=document_count,
+            chunk_count=int(summary["chunk_count"]),
+            source_count=int(summary["source_count"]),
+            last_ingested_at=summary["last_ingested_at"],
+            last_updated_at=summary["last_updated_at"],
+            fts_enabled=bool(summary["fts_enabled"]),
+            database_file=summary["database_file"],
+            database_path_hash=summary["database_path_hash"],
+            min_ready_documents=min_ready,
+        )
+    if isinstance(knowledge, HTTPKnowledgeIndex):
+        return KnowledgeIndexSummaryResponse(
+            provider="http",
+            status="external",
+            tenant_id=deps.settings.app_tenant_id,
+            min_ready_documents=None,
+        )
+    if isinstance(knowledge, KnowledgeIndex):
+        document_count = len(knowledge.documents)
+        return KnowledgeIndexSummaryResponse(
+            provider="memory",
+            status="ready" if document_count else "missing",
+            tenant_id=deps.settings.app_tenant_id,
+            document_count=document_count,
+            chunk_count=document_count,
+            source_count=1 if document_count else 0,
+            min_ready_documents=0,
+        )
+    return KnowledgeIndexSummaryResponse(
+        provider="http",
+        status="unknown",
+        tenant_id=deps.settings.app_tenant_id,
     )
 
 
@@ -5784,6 +5848,15 @@ def create_app() -> FastAPI:
             created_after=created_after.isoformat() if created_after else None,
             created_before=created_before.isoformat() if created_before else None,
         )
+
+    @app.get("/api/v1/admin/knowledge/summary")
+    def knowledge_index_summary(
+        deps: Annotated[AppContainer, Depends(get_container)],
+        actor: Annotated[RequestActor, Depends(get_request_actor)],
+    ) -> KnowledgeIndexSummaryResponse:
+        require_admin(actor)
+        require_scope(actor, "knowledge:diagnose")
+        return _knowledge_index_summary_response(deps)
 
     @app.post("/api/v1/admin/knowledge/search")
     async def search_knowledge(

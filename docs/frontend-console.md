@@ -80,18 +80,20 @@ real local FastAPI endpoints:
    persisted tool calls and SLA/failure aggregates.
 11. `POST /api/v1/admin/knowledge/search` when the `Knowledge` workbench runs
    a retrieval diagnostic query.
-12. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
+12. `GET /api/v1/admin/knowledge/summary` when the `Knowledge` workbench opens
+   and shows the configured index/provider status.
+13. `POST /api/v1/admin/monitor/alert-deliveries/dispatch` when the `Delivery`
    tab runs `Dispatch now` against the durable alert outbox.
-13. `GET /api/v1/admin/monitor/alert-webhook-receipts` when the `Receipts`
+14. `GET /api/v1/admin/monitor/alert-webhook-receipts` when the `Receipts`
    tab inspects signed inbound webhook receipt summaries by alert key or
    delivery id.
-14. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
+15. `GET /api/v1/admin/monitor/drilldown` when the `Alerts` workbench switches
    from queue triage to event-level investigation by alert key, intent, risk,
    failure type, grounding, policy status, and human-review state.
-15. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
+16. `POST /api/v1/admin/evals/regression-drafts` when an operator turns a
    selected monitor event or response-feedback record into a copyable eval-case
    draft.
-16. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
+17. `POST /api/v1/admin/event-store/backups` when the `Settings` workbench
    creates a verified SQLite backup.
 17. `POST /api/v1/admin/event-store/restore-drills` when the `Settings`
    workbench proves the latest verified backup can be opened and health-checked.
@@ -283,7 +285,11 @@ the event-store operation ledger.
 - Knowledge workbench backed by the same knowledge adapter the agent uses. It
   sends operator queries through the BFF, returns snippets instead of full
   document bodies, and exposes rewrite queries, stage counts, selected sources,
-  dropped candidates, and top-score signals for recall debugging.
+  dropped candidates, and top-score signals for recall debugging. When opened,
+  it lazily loads the index/provider summary and shows only status, backend,
+  document count, chunk count, and last-ingest time. It does not display SQLite
+  absolute paths, raw source paths, full chunk text, metadata, headers, API keys,
+  or actor claims.
 - Memory workbench backed by the append-only event store. It accepts any
   conversation id, calls the backend replay endpoint through the BFF, and shows
   rebuilt facts, working summary, open questions, recent messages, replayed
