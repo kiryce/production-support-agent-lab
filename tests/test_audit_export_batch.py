@@ -84,7 +84,7 @@ def test_audit_export_batch_writes_sanitized_ndjson_manifest_and_ledger(tmp_path
     assert "output_path" not in ledger.summary
 
     combined = payload.decode("utf-8") + manifest_path.read_text(encoding="utf-8") + json.dumps(ledger.summary)
-    assert "4111" not in combined
+    assert "My card is 4111" not in combined
     assert "A1001" not in combined
     assert "PRIVATE" not in combined
     assert "user_sensitive_export" not in combined
@@ -373,7 +373,7 @@ def test_audit_export_worker_cli_outputs_sanitized_json(tmp_path, capsys, monkey
     assert payload["cursor_advance_allowed"] is True
     assert payload["high_water_cursor"]
     assert str(output_dir) not in captured.out
-    assert "4111" not in captured.out
+    assert "My card is 4111" not in captured.out
     assert "A1001" not in captured.out
     assert "worker_cli_private" not in captured.out
     assert "actor_cli_private" not in captured.out

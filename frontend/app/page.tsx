@@ -126,7 +126,7 @@ import type {
   SloReportResponse,
   SQLiteBackupReport,
   SQLiteRestoreDrillReport,
-  StoredEvent,
+  StoredEventSummary,
   ToolAuditRecord,
   ToolAuditSearchResponse,
   ToolResult,
@@ -6958,7 +6958,7 @@ function MemoryPanel({
   rawEvents
 }: {
   incident: IncidentRunBundle;
-  rawEvents: StoredEvent[];
+  rawEvents: StoredEventSummary[];
 }) {
   const replay = incident.memory_replay;
   if (!replay) {

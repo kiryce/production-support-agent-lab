@@ -21,6 +21,7 @@ import type {
   ReadinessResponse,
   SloReportResponse,
   StoredEvent,
+  StoredEventSummary,
   ToolDefinition
 } from "@/src/shared/types";
 
@@ -230,7 +231,7 @@ export async function GET(request: NextRequest) {
     triageEvents: triageEvents ?? [],
     evalGateLatest: resolvedEvalGateRecords[0] ?? null,
     evalGateRecords: resolvedEvalGateRecords,
-    rawEvents: rawEvents ?? [],
+    rawEvents: summarizeStoredEvents(rawEvents ?? []),
     tools: tools ?? [],
     issues,
     connection: getConsoleConnection()
@@ -280,4 +281,12 @@ function selectAlertForRun(alerts: MonitorAlert[], key: string | null, runId: st
     }
   }
   return alerts.find((alert) => alert.sample_run_ids.includes(runId)) ?? null;
+}
+
+function summarizeStoredEvents(events: StoredEvent[]): StoredEventSummary[] {
+  return events.map((event) => ({
+    id: event.id,
+    event_type: event.event_type,
+    created_at: event.created_at
+  }));
 }

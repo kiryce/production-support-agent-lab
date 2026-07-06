@@ -116,6 +116,9 @@ real local FastAPI endpoints:
    preview, retention apply, and authenticated guard rejections.
 20. `GET /api/v1/admin/conversations/{conversation_id}/memory/replay` when
    the `Memory` workbench rebuilds a conversation from append-only events.
+   The snapshot BFF may also fetch `/api/v1/admin/events` for event counts and
+   ordering, but it strips raw payload, actor, user, conversation, and run ids
+   before returning event summaries to the browser.
 21. `GET /api/v1/admin/feedback` and
    `GET /api/v1/admin/feedback/summary` when the `Feedback` workbench reviews
    user/operator ratings linked to persisted runs.

@@ -916,6 +916,8 @@ export type StoredEvent = {
   created_at: string;
 };
 
+export type StoredEventSummary = Pick<StoredEvent, "id" | "event_type" | "created_at">;
+
 export type IncidentRunBundle = {
   run: AgentRunTrace;
   run_source: string;
@@ -1000,7 +1002,7 @@ export type ConsoleSnapshot = {
   triageEvents: MonitorAlertTriageEvent[];
   evalGateLatest: EvalGateRecord | null;
   evalGateRecords: EvalGateRecord[];
-  rawEvents: StoredEvent[];
+  rawEvents: StoredEventSummary[];
   tools: ToolDefinition[];
   issues: ApiIssue[];
   connection: {
