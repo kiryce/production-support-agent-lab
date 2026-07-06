@@ -5204,8 +5204,9 @@ def create_app() -> FastAPI:
     async def ready(
         deps: Annotated[AppContainer, Depends(get_container)],
         deep: Annotated[bool | None, Query()] = None,
+        ops: Annotated[bool | None, Query()] = None,
     ) -> ReadinessResponse:
-        report = await check_readiness(deps, deep=deep)
+        report = await check_readiness(deps, deep=deep, ops=ops)
         if report.status != "ok":
             return JSONResponse(status_code=503, content=report.model_dump(mode="json"))
         return report

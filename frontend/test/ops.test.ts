@@ -536,6 +536,7 @@ describe("ops workbench helpers", () => {
         status: "not_ready",
         environment: "staging",
         deep: false,
+        ops: false,
         checks: [{ name: "event_store", status: "failed", detail: "schema missing" }]
       },
       summary: {
@@ -769,6 +770,7 @@ describe("ops workbench helpers", () => {
           status: "ok",
           environment: "staging",
           deep: true,
+          ops: false,
           checks: []
         },
         monitor: triageMetrics(),
@@ -1380,6 +1382,7 @@ describe("ops workbench helpers", () => {
         status: "ok",
         environment: "staging",
         deep: true,
+        ops: false,
         checks: []
       },
       monitor: triageMetrics(),

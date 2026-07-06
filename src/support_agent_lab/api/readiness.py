@@ -6,9 +6,11 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from support_agent_lab.audit.export_batch import summarize_audit_export_batches
 from support_agent_lab.bootstrap import AppContainer
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.memory.sqlite_knowledge import SQLiteKnowledgeIndex
+from support_agent_lab.monitoring.alert_delivery_service import monitor_alert_webhook_url
 
 
 CheckStatus = Literal["ok", "failed", "skipped"]
@@ -25,11 +27,17 @@ class ReadinessResponse(BaseModel):
     status: OverallStatus
     environment: str
     deep: bool
+    ops: bool = False
     checks: list[ReadinessCheck] = Field(default_factory=list)
 
 
-async def check_readiness(container: AppContainer, deep: bool | None = None) -> ReadinessResponse:
+async def check_readiness(
+    container: AppContainer,
+    deep: bool | None = None,
+    ops: bool | None = None,
+) -> ReadinessResponse:
     use_deep_checks = _use_deep_checks(container, deep)
+    use_ops_checks = bool(ops)
     checks = [
         _check_config(container),
         _check_event_store(container),
@@ -52,11 +60,20 @@ async def check_readiness(container: AppContainer, deep: bool | None = None) -> 
                 ReadinessCheck(name="knowledge_api", status="skipped", detail="deep checks disabled"),
             ]
         )
+    if use_ops_checks:
+        checks.extend(
+            [
+                _check_alert_dispatcher_worker(container),
+                _check_monitor_review_worker(container),
+                _check_audit_export_batch(container),
+            ]
+        )
     overall: OverallStatus = "ok" if all(check.status != "failed" for check in checks) else "not_ready"
     return ReadinessResponse(
         status=overall,
         environment=container.settings.app_env,
         deep=use_deep_checks,
+        ops=use_ops_checks,
         checks=checks,
     )
 
@@ -129,6 +146,104 @@ def _check_audit_export_dir(container: AppContainer) -> ReadinessCheck:
         ok_detail="configured audit export directory write probe passed",
         failed_prefix="audit export directory probe failed",
     )
+
+
+def _check_alert_dispatcher_worker(container: AppContainer) -> ReadinessCheck:
+    if not monitor_alert_webhook_url(container.settings):
+        return ReadinessCheck(
+            name="alert_dispatcher_worker",
+            status="skipped",
+            detail="alert webhook delivery is disabled",
+        )
+    if not container.event_store:
+        return ReadinessCheck(
+            name="alert_dispatcher_worker",
+            status="failed",
+            detail="event store is required for alert dispatcher heartbeat checks",
+        )
+    try:
+        summary = container.event_store.summarize_alert_dispatcher_heartbeats(
+            tenant_id=container.settings.app_tenant_id,
+            stale_after_seconds=container.settings.app_monitor_alert_dispatcher_heartbeat_stale_seconds,
+        )
+    except Exception as exc:
+        return ReadinessCheck(
+            name="alert_dispatcher_worker",
+            status="failed",
+            detail=f"alert dispatcher heartbeat check failed: {type(exc).__name__}",
+        )
+    detail = (
+        f"status={summary.status}, active_workers={summary.active_worker_count}, "
+        f"stale_workers={summary.stale_worker_count}, stale_after_seconds={summary.stale_after_seconds}, "
+        f"last_success_at={summary.last_success_at.isoformat() if summary.last_success_at else 'none'}, "
+        f"last_error={summary.last_error or 'none'}"
+    )
+    if summary.status != "active":
+        return ReadinessCheck(name="alert_dispatcher_worker", status="failed", detail=detail)
+    return ReadinessCheck(name="alert_dispatcher_worker", status="ok", detail=detail)
+
+
+def _check_monitor_review_worker(container: AppContainer) -> ReadinessCheck:
+    if not container.event_store:
+        return ReadinessCheck(
+            name="monitor_review_worker",
+            status="failed",
+            detail="event store is required for monitor review worker heartbeat checks",
+        )
+    try:
+        summary = container.event_store.summarize_monitor_review_worker_heartbeats(
+            tenant_id=container.settings.app_tenant_id,
+            stale_after_seconds=container.settings.app_monitor_review_worker_heartbeat_stale_seconds,
+        )
+    except Exception as exc:
+        return ReadinessCheck(
+            name="monitor_review_worker",
+            status="failed",
+            detail=f"monitor review worker heartbeat check failed: {type(exc).__name__}",
+        )
+    detail = (
+        f"status={summary.status}, active_workers={summary.active_worker_count}, "
+        f"stale_workers={summary.stale_worker_count}, stale_after_seconds={summary.stale_after_seconds}, "
+        f"last_success_at={summary.last_success_at.isoformat() if summary.last_success_at else 'none'}, "
+        f"last_reviewed_count={summary.last_reviewed_count}, last_failed_count={summary.last_failed_count}, "
+        f"last_error={summary.last_error or 'none'}"
+    )
+    if summary.status != "active":
+        return ReadinessCheck(name="monitor_review_worker", status="failed", detail=detail)
+    return ReadinessCheck(name="monitor_review_worker", status="ok", detail=detail)
+
+
+def _check_audit_export_batch(container: AppContainer) -> ReadinessCheck:
+    if not container.event_store:
+        return ReadinessCheck(
+            name="audit_export_batch",
+            status="failed",
+            detail="event store is required for audit export batch health checks",
+        )
+    try:
+        summary = summarize_audit_export_batches(
+            event_store=container.event_store,
+            tenant_id=container.settings.app_tenant_id,
+            stale_after_seconds=container.settings.app_audit_export_batch_stale_seconds,
+        )
+    except Exception as exc:
+        return ReadinessCheck(
+            name="audit_export_batch",
+            status="failed",
+            detail=f"audit export batch health check failed: {type(exc).__name__}",
+        )
+    detail = (
+        f"status={summary.status}, completed_batches={summary.completed_batch_count}, "
+        f"failed_batches={summary.failed_batch_count}, stale_after_seconds={summary.stale_after_seconds}, "
+        f"last_status={summary.last_status or 'none'}, "
+        f"last_exported_at={summary.last_exported_at.isoformat() if summary.last_exported_at else 'none'}, "
+        f"last_records={summary.last_record_count}, partial={summary.last_partial}, "
+        f"cursor_advance_allowed={summary.last_cursor_advance_allowed}, "
+        f"last_error_type={summary.last_error_type or 'none'}"
+    )
+    if summary.status != "fresh" or summary.last_partial or not summary.last_cursor_advance_allowed:
+        return ReadinessCheck(name="audit_export_batch", status="failed", detail=detail)
+    return ReadinessCheck(name="audit_export_batch", status="ok", detail=detail)
 
 
 def _check_writable_directory(

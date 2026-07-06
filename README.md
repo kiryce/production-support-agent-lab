@@ -160,6 +160,10 @@ http://127.0.0.1:8000/metrics
 ```
 
 `/health` 只表示进程活着。`/ready` 会检查配置、event store，以及生产模式下的备份目录和审计导出目录写探针；生产深探测开启时还会检查 OpenAI、业务 API `/health` 和知识库 API `/health`。
+Use `/api/v1/ready?deep=true&ops=true` as a stricter production preflight after
+the API and worker profiles are expected to be running. It adds checks for alert
+dispatcher heartbeat, monitor review worker heartbeat, and fresh non-partial
+audit export batches; plain `/ready` keeps those ops checks disabled by default.
 `/metrics` 是 Prometheus text format，用于机器抓取聚合指标：HTTP 请求计数、限流决策、monitor event、monitor triage health、monitor review worker heartbeat、alert delivery outbox、alert dispatcher heartbeat、audit export batch health、feedback review backlog、automation execution health、tool audit、adapter circuit、LLM fallback、有效 rate-limit backend 和 rate-limit 配置。它不输出用户、trace、alert key、triage note、feedback comment、review note、自动化 action id、工具参数、worker id、完整文件路径或知识库正文。
 
 ### 4. 启动前端控制台

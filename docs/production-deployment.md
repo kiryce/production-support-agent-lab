@@ -948,11 +948,21 @@ explicit because it calls a deployed service and can reach your real OpenAI,
 business, and knowledge integrations through `/api/v1/ready?deep=true` and
 `/api/v1/chat/messages`.
 
+Use `/api/v1/ready?deep=true&ops=true` as the stricter deploy or on-call
+preflight after the API, alert dispatcher, monitor review worker, and audit
+export worker profiles are running. The `ops=true` checks fail when the alert
+dispatcher heartbeat is missing or stale while webhook delivery is enabled,
+when the monitor review worker heartbeat is missing or stale, or when the latest
+sanitized audit export batch is missing, stale, failed, partial, or cannot
+advance its cursor. The normal `/ready` endpoint keeps `ops=false` by default so
+basic container liveness does not require every background profile to be started.
+
 - GitHub Actions passes for deployment policy checks, unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, frontend lint/typecheck/test/build, and Docker image build.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business URLs are real internal services, not local fixtures or placeholder domains. Knowledge is either a real HTTP service or an ingested SQLite index.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or the configured knowledge backend requirement makes startup/readiness fail.
 - `GET /api/v1/ready?deep=true` reaches OpenAI, Business API `/health`, the configured knowledge backend health check, and the SQLite event store.
+- `GET /api/v1/ready?deep=true&ops=true` also verifies async production loops: alert dispatcher heartbeat when webhook delivery is enabled, monitor review worker heartbeat, and fresh non-partial sanitized audit export batches.
 - During a controlled staging failure, repeated Business API `5xx` responses open the adapter circuit and `/api/v1/ready?deep=true` reports `business_api` as failed with `circuit=open`.
 - During a controlled staging failure, repeated HTTP Knowledge API `5xx` responses open the adapter circuit and retrieval traces show `knowledge_circuit_open`; `/api/v1/ready?deep=true` reports `knowledge_api` as failed with `circuit=open`. For SQLite knowledge, test an empty index against `APP_KNOWLEDGE_MIN_READY_DOCUMENTS` and verify readiness fails before chat traffic uses it.
 - Removing `APP_INTERNAL_API_KEY` or `APP_ACTOR_SIGNATURE_SECRET`, using a placeholder value, or setting a short secret makes startup fail.

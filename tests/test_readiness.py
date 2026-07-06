@@ -2,6 +2,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from support_agent_lab.audit.export_batch import AuditExportBatchOptions, run_audit_export_batch
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.api.readiness import check_readiness
 from support_agent_lab.bootstrap import AppContainer
@@ -10,12 +11,14 @@ from support_agent_lab.llm.gateway import LLMGateway, LocalDeterministicProvider
 from support_agent_lab.memory.event_store import SQLiteEventStore
 from support_agent_lab.memory.http_knowledge import HTTPKnowledgeIndex
 from support_agent_lab.memory.store import ConversationMemory, KnowledgeIndex
+from support_agent_lab.models import utc_now
 from support_agent_lab.monitoring.monitor import OnlineMonitorAgent
 from support_agent_lab.tools.http_business_tools import HTTPBusinessClient
 from support_agent_lab.tools.registry import ToolBroker, ToolRegistry
 
 
 INTERNAL_API_KEY = "internal-api-key-with-32-byte-minimum"
+WEBHOOK_SECRET = "webhook-signing-secret-with-32-byte-minimum"
 
 
 def test_ready_endpoint_local_shallow_ok():
@@ -244,6 +247,113 @@ async def test_production_readiness_fails_when_audit_export_directory_is_not_wri
     assert "audit export directory probe failed" in checks["audit_export_dir"].detail
 
 
+@pytest.mark.asyncio
+async def test_readiness_skips_ops_checks_by_default(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    container = _production_ops_container(tmp_path, event_store=event_store)
+
+    report = await check_readiness(container, deep=False)
+
+    assert report.status == "ok"
+    assert report.ops is False
+    assert {
+        "alert_dispatcher_worker",
+        "monitor_review_worker",
+        "audit_export_batch",
+    }.isdisjoint({check.name for check in report.checks})
+
+
+@pytest.mark.asyncio
+async def test_readiness_ops_checks_fail_when_background_workers_are_missing(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    container = _production_ops_container(tmp_path, event_store=event_store)
+
+    report = await check_readiness(container, deep=False, ops=True)
+
+    checks = {check.name: check for check in report.checks}
+    assert report.status == "not_ready"
+    assert report.ops is True
+    assert checks["alert_dispatcher_worker"].status == "failed"
+    assert "status=missing" in checks["alert_dispatcher_worker"].detail
+    assert checks["monitor_review_worker"].status == "failed"
+    assert "status=missing" in checks["monitor_review_worker"].detail
+    assert checks["audit_export_batch"].status == "failed"
+    assert "status=missing" in checks["audit_export_batch"].detail
+
+
+@pytest.mark.asyncio
+async def test_readiness_ops_checks_pass_when_background_workers_are_fresh(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    now = utc_now()
+    event_store.record_alert_dispatcher_heartbeat(
+        tenant_id="tenant_live",
+        worker_id="dispatcher-private-host",
+        status="idle",
+        cycle_status="success",
+        last_cycle_completed_at=now,
+        sent_count=1,
+        now=now,
+    )
+    event_store.record_monitor_review_worker_heartbeat(
+        tenant_id="tenant_live",
+        worker_id="monitor-review-private-host",
+        status="idle",
+        cycle_status="success",
+        last_cycle_completed_at=now,
+        reviewed_count=2,
+        now=now,
+    )
+    event_store.append(
+        tenant_id="tenant_live",
+        conversation_id="conv_ops_readiness",
+        user_id="user_ops_readiness",
+        run_id="run_ops_readiness",
+        event_type="message.user",
+        payload={"content": "PRIVATE readiness audit payload"},
+    )
+    run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="tenant_live",
+        output_dir=tmp_path / "audit-exports",
+        actor_user_id="audit-readiness-private-actor",
+        owner_id="audit-readiness-private-worker",
+        options=AuditExportBatchOptions(limit=10),
+    )
+    container = _production_ops_container(tmp_path, event_store=event_store)
+
+    report = await check_readiness(container, deep=False, ops=True)
+
+    checks = {check.name: check for check in report.checks}
+    serialized = report.model_dump_json()
+    assert report.status == "ok"
+    assert checks["alert_dispatcher_worker"].status == "ok"
+    assert checks["monitor_review_worker"].status == "ok"
+    assert checks["audit_export_batch"].status == "ok"
+    assert "dispatcher-private-host" not in serialized
+    assert "monitor-review-private-host" not in serialized
+    assert "audit-readiness-private-worker" not in serialized
+    assert "PRIVATE readiness audit payload" not in serialized
+
+
+def test_ready_endpoint_runs_ops_checks_when_requested(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    container = _production_ops_container(tmp_path, event_store=event_store)
+    app.dependency_overrides[get_container] = lambda: container
+    try:
+        response = TestClient(app).get("/api/v1/ready?deep=false&ops=true")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["ops"] is True
+    assert {check["name"] for check in body["checks"]} >= {
+        "alert_dispatcher_worker",
+        "monitor_review_worker",
+        "audit_export_batch",
+    }
+
+
 def test_ready_endpoint_returns_503_when_dependency_fails():
     class BrokenEventStore:
         def health_check(self):
@@ -277,3 +387,42 @@ def test_ready_endpoint_returns_503_when_dependency_fails():
     body = response.json()
     assert body["status"] == "not_ready"
     assert any(check["name"] == "event_store" and check["status"] == "failed" for check in body["checks"])
+
+
+def _production_ops_container(tmp_path, *, event_store: SQLiteEventStore) -> AppContainer:
+    class HealthyLocalGateway:
+        provider = LocalDeterministicProvider(provider="openai", model="gpt-test")
+
+        async def health_check(self) -> None:
+            return None
+
+    settings = Settings(
+        app_env="production",
+        app_tenant_id="tenant_live",
+        app_model_provider="openai",
+        openai_api_key="sk-test",
+        app_business_api_base_url="https://business.internal.test",
+        app_business_api_key="business-token",
+        app_knowledge_api_base_url="https://knowledge.internal.test",
+        app_knowledge_api_key="knowledge-token",
+        app_internal_api_key=INTERNAL_API_KEY,
+        app_actor_signature_secret="actor-signing-secret-with-32-byte-minimum",
+        app_monitor_alert_webhook_enabled=True,
+        app_monitor_alert_webhook_url="https://hooks.internal.test/alerts",
+        app_monitor_alert_webhook_secret=WEBHOOK_SECRET,
+        app_database_url=f"sqlite:///{tmp_path / 'events.db'}",
+        app_event_store_backup_dir=str(tmp_path / "backups"),
+        app_audit_export_dir=str(tmp_path / "audit-exports"),
+    )
+    return AppContainer(
+        settings=settings,
+        store=None,
+        business_client=None,
+        memory=ConversationMemory(),
+        knowledge=KnowledgeIndex(),
+        monitor=OnlineMonitorAgent(),
+        tools=ToolBroker(registry=ToolRegistry(), idempotency_store={}),
+        llm=HealthyLocalGateway(),
+        event_store=event_store,
+        orchestrator=None,
+    )

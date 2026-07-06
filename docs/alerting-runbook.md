@@ -36,6 +36,8 @@ Meaning: Prometheus cannot scrape the backend API.
 First response:
 
 - Check `/api/v1/health` and `/api/v1/ready?deep=false`.
+- For deployment or async-loop incidents, check `/api/v1/ready?deep=true&ops=true`
+  after the worker profiles are expected to be running.
 - Inspect container/process restarts and load balancer target health.
 - If `/ready` fails but `/health` passes, inspect event store and configuration before restarting.
 
@@ -49,6 +51,8 @@ First response:
 
 - Check recent app logs by `route_family` and status.
 - Query `/api/v1/ready?deep=true` to distinguish app faults from upstream dependency failures.
+- Query `/api/v1/ready?deep=true&ops=true` when symptoms involve missing monitor
+  reviews, missing alert delivery, or stale audit exports.
 - Inspect `support_agent_adapter_circuit_*` and `support_agent_llm_circuit_*` in `/metrics`.
 
 Escalate when: 5xx continues after disabling the failing upstream integration or rolling back the last deploy.

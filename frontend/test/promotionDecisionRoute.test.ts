@@ -37,7 +37,7 @@ describe("promotion decision BFF route", () => {
             min_feedback_count: 5
           },
           checks: [],
-          readiness: { status: "ok", environment: "staging", deep: false, checks: [] },
+          readiness: { status: "ok", environment: "staging", deep: false, ops: false, checks: [] },
           monitor: {},
           tool_audit: {},
           feedback: {},

@@ -18,6 +18,7 @@ export type ReadinessResponse = {
   status: "ok" | "not_ready";
   environment: string;
   deep: boolean;
+  ops: boolean;
   checks: ReadinessCheck[];
 };
 
