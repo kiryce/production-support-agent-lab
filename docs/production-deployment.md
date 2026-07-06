@@ -342,12 +342,16 @@ sanitized export rows, writes `.ndjson` plus `.manifest.json` under
 `event_store_operations`. The manifest contains batch id, tenant id, file
 names, path hashes, SHA-256, byte count, record count, record-type counts,
 window/options, `previous_cursor`, `high_water_cursor`,
+`previous_source_cursors`, `source_high_water_cursors`,
 `cursor_advance_allowed`, and `partial`. It never stores full local paths,
 actor ids, user text, tool arguments, raw automation command bodies/results,
 or eval answers. By default, the next cycle reuses the latest compatible
-completed non-partial batch cursor and exports only rows whose stable
-`(created_at, record_type, id)` key is greater than that cursor. Use
-`--no-incremental` for an intentional full or manual-window rerun.
+completed non-partial per-source cursors and exports only rows whose stable
+per-source `(created_at, record_type, source_sequence)` key is greater than
+that cursor. `source_sequence` is the SQLite rowid for that audit source, so a
+later insert with the same `created_at` and a lexically smaller business id is
+still exported. Any explicit `created_after` or `created_before` manual window
+disables cursor reuse; use `--no-incremental` for an intentional full rerun.
 `GET /api/v1/admin/audit/export-batches/summary`, the console
 Overview/Settings surfaces, `/metrics`, and the bundled Prometheus rules read
 the operation ledger to report fresh/stale/missing/failed and partial status.
@@ -536,13 +540,13 @@ Compose `audit` profile. Each cycle acquires the same
 retention, then writes an NDJSON file, a manifest, and an
 `audit_export_batch` operation ledger row. Lock conflicts are rejected and
 audited without creating partial files; failures write a safe error type and
-path hash. Completed non-partial cycles advance a stable high-water cursor;
-partial cycles do not, so the next incremental run falls back to the last
-complete compatible cursor instead of silently skipping rows. `GET
+path hash. Completed non-partial cycles advance stable per-source high-water
+cursors; partial cycles do not, so the next incremental run falls back to the
+last complete compatible cursors instead of silently skipping rows. `GET
 /api/v1/admin/audit/export-batches/summary` returns recent batch health, last
-file names, counts, size, checksum, high-water cursor, cursor advance flag,
-and partial status, but not full paths, actor ids, worker ids, customer text,
-or tool arguments. The stale threshold is
+file names, counts, size, checksum, high-water cursor, source cursor map,
+cursor advance flag, and partial status, but not full paths, actor ids, worker
+ids, customer text, or tool arguments. The stale threshold is
 `APP_AUDIT_EXPORT_BATCH_STALE_SECONDS`, defaulting to 86400 seconds.
 
 `POST /api/v1/admin/monitor/alert-deliveries/dispatch` is the explicit outbox

@@ -25,12 +25,14 @@ class AuditExportCursor:
     created_at: str
     record_type: str
     id: str
+    source_sequence: int
 
-    def as_dict(self) -> dict[str, str]:
+    def as_dict(self) -> dict[str, str | int]:
         return {
             "created_at": self.created_at,
             "record_type": self.record_type,
             "id": self.id,
+            "source_sequence": self.source_sequence,
         }
 
 
@@ -45,63 +47,59 @@ def audit_export_rows(
     event_type: str | None = None,
     created_after: str | None = None,
     created_before: str | None = None,
-    after_cursor: AuditExportCursor | Mapping[str, Any] | None = None,
+    after_cursors: Mapping[str, Any] | None = None,
     limit: int = 1000,
     order: Literal["asc", "desc"] = "asc",
 ) -> list[dict[str, Any]]:
     if not event_store:
         return []
-    cursor = coerce_audit_export_cursor(after_cursor)
+    cursor_by_type = coerce_audit_export_cursors(after_cursors)
     rows: list[dict[str, Any]] = []
     if include_events:
         rows.extend(
-            audit_event_row(event)
-            for event in _list_events_for_export(
+            _list_events_for_export(
                 event_store=event_store,
                 tenant_id=tenant_id,
                 event_type=event_type,
                 created_after=created_after,
                 created_before=created_before,
-                after_cursor=cursor,
+                after_cursor=cursor_by_type.get("event"),
                 limit=limit,
                 order=order,
             )
         )
     if include_tool_audit:
         rows.extend(
-            audit_tool_row(record)
-            for record in _list_tool_audit_for_export(
+            _list_tool_audit_for_export(
                 event_store=event_store,
                 tenant_id=tenant_id,
                 created_after=created_after,
                 created_before=created_before,
-                after_cursor=cursor,
+                after_cursor=cursor_by_type.get("tool_audit"),
                 limit=limit,
                 order=order,
             )
         )
     if include_event_store_operations:
         rows.extend(
-            audit_event_store_operation_row(record)
-            for record in _list_event_store_operations_for_export(
+            _list_event_store_operations_for_export(
                 event_store=event_store,
                 tenant_id=tenant_id,
                 created_after=created_after,
                 created_before=created_before,
-                after_cursor=cursor,
+                after_cursor=cursor_by_type.get("event_store_operation"),
                 limit=limit,
                 order=order,
             )
         )
     if include_operations_automation_executions:
         rows.extend(
-            audit_operations_automation_execution_row(record)
-            for record in _list_operations_automation_executions_for_export(
+            _list_operations_automation_executions_for_export(
                 event_store=event_store,
                 tenant_id=tenant_id,
                 created_after=created_after,
                 created_before=created_before,
-                after_cursor=cursor,
+                after_cursor=cursor_by_type.get("operations_automation_execution"),
                 limit=limit,
                 order=order,
             )
@@ -119,9 +117,34 @@ def coerce_audit_export_cursor(value: AuditExportCursor | Mapping[str, Any] | No
     created_at = _cursor_text(value.get("created_at"))
     record_type = _cursor_text(value.get("record_type"))
     record_id = _cursor_text(value.get("id"))
-    if not created_at or not record_type or not record_id:
+    source_sequence = _cursor_int(value.get("source_sequence"))
+    if not created_at or not record_type or not record_id or source_sequence is None:
         return None
-    return AuditExportCursor(created_at=created_at, record_type=record_type, id=record_id)
+    return AuditExportCursor(
+        created_at=created_at,
+        record_type=record_type,
+        id=record_id,
+        source_sequence=source_sequence,
+    )
+
+
+def coerce_audit_export_cursors(value: Mapping[str, Any] | None) -> dict[str, AuditExportCursor]:
+    if not isinstance(value, Mapping):
+        return {}
+    single = coerce_audit_export_cursor(value)
+    if single:
+        return {single.record_type: single}
+    result: dict[str, AuditExportCursor] = {}
+    for key, raw_cursor in value.items():
+        if isinstance(raw_cursor, AuditExportCursor):
+            cursor = raw_cursor
+        elif isinstance(raw_cursor, Mapping):
+            cursor = coerce_audit_export_cursor(raw_cursor)
+        else:
+            continue
+        if cursor and cursor.record_type == str(key):
+            result[cursor.record_type] = cursor
+    return result
 
 
 def audit_export_cursor_from_row(row: Mapping[str, Any]) -> AuditExportCursor | None:
@@ -130,9 +153,15 @@ def audit_export_cursor_from_row(row: Mapping[str, Any]) -> AuditExportCursor | 
     created_at = _cursor_text(row.get("created_at"))
     record_type = _cursor_text(row.get("record_type"))
     record_id = _cursor_text(row.get("id"))
-    if not created_at or not record_type or not record_id:
+    source_sequence = _cursor_int(row.get("source_sequence"))
+    if not created_at or not record_type or not record_id or source_sequence is None:
         return None
-    return AuditExportCursor(created_at=created_at, record_type=record_type, id=record_id)
+    return AuditExportCursor(
+        created_at=created_at,
+        record_type=record_type,
+        id=record_id,
+        source_sequence=source_sequence,
+    )
 
 
 def audit_export_cursor_from_rows(rows: Iterable[Mapping[str, Any]]) -> AuditExportCursor | None:
@@ -140,14 +169,27 @@ def audit_export_cursor_from_rows(rows: Iterable[Mapping[str, Any]]) -> AuditExp
     return max(cursors, key=audit_export_cursor_sort_key) if cursors else None
 
 
-def audit_export_cursor_sort_key(cursor: AuditExportCursor) -> tuple[str, str, str]:
-    return (cursor.created_at, cursor.record_type, cursor.id)
+def audit_export_cursors_from_rows(rows: Iterable[Mapping[str, Any]]) -> dict[str, AuditExportCursor]:
+    result: dict[str, AuditExportCursor] = {}
+    for row in rows:
+        cursor = audit_export_cursor_from_row(row)
+        if not cursor:
+            continue
+        current = result.get(cursor.record_type)
+        if current is None or audit_export_cursor_sort_key(cursor) > audit_export_cursor_sort_key(current):
+            result[cursor.record_type] = cursor
+    return result
 
 
-def audit_export_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+def audit_export_cursor_sort_key(cursor: AuditExportCursor) -> tuple[str, str, int, str]:
+    return (cursor.created_at, cursor.record_type, cursor.source_sequence, cursor.id)
+
+
+def audit_export_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
     return (
         str(row.get("created_at") or ""),
         str(row.get("record_type") or ""),
+        _cursor_int(row.get("source_sequence")) or 0,
         str(row.get("id") or ""),
     )
 
@@ -209,7 +251,7 @@ def audit_event_store_operation_row(record: EventStoreOperationRecord) -> dict[s
             tenant_id=record.tenant_id,
             user_id=record.actor_user_id,
         ),
-        "operation_summary": record.summary,
+        "operation_summary": audit_operation_summary(record.summary),
     }
 
 
@@ -281,9 +323,10 @@ def _list_events_for_export(
     after_cursor: AuditExportCursor | None,
     limit: int,
     order: Literal["asc", "desc"],
-) -> list[StoredEvent]:
+) -> list[dict[str, Any]]:
     sql = """
-        select id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
+        select events.rowid as source_sequence,
+               id, tenant_id, conversation_id, user_id, run_id, event_type, payload_json, created_at
         from events
     """
     clauses = ["tenant_id = ?"]
@@ -295,23 +338,27 @@ def _list_events_for_export(
     _append_after_cursor_window(clauses, params, record_type="event", after_cursor=after_cursor)
     sql += " where " + " and ".join(clauses)
     direction = "desc" if order == "desc" else "asc"
-    sql += f" order by created_at {direction}, id {direction} limit ?"
+    sql += f" order by created_at {direction}, events.rowid {direction} limit ?"
     params.append(limit)
     with event_store._connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [
-        StoredEvent(
-            id=row["id"],
-            tenant_id=row["tenant_id"],
-            conversation_id=row["conversation_id"],
-            user_id=row["user_id"],
-            run_id=row["run_id"],
-            event_type=row["event_type"],
-            payload=json.loads(row["payload_json"]),
-            created_at=row["created_at"],
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = audit_event_row(
+            StoredEvent(
+                id=row["id"],
+                tenant_id=row["tenant_id"],
+                conversation_id=row["conversation_id"],
+                user_id=row["user_id"],
+                run_id=row["run_id"],
+                event_type=row["event_type"],
+                payload=json.loads(row["payload_json"]),
+                created_at=row["created_at"],
+            )
         )
-        for row in rows
-    ]
+        item["source_sequence"] = int(row["source_sequence"])
+        result.append(item)
+    return result
 
 
 def _list_tool_audit_for_export(
@@ -323,9 +370,10 @@ def _list_tool_audit_for_export(
     after_cursor: AuditExportCursor | None,
     limit: int,
     order: Literal["asc", "desc"],
-) -> list[ToolAuditRecord]:
+) -> list[dict[str, Any]]:
     sql = """
-        select id, tenant_id, actor_user_id, request_id, trace_id, tool_name,
+        select tool_audit_records.rowid as source_sequence,
+               id, tenant_id, actor_user_id, request_id, trace_id, tool_name,
                argument_hash, status, latency_ms, error_code,
                idempotency_key_hash, replayed, created_at
         from tool_audit_records
@@ -336,28 +384,32 @@ def _list_tool_audit_for_export(
     _append_after_cursor_window(clauses, params, record_type="tool_audit", after_cursor=after_cursor)
     sql += " where " + " and ".join(clauses)
     direction = "desc" if order == "desc" else "asc"
-    sql += f" order by created_at {direction}, id {direction} limit ?"
+    sql += f" order by created_at {direction}, tool_audit_records.rowid {direction} limit ?"
     params.append(limit)
     with event_store._connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [
-        ToolAuditRecord(
-            id=row["id"],
-            tenant_id=row["tenant_id"],
-            actor_user_id=row["actor_user_id"],
-            request_id=row["request_id"],
-            trace_id=row["trace_id"],
-            tool_name=row["tool_name"],
-            argument_hash=row["argument_hash"],
-            status=ToolStatus(row["status"]),
-            latency_ms=row["latency_ms"],
-            error_code=row["error_code"],
-            idempotency_key_hash=row["idempotency_key_hash"],
-            replayed=bool(row["replayed"]),
-            created_at=row["created_at"],
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = audit_tool_row(
+            ToolAuditRecord(
+                id=row["id"],
+                tenant_id=row["tenant_id"],
+                actor_user_id=row["actor_user_id"],
+                request_id=row["request_id"],
+                trace_id=row["trace_id"],
+                tool_name=row["tool_name"],
+                argument_hash=row["argument_hash"],
+                status=ToolStatus(row["status"]),
+                latency_ms=row["latency_ms"],
+                error_code=row["error_code"],
+                idempotency_key_hash=row["idempotency_key_hash"],
+                replayed=bool(row["replayed"]),
+                created_at=row["created_at"],
+            )
         )
-        for row in rows
-    ]
+        item["source_sequence"] = int(row["source_sequence"])
+        result.append(item)
+    return result
 
 
 def _list_event_store_operations_for_export(
@@ -369,9 +421,10 @@ def _list_event_store_operations_for_export(
     after_cursor: AuditExportCursor | None,
     limit: int,
     order: Literal["asc", "desc"],
-) -> list[EventStoreOperationRecord]:
+) -> list[dict[str, Any]]:
     sql = """
-        select id, tenant_id, actor_user_id, operation, status, summary_json, created_at
+        select event_store_operations.rowid as source_sequence,
+               id, tenant_id, actor_user_id, operation, status, summary_json, created_at
         from event_store_operations
     """
     clauses = ["tenant_id = ?"]
@@ -380,22 +433,26 @@ def _list_event_store_operations_for_export(
     _append_after_cursor_window(clauses, params, record_type="event_store_operation", after_cursor=after_cursor)
     sql += " where " + " and ".join(clauses)
     direction = "desc" if order == "desc" else "asc"
-    sql += f" order by created_at {direction}, id {direction} limit ?"
+    sql += f" order by created_at {direction}, event_store_operations.rowid {direction} limit ?"
     params.append(limit)
     with event_store._connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [
-        EventStoreOperationRecord(
-            id=row["id"],
-            tenant_id=row["tenant_id"],
-            actor_user_id=row["actor_user_id"],
-            operation=row["operation"],
-            status=row["status"],
-            summary=json.loads(row["summary_json"] or "{}"),
-            created_at=row["created_at"],
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = audit_event_store_operation_row(
+            EventStoreOperationRecord(
+                id=row["id"],
+                tenant_id=row["tenant_id"],
+                actor_user_id=row["actor_user_id"],
+                operation=row["operation"],
+                status=row["status"],
+                summary=json.loads(row["summary_json"] or "{}"),
+                created_at=row["created_at"],
+            )
         )
-        for row in rows
-    ]
+        item["source_sequence"] = int(row["source_sequence"])
+        result.append(item)
+    return result
 
 
 def _list_operations_automation_executions_for_export(
@@ -407,9 +464,10 @@ def _list_operations_automation_executions_for_export(
     after_cursor: AuditExportCursor | None,
     limit: int,
     order: Literal["asc", "desc"],
-) -> list[OperationsAutomationExecutionRecord]:
+) -> list[dict[str, Any]]:
     sql = """
         select
+          operations_automation_executions.rowid as source_sequence,
           id, tenant_id, actor_user_id, action_id, action_kind, title, status,
           safe_to_auto_execute, command_method, command_path, command_query_json,
           command_body_keys_json, command_body_hash, command_fingerprint,
@@ -427,11 +485,16 @@ def _list_operations_automation_executions_for_export(
     )
     sql += " where " + " and ".join(clauses)
     direction = "desc" if order == "desc" else "asc"
-    sql += f" order by created_at {direction}, id {direction} limit ?"
+    sql += f" order by created_at {direction}, operations_automation_executions.rowid {direction} limit ?"
     params.append(limit)
     with event_store._connect() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [event_store._operations_automation_execution_from_row(row) for row in rows]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        item = audit_operations_automation_execution_row(event_store._operations_automation_execution_from_row(row))
+        item["source_sequence"] = int(row["source_sequence"])
+        result.append(item)
+    return result
 
 
 def _append_created_window(
@@ -456,25 +519,19 @@ def _append_after_cursor_window(
     record_type: str,
     after_cursor: AuditExportCursor | None,
 ) -> None:
-    if not after_cursor:
+    if not after_cursor or after_cursor.record_type != record_type:
         return
     clauses.append(
         "("
         "created_at > ? "
-        "or (created_at = ? and ? > ?) "
-        "or (created_at = ? and ? = ? and id > ?)"
+        "or (created_at = ? and rowid > ?)"
         ")"
     )
     params.extend(
         [
             after_cursor.created_at,
             after_cursor.created_at,
-            record_type,
-            after_cursor.record_type,
-            after_cursor.created_at,
-            record_type,
-            after_cursor.record_type,
-            after_cursor.id,
+            after_cursor.source_sequence,
         ]
     )
 
@@ -484,6 +541,138 @@ def _cursor_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _cursor_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+_SAFE_OPERATION_SUMMARY_STRING_KEYS = {
+    "active_acquired_at",
+    "active_expires_at",
+    "active_operation",
+    "backup_file",
+    "batch_id",
+    "content_sha256",
+    "created_after",
+    "created_before",
+    "database_file",
+    "error_type",
+    "event_type",
+    "export_schema_version",
+    "exported_at",
+    "first_record_created_at",
+    "latest_record_created_at",
+    "lock_name",
+    "manifest_file",
+    "operation",
+    "order",
+    "output_file",
+    "schema_version",
+    "source",
+    "started_at",
+    "status",
+}
+_SAFE_OPERATION_SUMMARY_SUFFIXES = (
+    "_at",
+    "_count",
+    "_file",
+    "_hash",
+    "_id",
+    "_ms",
+    "_seconds",
+    "_sha256",
+    "_status",
+    "_type",
+    "_version",
+)
+_SENSITIVE_OPERATION_SUMMARY_KEY_PARTS = (
+    "actor",
+    "answer",
+    "body",
+    "comment",
+    "command",
+    "content",
+    "detail",
+    "error",
+    "owner",
+    "path",
+    "payload",
+    "query",
+    "text",
+    "token",
+    "user",
+)
+
+
+def audit_operation_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    return _sanitize_operation_summary_mapping(summary)
+
+
+def _sanitize_operation_summary_mapping(summary: Mapping[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in summary.items():
+        key_text = str(key)[:120]
+        if isinstance(value, Mapping):
+            if _is_sensitive_operation_summary_key(key_text):
+                sanitized[f"{key_text}_hash"] = _audit_json_hash(value)
+            else:
+                sanitized[key_text] = _sanitize_operation_summary_mapping(value)
+            continue
+        if isinstance(value, list):
+            if _is_sensitive_operation_summary_key(key_text):
+                sanitized[f"{key_text}_hash"] = _audit_json_hash(value)
+            else:
+                sanitized[key_text] = [_sanitize_operation_summary_value(key_text, item) for item in value[:50]]
+            continue
+        sanitized.update(_sanitize_operation_summary_scalar(key_text, value))
+    return sanitized
+
+
+def _sanitize_operation_summary_value(key: str, value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _sanitize_operation_summary_mapping(value)
+    if isinstance(value, list):
+        return [_sanitize_operation_summary_value(key, item) for item in value[:50]]
+    return next(iter(_sanitize_operation_summary_scalar(key, value).values()))
+
+
+def _sanitize_operation_summary_scalar(key: str, value: Any) -> dict[str, Any]:
+    if value is None or isinstance(value, (bool, int, float)):
+        return {key: value}
+    if _is_safe_operation_summary_string_key(key):
+        return {key: str(value)[:500]}
+    safe_key = key if key.endswith("_hash") else f"{key}_hash"
+    return {safe_key: audit_hash(str(value))}
+
+
+def _is_safe_operation_summary_string_key(key: str) -> bool:
+    if key in _SAFE_OPERATION_SUMMARY_STRING_KEYS:
+        return True
+    if key.endswith("_path_hash"):
+        return True
+    if key.endswith(_SAFE_OPERATION_SUMMARY_SUFFIXES) and not _is_sensitive_operation_summary_key(key):
+        return True
+    return False
+
+
+def _is_sensitive_operation_summary_key(key: str) -> bool:
+    lowered = key.lower()
+    if lowered.endswith("_hash") or lowered.endswith("_path_hash"):
+        return False
+    return any(part in lowered for part in _SENSITIVE_OPERATION_SUMMARY_KEY_PARTS)
+
+
+def _audit_json_hash(value: Any) -> str | None:
+    try:
+        payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        payload = str(value)
+    return audit_hash(payload)
 
 
 def audit_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:

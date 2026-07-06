@@ -63,6 +63,11 @@ def test_audit_export_batch_writes_sanitized_ndjson_manifest_and_ledger(tmp_path
         "event_store_operation",
         "operations_automation_execution",
     }
+    operation_row = next(row for row in rows if row["record_type"] == "event_store_operation")
+    assert "detail" not in operation_row["operation_summary"]
+    assert "owner_id" not in operation_row["operation_summary"]
+    assert operation_row["operation_summary"]["detail_hash"]
+    assert operation_row["operation_summary"]["owner_id_hash"]
     assert ledger.status == "completed"
     assert ledger.summary["output_file"] == report.output_file
     assert ledger.summary["output_path_hash"] == report.output_path_hash
@@ -78,6 +83,7 @@ def test_audit_export_batch_writes_sanitized_ndjson_manifest_and_ledger(tmp_path
     assert "operator_sensitive_export" not in combined
     assert "operator_secret_should_not_export" not in combined
     assert "worker_secret_should_not_export" not in combined
+    assert "summary_owner_secret" not in combined
     assert str(output_dir) not in combined
     assert not list(output_dir.glob("*.tmp"))
     assert not list(output_dir.glob(".*.tmp"))
@@ -131,7 +137,7 @@ def test_audit_export_batch_marks_partial_exports_with_control_row(tmp_path):
     assert rows[-1]["partial"] is True
 
 
-def test_audit_export_batch_uses_stable_cursor_for_incremental_runs(tmp_path):
+def test_audit_export_batch_uses_source_sequence_cursor_for_incremental_runs(tmp_path):
     event_store = SQLiteEventStore(tmp_path / "events.db")
     created_at = "2026-07-06T10:00:00+00:00"
     _append_tool_audit(event_store, "audit_cursor_a", created_at)
@@ -149,7 +155,7 @@ def test_audit_export_batch_uses_stable_cursor_for_incremental_runs(tmp_path):
         output_dir=tmp_path / "exports",
         options=options,
     )
-    _append_tool_audit(event_store, "audit_cursor_c", created_at)
+    _append_tool_audit(event_store, "audit_cursor_0", created_at)
     second = run_audit_export_batch(
         event_store=event_store,
         tenant_id="demo_tenant",
@@ -163,15 +169,57 @@ def test_audit_export_batch_uses_stable_cursor_for_incremental_runs(tmp_path):
         "created_at": created_at,
         "record_type": "tool_audit",
         "id": "audit_cursor_b",
+        "source_sequence": 2,
     }
+    assert first.source_high_water_cursors["tool_audit"] == first.high_water_cursor
     assert second.previous_cursor == first.high_water_cursor
     assert second.high_water_cursor == {
         "created_at": created_at,
         "record_type": "tool_audit",
-        "id": "audit_cursor_c",
+        "id": "audit_cursor_0",
+        "source_sequence": 3,
     }
-    assert [row["id"] for row in rows] == ["audit_cursor_c"]
+    assert second.source_high_water_cursors["tool_audit"] == second.high_water_cursor
+    assert [row["id"] for row in rows] == ["audit_cursor_0"]
     assert second.partial is False
+
+
+def test_audit_export_batch_created_before_window_does_not_reuse_incremental_cursor(tmp_path):
+    event_store = SQLiteEventStore(tmp_path / "events.db")
+    created_at = "2026-07-06T10:00:00+00:00"
+    _append_tool_audit(event_store, "audit_window_a", created_at)
+    _append_tool_audit(event_store, "audit_window_b", created_at)
+    base_options = AuditExportBatchOptions(
+        include_events=False,
+        include_event_store_operations=False,
+        include_operations_automation_executions=False,
+        limit=20,
+    )
+    run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=base_options,
+    )
+
+    window = run_audit_export_batch(
+        event_store=event_store,
+        tenant_id="demo_tenant",
+        output_dir=tmp_path / "exports",
+        options=AuditExportBatchOptions(
+            include_events=False,
+            include_event_store_operations=False,
+            include_operations_automation_executions=False,
+            created_before=created_at,
+            limit=20,
+        ),
+    )
+
+    rows = _read_export_rows(tmp_path / "exports" / window.output_file)
+
+    assert window.incremental is False
+    assert window.previous_cursor is None
+    assert [row["id"] for row in rows] == ["audit_window_a", "audit_window_b"]
 
 
 def test_audit_export_batch_does_not_advance_cursor_from_partial_batch(tmp_path):
@@ -359,6 +407,8 @@ def _seed_audit_rows(event_store: SQLiteEventStore) -> None:
             "schema_version": "event_store_operation_summary.v1",
             "backup_file": "support-agent-lab-demo.db",
             "backup_path_hash": "hash_only",
+            "detail": "PRIVATE operation detail should not export",
+            "owner_id": "summary_owner_secret",
             "verified": True,
         },
         created_at=created_at,

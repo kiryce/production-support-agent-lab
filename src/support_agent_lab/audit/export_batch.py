@@ -13,10 +13,12 @@ from pydantic import BaseModel, Field
 
 from support_agent_lab.audit.export import (
     AuditExportCursor,
-    audit_export_cursor_from_rows,
+    audit_export_cursor_sort_key,
+    audit_export_cursors_from_rows,
     audit_export_rows,
     audit_hash,
     coerce_audit_export_cursor,
+    coerce_audit_export_cursors,
     ndjson,
 )
 from support_agent_lab.memory.event_store import EventStoreOperationLockConflict, SQLiteEventStore
@@ -49,8 +51,10 @@ class AuditExportBatchReport(BaseModel):
     latest_record_created_at: str | None = None
     partial: bool = False
     incremental: bool = False
-    previous_cursor: dict[str, str] | None = None
-    high_water_cursor: dict[str, str] | None = None
+    previous_cursor: dict[str, str | int] | None = None
+    high_water_cursor: dict[str, str | int] | None = None
+    previous_source_cursors: dict[str, dict[str, str | int]] = Field(default_factory=dict)
+    source_high_water_cursors: dict[str, dict[str, str | int]] = Field(default_factory=dict)
     cursor_advance_allowed: bool = False
     operation_id: str | None = None
     error_type: str | None = None
@@ -73,7 +77,8 @@ class AuditExportBatchSummary(BaseModel):
     last_manifest_file: str | None = None
     last_content_sha256: str | None = None
     last_partial: bool = False
-    last_high_water_cursor: dict[str, str] | None = None
+    last_high_water_cursor: dict[str, str | int] | None = None
+    last_source_high_water_cursors: dict[str, dict[str, str | int]] = Field(default_factory=dict)
     last_cursor_advance_allowed: bool = False
     last_error_type: str | None = None
 
@@ -116,7 +121,7 @@ def run_audit_export_batch(
             ttl_seconds=lock_ttl_seconds,
             now=effective_now,
         ):
-            previous_cursor = _latest_completed_export_cursor(
+            previous_cursors = _latest_completed_export_cursors(
                 event_store=event_store,
                 tenant_id=tenant_id,
                 options=opts,
@@ -128,7 +133,7 @@ def run_audit_export_batch(
                 options=opts,
                 started_at=effective_now,
                 batch_id=batch_id,
-                previous_cursor=previous_cursor,
+                previous_cursors=previous_cursors,
             )
             operation = event_store.append_event_store_operation(
                 tenant_id=tenant_id,
@@ -234,6 +239,7 @@ def summarize_audit_export_batches(
         last_content_sha256=_optional_text(latest_summary.get("content_sha256")),
         last_partial=bool(latest_summary.get("partial")),
         last_high_water_cursor=_optional_cursor_dict(latest_summary.get("high_water_cursor")),
+        last_source_high_water_cursors=_optional_cursor_map(latest_summary.get("source_high_water_cursors")),
         last_cursor_advance_allowed=bool(latest_summary.get("cursor_advance_allowed")),
         last_error_type=_optional_text(latest_summary.get("error_type")),
     )
@@ -261,6 +267,8 @@ def sanitize_audit_export_batch_report(report: AuditExportBatchReport) -> dict[s
         "incremental": report.incremental,
         "previous_cursor": report.previous_cursor,
         "high_water_cursor": report.high_water_cursor,
+        "previous_source_cursors": report.previous_source_cursors,
+        "source_high_water_cursors": report.source_high_water_cursors,
         "cursor_advance_allowed": report.cursor_advance_allowed,
         "operation_id": report.operation_id,
         "error_type": report.error_type,
@@ -276,7 +284,7 @@ def _write_audit_export_batch(
     options: AuditExportBatchOptions,
     started_at: datetime,
     batch_id: str,
-    previous_cursor: AuditExportCursor | None,
+    previous_cursors: dict[str, AuditExportCursor],
 ) -> AuditExportBatchReport:
     _validate_options(options)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -292,15 +300,17 @@ def _write_audit_export_batch(
         event_type=options.event_type,
         created_after=options.created_after,
         created_before=options.created_before,
-        after_cursor=previous_cursor if incremental else None,
+        after_cursors=previous_cursors if incremental else None,
         limit=options.limit + 1,
         order=options.order,
     )
     partial = len(rows) > options.limit
     source_rows = rows[: options.limit]
     payload_rows = list(source_rows)
-    candidate_high_water = audit_export_cursor_from_rows(source_rows)
-    high_water_cursor = candidate_high_water if candidate_high_water and not partial else None
+    candidate_high_water_cursors = audit_export_cursors_from_rows(source_rows)
+    high_water_cursors = candidate_high_water_cursors if candidate_high_water_cursors and not partial else {}
+    high_water_cursor = _latest_cursor_from_map(high_water_cursors)
+    previous_cursor = _latest_cursor_from_map(previous_cursors)
     payload = ndjson(payload_rows).encode("utf-8")
     content_sha256 = hashlib.sha256(payload).hexdigest()
     exported_at = utc_now()
@@ -346,7 +356,9 @@ def _write_audit_export_batch(
         "incremental": incremental,
         "previous_cursor": previous_cursor.as_dict() if previous_cursor else None,
         "high_water_cursor": high_water_cursor.as_dict() if high_water_cursor else None,
-        "cursor_advance_allowed": bool(high_water_cursor),
+        "previous_source_cursors": _cursor_map_to_dict(previous_cursors),
+        "source_high_water_cursors": _cursor_map_to_dict(high_water_cursors),
+        "cursor_advance_allowed": bool(high_water_cursors),
         "options": _options_summary(options),
         "lock_name": AUDIT_EXPORT_BATCH_LOCK_NAME,
         "worker_source": "worker",
@@ -371,6 +383,8 @@ def _write_audit_export_batch(
         incremental=incremental,
         previous_cursor=manifest["previous_cursor"],
         high_water_cursor=manifest["high_water_cursor"],
+        previous_source_cursors=manifest["previous_source_cursors"],
+        source_high_water_cursors=manifest["source_high_water_cursors"],
         cursor_advance_allowed=manifest["cursor_advance_allowed"],
     )
 
@@ -402,6 +416,8 @@ def _operation_summary(
         "incremental": report.incremental,
         "previous_cursor": report.previous_cursor,
         "high_water_cursor": report.high_water_cursor,
+        "previous_source_cursors": report.previous_source_cursors,
+        "source_high_water_cursors": report.source_high_water_cursors,
         "cursor_advance_allowed": report.cursor_advance_allowed,
         "lock_name": AUDIT_EXPORT_BATCH_LOCK_NAME,
         "error_type": report.error_type,
@@ -424,14 +440,14 @@ def _options_summary(options: AuditExportBatchOptions) -> dict[str, Any]:
     }
 
 
-def _latest_completed_export_cursor(
+def _latest_completed_export_cursors(
     *,
     event_store: SQLiteEventStore,
     tenant_id: str,
     options: AuditExportBatchOptions,
-) -> AuditExportCursor | None:
+) -> dict[str, AuditExportCursor]:
     if not _incremental_enabled(options):
-        return None
+        return {}
     records = event_store.list_event_store_operations(
         tenant_id=tenant_id,
         operation=AUDIT_EXPORT_BATCH_OPERATION,
@@ -447,14 +463,16 @@ def _latest_completed_export_cursor(
             continue
         if not _previous_options_are_cursor_compatible(summary.get("options"), options):
             continue
-        cursor = coerce_audit_export_cursor(summary.get("high_water_cursor"))
-        if cursor:
-            return cursor
-    return None
+        cursors = coerce_audit_export_cursors(summary.get("source_high_water_cursors"))
+        if not cursors:
+            cursors = coerce_audit_export_cursors(summary.get("high_water_cursor"))
+        if cursors:
+            return cursors
+    return {}
 
 
 def _incremental_enabled(options: AuditExportBatchOptions) -> bool:
-    return bool(options.incremental and options.created_after is None)
+    return bool(options.incremental and options.created_after is None and options.created_before is None)
 
 
 def _previous_options_are_cursor_compatible(
@@ -472,9 +490,17 @@ def _previous_options_are_cursor_compatible(
     ):
         if previous_options.get(key) != getattr(current_options, key):
             return False
-    if previous_options.get("created_after") is not None:
+    if previous_options.get("created_after") is not None or previous_options.get("created_before") is not None:
         return False
     return True
+
+
+def _cursor_map_to_dict(cursors: dict[str, AuditExportCursor]) -> dict[str, dict[str, str | int]]:
+    return {record_type: cursor.as_dict() for record_type, cursor in sorted(cursors.items())}
+
+
+def _latest_cursor_from_map(cursors: dict[str, AuditExportCursor]) -> AuditExportCursor | None:
+    return max(cursors.values(), key=audit_export_cursor_sort_key) if cursors else None
 
 
 def _lock_conflict_summary(exc: EventStoreOperationLockConflict) -> dict[str, Any]:
@@ -574,9 +600,13 @@ def _optional_text(value: Any) -> str | None:
     return text if text else None
 
 
-def _optional_cursor_dict(value: Any) -> dict[str, str] | None:
+def _optional_cursor_dict(value: Any) -> dict[str, str | int] | None:
     cursor = coerce_audit_export_cursor(value)
     return cursor.as_dict() if cursor else None
+
+
+def _optional_cursor_map(value: Any) -> dict[str, dict[str, str | int]]:
+    return _cursor_map_to_dict(coerce_audit_export_cursors(value))
 
 
 def _dict_of_ints(value: Any) -> dict[str, int]:
