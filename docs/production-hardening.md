@@ -102,7 +102,7 @@ monitor.review
 - release approver 用 `/api/v1/admin/promotion/decisions` 记录 approve/reject/defer、target version、备注和当时的 gate snapshot；blocked gate 只能通过显式 override 审计。
 - 每次 release 后确认 `support-agent-audit-export-worker` 产出的 manifest 是 fresh 且 `partial=false`，再把 NDJSON 送进 SIEM/warehouse；需要临时人工导出时可用 `/api/v1/admin/audit/export`，它只含安全摘要和哈希 correlation id。
 - merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
-- 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --base-url <staging-url>`。
+- 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --prod-smoke-ops --base-url <staging-url>`；tag release workflow 会在创建 GitHub Release 前用同一条 smoke-only 门禁检查 staging 的 deep+ops readiness、签名、chat、tool audit 和 incident bundle。
 - canary 1% 流量。
 - P0/P1 自动告警和回滚。
 

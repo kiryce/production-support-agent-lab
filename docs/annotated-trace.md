@@ -258,5 +258,6 @@ python scripts/run_release_check.py
 python scripts/run_release_check.py \
   --production-config \
   --prod-smoke \
+  --prod-smoke-ops \
   --base-url https://your-staging-agent.example.com
 ```

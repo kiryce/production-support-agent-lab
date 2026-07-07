@@ -934,6 +934,7 @@ python scripts/run_release_check.py --include-docker
 python scripts/run_release_check.py \
   --production-config \
   --prod-smoke \
+  --prod-smoke-ops \
   --base-url https://your-staging-agent.example.com \
   --smoke-user-id user_prod \
   --smoke-admin-id admin_prod \
@@ -947,6 +948,25 @@ and same-origin console write protection. `--prod-smoke` is intentionally
 explicit because it calls a deployed service and can reach your real OpenAI,
 business, and knowledge integrations through `/api/v1/ready?deep=true` and
 `/api/v1/chat/messages`.
+
+Add `--prod-smoke-ops` when staging is meant to represent a deployable
+environment. The smoke first calls `/api/v1/ready?deep=true&ops=true`, requires
+the response to confirm `ops=true`, and rejects older deployments that do not
+return the alert dispatcher, monitor review worker, and audit export batch
+checks. Use `--smoke-only` in CI after the deterministic release gate has
+already run, for example in a protected GitHub `staging` environment before
+creating a tag release.
+
+The bundled tag release workflow runs that protected staging smoke before
+`gh release create`. Configure these environment or repository secrets so the
+runner can both sign requests and validate the expected production settings:
+`STAGING_AGENT_BASE_URL`, `STAGING_APP_TENANT_ID`,
+`STAGING_APP_INTERNAL_API_KEY`, `STAGING_APP_ACTOR_SIGNATURE_SECRET`,
+`STAGING_OPENAI_API_KEY`, `STAGING_BUSINESS_API_BASE_URL`,
+`STAGING_BUSINESS_API_KEY`, `STAGING_KNOWLEDGE_API_BASE_URL`, and
+`STAGING_KNOWLEDGE_API_KEY`. Optional secrets `STAGING_SMOKE_USER_ID`,
+`STAGING_SMOKE_ADMIN_ID`, and `STAGING_SMOKE_MESSAGE` let you choose the
+staging customer/admin actors and safe smoke prompt.
 
 Use `/api/v1/ready?deep=true&ops=true` as the stricter deploy or on-call
 preflight after the API, alert dispatcher, monitor review worker, and audit

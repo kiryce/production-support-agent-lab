@@ -11,6 +11,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    environment: staging
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,6 +43,55 @@ jobs:
         run: docker build -t production-support-agent-lab:${{ github.ref_name }} .
       - name: Build frontend Docker image
         run: docker build -t production-support-agent-console:${{ github.ref_name }} ./frontend
+      - name: Staging ops smoke
+        env:
+          STAGING_AGENT_BASE_URL: ${{ secrets.STAGING_AGENT_BASE_URL }}
+          STAGING_SMOKE_USER_ID: ${{ secrets.STAGING_SMOKE_USER_ID }}
+          STAGING_SMOKE_ADMIN_ID: ${{ secrets.STAGING_SMOKE_ADMIN_ID }}
+          STAGING_SMOKE_MESSAGE: ${{ secrets.STAGING_SMOKE_MESSAGE }}
+          APP_ENV: production
+          APP_REQUIRE_PRODUCTION: "true"
+          APP_TENANT_ID: ${{ secrets.STAGING_APP_TENANT_ID }}
+          APP_MODEL_PROVIDER: openai
+          OPENAI_API_KEY: ${{ secrets.STAGING_OPENAI_API_KEY }}
+          APP_BUSINESS_API_BASE_URL: ${{ secrets.STAGING_BUSINESS_API_BASE_URL }}
+          APP_BUSINESS_API_KEY: ${{ secrets.STAGING_BUSINESS_API_KEY }}
+          APP_KNOWLEDGE_API_BASE_URL: ${{ secrets.STAGING_KNOWLEDGE_API_BASE_URL }}
+          APP_KNOWLEDGE_API_KEY: ${{ secrets.STAGING_KNOWLEDGE_API_KEY }}
+          APP_INTERNAL_API_KEY: ${{ secrets.STAGING_APP_INTERNAL_API_KEY }}
+          APP_ACTOR_SIGNATURE_SECRET: ${{ secrets.STAGING_APP_ACTOR_SIGNATURE_SECRET }}
+          APP_DATABASE_URL: sqlite:///./data/staging/support-agent-lab.db
+        run: |
+          missing=0
+          for name in \
+            STAGING_AGENT_BASE_URL \
+            APP_TENANT_ID \
+            OPENAI_API_KEY \
+            APP_BUSINESS_API_BASE_URL \
+            APP_BUSINESS_API_KEY \
+            APP_KNOWLEDGE_API_BASE_URL \
+            APP_KNOWLEDGE_API_KEY \
+            APP_INTERNAL_API_KEY \
+            APP_ACTOR_SIGNATURE_SECRET
+          do
+            if [ -z "${!name}" ]; then
+              echo "::error::${name} is required for staging ops smoke"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 2
+          fi
+
+          python scripts/run_release_check.py \
+            --smoke-only \
+            --production-config \
+            --prod-smoke \
+            --prod-smoke-ops \
+            --base-url "$STAGING_AGENT_BASE_URL" \
+            --smoke-user-id "${STAGING_SMOKE_USER_ID:-user_prod}" \
+            --smoke-admin-id "${STAGING_SMOKE_ADMIN_ID:-admin_prod}" \
+            --smoke-message "${STAGING_SMOKE_MESSAGE:-Where is my most recent order?}"
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

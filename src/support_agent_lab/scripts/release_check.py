@@ -238,17 +238,22 @@ def run_production_smoke(
     admin_user_id: str,
     message: str,
     timeout_seconds: float,
+    ops_readiness: bool = False,
 ) -> None:
     settings = load_settings(root)
     settings.validate_production_ready()
     base_url = base_url.rstrip("/")
 
     with httpx.Client(base_url=base_url, timeout=timeout_seconds) as client:
-        ready = client.get("/api/v1/ready?deep=true")
-        _require_json_status(ready, 200, "deep readiness")
+        readiness_path = "/api/v1/ready?deep=true&ops=true" if ops_readiness else "/api/v1/ready?deep=true"
+        readiness_step = "ops readiness" if ops_readiness else "deep readiness"
+        ready = client.get(readiness_path)
+        _require_json_status(ready, 200, readiness_step)
         ready_body = ready.json()
         if ready_body.get("status") != "ok":
-            raise RuntimeError(f"deep readiness returned {ready_body.get('status')}: {ready_body}")
+            raise RuntimeError(f"{readiness_step} returned {ready_body.get('status')}: {ready_body}")
+        if ops_readiness:
+            _require_ops_readiness_confirmed(ready_body)
 
         session_body = _json_body({"user_id": user_id})
         user_headers = production_headers(
@@ -357,6 +362,19 @@ def run_production_smoke(
     print(f"production smoke passed for trace {trace_id}")
 
 
+def _require_ops_readiness_confirmed(ready_body: dict) -> None:
+    if ready_body.get("ops") is not True:
+        raise RuntimeError("ops readiness did not confirm ops=true; the deployed service may be an older build")
+    checks = ready_body.get("checks")
+    if not isinstance(checks, list):
+        raise RuntimeError("ops readiness response did not include readiness checks")
+    check_names = {check.get("name") for check in checks if isinstance(check, dict)}
+    required = {"alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"}
+    missing = sorted(required - check_names)
+    if missing:
+        raise RuntimeError(f"ops readiness response is missing checks: {', '.join(missing)}")
+
+
 def _require_json_status(response: httpx.Response, expected: int, step_name: str) -> None:
     if response.status_code != expected:
         raise RuntimeError(
@@ -401,6 +419,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="After deterministic checks, call a real deployed production service. Requires --base-url.",
     )
+    parser.add_argument(
+        "--prod-smoke-ops",
+        action="store_true",
+        help="During --prod-smoke, require /api/v1/ready?deep=true&ops=true before chat and admin probes.",
+    )
+    parser.add_argument(
+        "--smoke-only",
+        action="store_true",
+        help="Skip deterministic local gates and run only deployment policy, optional production config, and --prod-smoke.",
+    )
     parser.add_argument("--base-url", help="Base URL for --prod-smoke, for example https://agent.example.com.")
     parser.add_argument("--smoke-user-id", default="user_prod", help="Existing production/staging user id.")
     parser.add_argument("--smoke-admin-id", default="admin_prod", help="Existing production/staging admin actor id.")
@@ -427,6 +455,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_deployment_policy(root)
         if args.prod_smoke and not args.base_url:
             raise RuntimeError("--prod-smoke requires --base-url")
+        if args.prod_smoke_ops and not args.prod_smoke:
+            raise RuntimeError("--prod-smoke-ops requires --prod-smoke")
+        if args.smoke_only and not args.prod_smoke:
+            raise RuntimeError("--smoke-only requires --prod-smoke")
         if args.production_config:
             print("==> production config validation")
             validate_production_config(root)
@@ -434,11 +466,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"release check configuration failed: {exc}", file=sys.stderr)
         return 2
 
-    for step in build_steps(include_docker=args.include_docker):
-        exit_code = run_step(step, root)
-        if exit_code != 0:
-            print(f"\nrelease check failed at: {step.name}", file=sys.stderr)
-            return exit_code
+    if not args.smoke_only:
+        for step in build_steps(include_docker=args.include_docker):
+            exit_code = run_step(step, root)
+            if exit_code != 0:
+                print(f"\nrelease check failed at: {step.name}", file=sys.stderr)
+                return exit_code
 
     if args.prod_smoke:
         try:
@@ -450,6 +483,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 admin_user_id=args.smoke_admin_id,
                 message=args.smoke_message,
                 timeout_seconds=args.smoke_timeout_seconds,
+                ops_readiness=args.prod_smoke_ops,
             )
         except RuntimeError as exc:
             print(f"\nproduction smoke failed: {exc}", file=sys.stderr)

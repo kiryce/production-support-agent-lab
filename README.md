@@ -263,6 +263,20 @@ curl http://127.0.0.1:8000/api/v1/agent/runs/run_abc123
 7. 在控制台里从 monitor alert 打开 incident brief，或从 Feedback workbench 选一条负反馈，记录 review trail，再生成 regression draft。
 8. 修复后跑相关 eval 和全量 release check。
 
+发布到真实 staging 前，再跑一次真实预检：
+
+```bash
+python scripts/run_release_check.py \
+  --production-config \
+  --prod-smoke \
+  --prod-smoke-ops \
+  --base-url https://your-staging-agent.example.com
+```
+
+`--prod-smoke-ops` 会要求 deployed API 的 `/api/v1/ready?deep=true&ops=true`
+通过，确认 alert dispatcher、monitor review worker 和 audit export batch
+这些异步生产环也在运行，而不只是 HTTP API 能启动。
+
 ## 核心架构
 
 ```mermaid
