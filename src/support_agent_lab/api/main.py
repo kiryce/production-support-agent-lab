@@ -486,7 +486,8 @@ class PromotionDecisionRequest(BaseModel):
     override_blocked: bool = False
     override_reason: str = Field(default="", max_length=500)
     source: Literal["event_store", "live"] = "event_store"
-    deep: bool = False
+    deep: bool = True
+    ops: bool = True
     window_hours: int = Field(default=24, ge=1, le=168)
     max_active_p0p1_alerts: int = Field(default=0, ge=0, le=100)
     max_active_alerts: int = Field(default=10, ge=0, le=1000)
@@ -705,6 +706,7 @@ async def _promotion_gate_response(
     deps: AppContainer,
     source: Literal["event_store", "live"],
     deep: bool,
+    ops: bool = False,
     window_hours: int,
     max_active_p0p1_alerts: int,
     max_active_alerts: int,
@@ -716,7 +718,7 @@ async def _promotion_gate_response(
 ) -> PromotionGateResponse:
     generated_at = utc_now()
     created_after = generated_at - timedelta(hours=window_hours)
-    readiness = await check_readiness(deps, deep=deep)
+    readiness = await check_readiness(deps, deep=deep, ops=ops)
     monitor = _load_monitor_triage_metrics(
         deps=deps,
         source=source,
@@ -2308,7 +2310,12 @@ def _promotion_readiness_check(readiness: ReadinessResponse) -> PromotionGateChe
             name="readiness",
             status="blocked",
             detail=f"{len(failed)} readiness check(s) failed.",
-            evidence={"failed_checks": [check.name for check in failed], "status": readiness.status},
+            evidence={
+                "failed_checks": [check.name for check in failed],
+                "status": readiness.status,
+                "deep": readiness.deep,
+                "ops": readiness.ops,
+            },
         )
     skipped = [check for check in readiness.checks if check.status == "skipped"]
     if readiness.deep is False and skipped:
@@ -2316,13 +2323,18 @@ def _promotion_readiness_check(readiness: ReadinessResponse) -> PromotionGateChe
             name="readiness",
             status="warn",
             detail="Readiness passed, but deep dependency checks were skipped.",
-            evidence={"skipped_checks": [check.name for check in skipped], "status": readiness.status},
+            evidence={
+                "skipped_checks": [check.name for check in skipped],
+                "status": readiness.status,
+                "deep": readiness.deep,
+                "ops": readiness.ops,
+            },
         )
     return PromotionGateCheck(
         name="readiness",
         status="passed",
         detail="Readiness checks passed.",
-        evidence={"status": readiness.status, "deep": readiness.deep},
+        evidence={"status": readiness.status, "deep": readiness.deep, "ops": readiness.ops},
     )
 
 
@@ -5235,6 +5247,7 @@ def create_app() -> FastAPI:
         actor: Annotated[RequestActor, Depends(get_request_actor)],
         source: Annotated[Literal["event_store", "live"], Query()] = "event_store",
         deep: Annotated[bool, Query()] = False,
+        ops: Annotated[bool, Query()] = False,
         window_hours: Annotated[int, Query(ge=1, le=168)] = 24,
         max_active_p0p1_alerts: Annotated[int, Query(ge=0, le=100)] = 0,
         max_active_alerts: Annotated[int, Query(ge=0, le=1000)] = 10,
@@ -5254,6 +5267,7 @@ def create_app() -> FastAPI:
             deps=deps,
             source=source,
             deep=deep,
+            ops=ops,
             window_hours=window_hours,
             max_active_p0p1_alerts=max_active_p0p1_alerts,
             max_active_alerts=max_active_alerts,
@@ -5484,10 +5498,15 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail="override_blocked only applies to approved decisions")
         if body.override_blocked and not override_reason:
             raise HTTPException(status_code=422, detail="override_reason is required when overriding a blocked gate")
+        if not body.deep:
+            raise HTTPException(status_code=422, detail="promotion decisions require deep readiness checks")
+        if not body.ops:
+            raise HTTPException(status_code=422, detail="promotion decisions require ops readiness checks")
         gate = await _promotion_gate_response(
             deps=deps,
             source=body.source,
-            deep=body.deep,
+            deep=True,
+            ops=True,
             window_hours=body.window_hours,
             max_active_p0p1_alerts=body.max_active_p0p1_alerts,
             max_active_alerts=body.max_active_alerts,

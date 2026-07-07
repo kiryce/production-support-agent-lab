@@ -37,7 +37,7 @@ describe("promotion decision BFF route", () => {
             min_feedback_count: 5
           },
           checks: [],
-          readiness: { status: "ok", environment: "staging", deep: false, ops: false, checks: [] },
+          readiness: { status: "ok", environment: "staging", deep: true, ops: true, checks: [] },
           monitor: {},
           tool_audit: {},
           feedback: {},
@@ -59,6 +59,8 @@ describe("promotion decision BFF route", () => {
         override_blocked: "yes",
         override_reason: "x",
         source: "file",
+        deep: false,
+        ops: false,
         window_hours: 999,
         max_tool_failure_rate: -1,
         min_feedback_count: -5
@@ -76,6 +78,8 @@ describe("promotion decision BFF route", () => {
       override_blocked: false,
       override_reason: "x",
       source: "event_store",
+      deep: true,
+      ops: true,
       window_hours: 168,
       max_tool_failure_rate: 0,
       min_feedback_count: 0

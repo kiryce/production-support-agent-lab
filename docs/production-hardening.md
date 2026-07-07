@@ -99,7 +99,7 @@ monitor.review
 - 发布或清理前跑 `python scripts/event_store_ops.py --database-url <sqlite-url> backup --output <backup.db>`，再跑 `restore-drill --backup <backup.db>`，最后 dry-run retention；生产 apply 优先走 Console/API，CLI 应急直连必须显式传 `--unsafe-local-apply` 并核对 operation ledger。
 - local/staging 控制台可用 `/api/v1/admin/evals/staging` 重跑同一批 bundled eval suites，并把 suite + aggregate gate history 写入事件流。
 - merge/release 前检查 `/api/v1/admin/promotion/gate`，确认 readiness、monitor pressure、tool failure rate、feedback negative rate 和最新 staging eval 都没有阻断项。
-- release approver 用 `/api/v1/admin/promotion/decisions` 记录 approve/reject/defer、target version、备注和当时的 gate snapshot；blocked gate 只能通过显式 override 审计。
+- release approver 用 `/api/v1/admin/promotion/decisions` 记录 approve/reject/defer、target version、备注和服务端重算的 deep+ops gate snapshot；blocked gate 只能通过显式 override 审计。
 - 每次 release 后确认 `support-agent-audit-export-worker` 产出的 manifest 是 fresh 且 `partial=false`，再把 NDJSON 送进 SIEM/warehouse；需要临时人工导出时可用 `/api/v1/admin/audit/export`，它只含安全摘要和哈希 correlation id。
 - merge 前确认 GitHub Actions 全绿，并用 staging replay 复核真实流量样本。
 - 发布前跑 `python scripts/run_release_check.py --production-config --prod-smoke --prod-smoke-ops --base-url <staging-url>`；tag release workflow 会在创建 GitHub Release 前用同一条 smoke-only 门禁检查 staging 的 deep+ops readiness、签名、chat、tool audit 和 incident bundle。

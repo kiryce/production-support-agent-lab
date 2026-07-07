@@ -57,7 +57,7 @@
 - go-live preflight：Settings 里手动触发 `/api/v1/ready?deep=true&ops=true`，确认真实依赖和后台 worker / audit export 批处理都健康，不把日常 snapshot 变重
 - promotion gate：聚合 readiness、monitor、tool audit、response feedback、staging eval，判断是否可晋级
 - SLO report：按 grounded rate、policy compliance、human review、P0/P1、tool failure、feedback、eval freshness、MTTA、alert delivery、monitor review worker 和 automation execution failure rate 计算服务目标与错误预算
-- release decision audit：把 approve/reject/defer、actor、备注和当时的 gate snapshot 写入 append-only event store
+- release decision audit：把 approve/reject/defer、actor、备注和服务端重算的 deep+ops gate snapshot 写入 append-only event store
 - operations automation plan：聚合 monitor、alert delivery、promotion gate、tool audit、feedback、eval 证据，返回可执行 endpoint、scope、guardrail 和是否可自动执行，适合接 cron、值班机器人或发布前检查；控制台执行 auto-safe 动作后会写入 automation execution ledger，并能在 Settings 里按 action kind、status、source 和 actor 查询执行历史
 - audit export：把脱敏后的 event/tool audit/event-store operation/automation execution 摘要导出为 NDJSON；也可以跑常驻 batch worker 落盘 NDJSON + manifest，方便接 SIEM 或 warehouse
 - event-store operation ledger + operation lock：备份、恢复演练、保留策略预览/应用会先获取 SQLite 租约锁，拒绝并发维护操作；完成、拒绝、失败都会写入独立台账；台账不参与 retention high-water mark，所以不会让自己的 guard token 过期
@@ -578,7 +578,7 @@ Eval 不只看最终回答，还检查：
 
 `/api/v1/admin/operations/automation-plan` 是只读运营自动化计划：它在同一个证据窗口里汇总 active P0/P1 alert、webhook/outbox 状态、dead-letter delivery、缺回执 sent delivery、incident brief、regression draft、promotion gate、tool audit、feedback、retrieval grounding 和 staging eval gate，然后返回 `ops_automation.v1`。每条 action 都包含 title、detail、priority、`safe_to_auto_execute`、所需 scope、可调用的 method/path/query/body，以及不含用户原文的 evidence。它不会自己改 triage、不会发 webhook、不会跑 eval；真正执行必须由有 scope 的控制台、cron 或值班机器人显式调用返回的 command。控制台执行 auto-safe action 后会调用 `/api/v1/admin/operations/automation-executions` 写入执行台账，只保存 action kind、状态、command 指纹、body key/hash 和结果摘要，不保存 raw command body 或 raw result。`/api/v1/admin/operations/automation-executions/summary` 会按时间窗口聚合 completed/failed/rejected、source 和 failure rate；Settings 会展示 24h execution health，并支持按 action kind、status、source、actor 查询执行历史，方便排查 cron、值班机器人、API 和控制台自动化动作。
 
-`/api/v1/admin/promotion/decisions` 会重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
+`/api/v1/admin/promotion/decisions` 会用 deep dependency checks + ops worker readiness 重新计算同一套 gate，并把发布决策作为 `release.promotion.decision` 事件追加保存；如果直连后端显式传 `deep=false` 或 `ops=false`，接口会拒绝。普通 approve 不能越过 blocked gate；如果必须 break-glass，需要显式 `override_blocked=true` 和 override reason，后续可以从控制台 Settings 或 `/api/v1/admin/events?event_type=release.promotion.decision` 审计。
 
 `/api/v1/admin/audit/export` 会导出 `application/x-ndjson`，每行是 `audit_export.v1` 摘要记录。它只包含事件类型、状态、错误码、工具名、评分、发布决策、event-store operation、automation execution、failure/policy code 和哈希化 correlation id，不包含用户原文、反馈 comment、eval answer、工具参数、原始运维 token、完整文件路径、自动化命令 path/query/body/result 或知识库正文；automation 只导出 method、query keys、body keys、path/query/body/result hash 和 fingerprint。控制台 Settings 可以直接下载这份 NDJSON。
 

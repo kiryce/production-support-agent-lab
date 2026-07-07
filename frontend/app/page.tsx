@@ -1556,7 +1556,8 @@ export default function Home() {
           override_blocked: promotionOverrideBlocked,
           override_reason: promotionOverrideReason,
           source: gate?.source ?? snapshot?.monitorSource ?? "event_store",
-          deep: gate?.readiness.deep ?? false,
+          deep: true,
+          ops: true,
           window_hours: gate?.window_hours ?? 24,
           max_active_p0p1_alerts: thresholds?.max_active_p0p1_alerts ?? 0,
           max_active_alerts: thresholds?.max_active_alerts ?? 10,
@@ -1572,6 +1573,10 @@ export default function Home() {
         throw new Error(data.detail ?? "Promotion decision failed");
       }
       const record = data as PromotionDecisionRecord;
+      setGoLivePreflight({
+        report: record.gate.readiness,
+        checkedAt: record.gate.generated_at
+      });
       setSnapshot((current) =>
         current
           ? {
@@ -4379,6 +4384,12 @@ function SettingsWorkbenchPanel({
           ) : null}
         </div>
         <form className="promotion-decision-form" onSubmit={onPromotionDecisionSubmit}>
+          <div className="event-op-result state-neutral">
+            <div className="event-op-copy">
+              <strong>Decision evidence</strong>
+              <span>Recording a decision reruns the server promotion gate with deep+ops readiness.</span>
+            </div>
+          </div>
           <div className="settings-action-row">
             <label className="field-label compact">
               Target

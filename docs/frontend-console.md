@@ -132,7 +132,8 @@ real local FastAPI endpoints:
    append obsolete feedback decisions.
 24. `GET /api/v1/admin/promotion/decisions` and
    `POST /api/v1/admin/promotion/decisions` when `Settings` shows or records
-   append-only release decisions tied to a fresh promotion-gate snapshot.
+   append-only release decisions tied to a fresh deep+ops promotion-gate
+   snapshot.
 25. `GET /api/v1/admin/operations/slo-report` when `Overview` and `Settings`
    show service objectives, error-budget remaining, and breached/watch/no-data
    counts.
@@ -428,9 +429,10 @@ the event-store operation ledger.
   refresh and filter recent execution records, so cron, on-call bot, console,
   and API-triggered automation share one operator-visible audit trail.
 - Promotion decisions via `POST /api/v1/admin/promotion/decisions`. The backend
-  recomputes the gate, stores the decision and gate snapshot as
-  `release.promotion.decision`, and rejects non-override approval while the gate
-  is blocked.
+  recomputes the gate with deep dependency checks and ops worker readiness,
+  stores the decision and gate snapshot as `release.promotion.decision`, and
+  rejects both shallow/non-ops decision snapshots and non-override approval
+  while the gate is blocked.
 - Audit export via `GET /api/v1/admin/audit/export`. The BFF streams NDJSON
   summary rows from events, tool audit records, event-store operation ledger
   rows, and operations automation execution ledger rows; raw messages,

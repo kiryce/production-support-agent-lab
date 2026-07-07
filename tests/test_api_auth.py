@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from fastapi import HTTPException
 
+from support_agent_lab.audit.export_batch import AuditExportBatchOptions, run_audit_export_batch
 from support_agent_lab.api.auth import get_request_actor, _get_production_actor
 from support_agent_lab.api.main import app, get_container
 from support_agent_lab.bootstrap import create_container
@@ -122,6 +123,36 @@ def _signed_request_headers(
     if body:
         headers["Content-Type"] = "application/json"
     return headers
+
+
+def _seed_go_live_ops_evidence(event_store, *, tenant_id: str, output_dir: Path) -> None:
+    now = utc_now()
+    event_store.record_monitor_review_worker_heartbeat(
+        tenant_id=tenant_id,
+        worker_id="monitor-review-worker-test",
+        status="idle",
+        cycle_status="success",
+        last_cycle_completed_at=now,
+        reviewed_count=1,
+        now=now,
+    )
+    event_store.append(
+        tenant_id=tenant_id,
+        conversation_id="conv_go_live_evidence",
+        user_id="user_demo",
+        run_id="run_go_live_evidence",
+        event_type="readiness.probe",
+        payload={"status": "ok"},
+    )
+    run_audit_export_batch(
+        event_store=event_store,
+        tenant_id=tenant_id,
+        output_dir=output_dir,
+        actor_user_id="audit_export_worker_test",
+        owner_id="audit_export_worker_test",
+        options=AuditExportBatchOptions(limit=10),
+        now=now,
+    )
 
 
 def _reset_rate_limit_state() -> None:
@@ -4895,6 +4926,11 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
         created_at=completed_at,
     )
     event_store.append_eval_gate_record(eval_record, tenant_id=app_container.settings.app_tenant_id)
+    _seed_go_live_ops_evidence(
+        event_store,
+        tenant_id=app_container.settings.app_tenant_id,
+        output_dir=tmp_path / "audit-exports",
+    )
     app.dependency_overrides[get_container] = lambda: app_container
     try:
         client = TestClient(app)
@@ -4906,6 +4942,7 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
                 "decision": "approved",
                 "note": "Staging gate passed and no blocked preflight checks.",
                 "deep": True,
+                "ops": True,
                 "min_tool_calls": 0,
                 "min_feedback_count": 0,
             },
@@ -4930,6 +4967,8 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
     assert body["decision"] == "approved"
     assert body["gate_status"] == "passed"
     assert body["actor_user_id"] == "user_demo"
+    assert body["gate"]["readiness"]["deep"] is True
+    assert body["gate"]["readiness"]["ops"] is True
     assert body["gate"]["latest_eval_gate"]["id"] == eval_record.id
     assert {check["name"]: check["status"] for check in body["gate"]["checks"]} == {
         "readiness": "passed",
@@ -4941,7 +4980,16 @@ def test_admin_can_record_promotion_decision_with_gate_snapshot(tmp_path, monkey
     assert listed.status_code == 200
     assert listed.json()[0]["id"] == body["id"]
     assert raw_events.status_code == 200
-    assert raw_events.json()[0]["payload"]["id"] == body["id"]
+    event_payload = raw_events.json()[0]["payload"]
+    assert event_payload["id"] == body["id"]
+    assert event_payload["gate"]["readiness"]["deep"] is True
+    assert event_payload["gate"]["readiness"]["ops"] is True
+    event_readiness_checks = {
+        check["name"]: check["status"] for check in event_payload["gate"]["readiness"]["checks"]
+    }
+    assert {"alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"}.issubset(
+        event_readiness_checks
+    )
 
 
 def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_path, monkeypatch):
@@ -4975,6 +5023,11 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
                 "min_feedback_count": 0,
             },
         )
+        override_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "release.promotion.decision", "limit": 5},
+        )
     finally:
         app.dependency_overrides.clear()
         get_settings.cache_clear()
@@ -4986,6 +5039,143 @@ def test_admin_promotion_decision_requires_override_for_blocked_approval(tmp_pat
     assert body["gate_status"] == "blocked"
     assert body["override_blocked"] is True
     assert body["override_reason"] == "Rollback approval while staging eval infrastructure is down."
+    assert body["gate"]["readiness"]["deep"] is True
+    assert body["gate"]["readiness"]["ops"] is True
+    readiness_check_names = {check["name"] for check in body["gate"]["readiness"]["checks"]}
+    assert {"alert_dispatcher_worker", "monitor_review_worker", "audit_export_batch"}.issubset(
+        readiness_check_names
+    )
+    assert override_events.status_code == 200
+    override_payload = override_events.json()[0]["payload"]
+    assert override_payload["id"] == body["id"]
+    assert override_payload["gate_status"] == "blocked"
+    assert override_payload["gate"]["readiness"]["deep"] is True
+    assert override_payload["gate"]["readiness"]["ops"] is True
+
+
+def test_admin_promotion_decision_defaults_to_ops_readiness_for_approval(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    event_store.append_eval_gate_record(
+        EvalGateRecord(
+            tenant_id=app_container.settings.app_tenant_id,
+            gate_name="staging",
+            runner="aggregate",
+            suite_id="staging_release_gate",
+            suite_path="examples/evals/*",
+            environment=app_container.settings.app_env,
+            actor_user_id="user_demo",
+            trigger="console",
+            status="passed",
+            total=10,
+            passed=10,
+            score=1,
+            completed_at=completed_at,
+            created_at=completed_at,
+        ),
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05",
+                "decision": "approved",
+                "note": "Trying to approve without ops readiness evidence.",
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert response.status_code == 409
+    assert "Cannot approve while promotion gate is blocked" in response.json()["detail"]
+
+
+def test_admin_promotion_decision_rejects_shallow_or_non_ops_snapshots(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_DATABASE_URL", f"sqlite:///{tmp_path / 'events.db'}")
+    get_settings.cache_clear()
+    app_container = create_container()
+    event_store = app_container.event_store
+    assert event_store is not None
+    completed_at = utc_now()
+    event_store.append_eval_gate_record(
+        EvalGateRecord(
+            tenant_id=app_container.settings.app_tenant_id,
+            gate_name="staging",
+            runner="aggregate",
+            suite_id="staging_release_gate",
+            suite_path="examples/evals/*",
+            environment=app_container.settings.app_env,
+            actor_user_id="user_demo",
+            trigger="console",
+            status="passed",
+            total=10,
+            passed=10,
+            score=1,
+            completed_at=completed_at,
+            created_at=completed_at,
+        ),
+        tenant_id=app_container.settings.app_tenant_id,
+    )
+    _seed_go_live_ops_evidence(
+        event_store,
+        tenant_id=app_container.settings.app_tenant_id,
+        output_dir=tmp_path / "audit-exports",
+    )
+    app.dependency_overrides[get_container] = lambda: app_container
+    try:
+        client = TestClient(app)
+        deep_false = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05-shallow",
+                "decision": "approved",
+                "note": "Trying to approve with shallow readiness evidence.",
+                "deep": False,
+                "ops": True,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        ops_false = client.post(
+            "/api/v1/admin/promotion/decisions",
+            headers={"X-Demo-Role": "admin"},
+            json={
+                "target_version": "agent-2026.07.05-no-ops",
+                "decision": "approved",
+                "note": "Trying to approve without ops readiness evidence.",
+                "deep": True,
+                "ops": False,
+                "min_tool_calls": 0,
+                "min_feedback_count": 0,
+            },
+        )
+        raw_events = client.get(
+            "/api/v1/admin/events",
+            headers={"X-Demo-Role": "admin"},
+            params={"event_type": "release.promotion.decision", "limit": 5},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        get_settings.cache_clear()
+
+    assert deep_false.status_code == 422
+    assert "deep readiness" in deep_false.json()["detail"]
+    assert ops_false.status_code == 422
+    assert "ops readiness" in ops_false.json()["detail"]
+    assert raw_events.status_code == 200
+    assert raw_events.json() == []
 
 
 def test_production_promotion_gate_requires_all_read_scopes(tmp_path, monkeypatch):
