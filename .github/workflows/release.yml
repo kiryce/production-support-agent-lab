@@ -49,6 +49,9 @@ jobs:
           STAGING_SMOKE_USER_ID: ${{ secrets.STAGING_SMOKE_USER_ID }}
           STAGING_SMOKE_ADMIN_ID: ${{ secrets.STAGING_SMOKE_ADMIN_ID }}
           STAGING_SMOKE_MESSAGE: ${{ secrets.STAGING_SMOKE_MESSAGE }}
+          FRONTEND_SMOKE_BASE_URL: ${{ secrets.STAGING_CONSOLE_BASE_URL }}
+          FRONTEND_CONSOLE_USERNAME: ${{ secrets.STAGING_CONSOLE_USERNAME }}
+          FRONTEND_CONSOLE_PASSWORD: ${{ secrets.STAGING_CONSOLE_PASSWORD }}
           APP_ENV: production
           APP_REQUIRE_PRODUCTION: "true"
           APP_TENANT_ID: ${{ secrets.STAGING_APP_TENANT_ID }}
@@ -72,10 +75,13 @@ jobs:
             APP_KNOWLEDGE_API_BASE_URL \
             APP_KNOWLEDGE_API_KEY \
             APP_INTERNAL_API_KEY \
-            APP_ACTOR_SIGNATURE_SECRET
+            APP_ACTOR_SIGNATURE_SECRET \
+            FRONTEND_SMOKE_BASE_URL \
+            FRONTEND_CONSOLE_USERNAME \
+            FRONTEND_CONSOLE_PASSWORD
           do
             if [ -z "${!name}" ]; then
-              echo "::error::${name} is required for staging ops smoke"
+              echo "::error::${name} is required for staging smoke"
               missing=1
             fi
           done
@@ -88,6 +94,7 @@ jobs:
             --production-config \
             --prod-smoke \
             --prod-smoke-ops \
+            --frontend-smoke \
             --base-url "$STAGING_AGENT_BASE_URL" \
             --smoke-user-id "${STAGING_SMOKE_USER_ID:-user_prod}" \
             --smoke-admin-id "${STAGING_SMOKE_ADMIN_ID:-admin_prod}" \

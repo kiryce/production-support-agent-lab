@@ -271,12 +271,17 @@ python scripts/run_release_check.py \
   --production-config \
   --prod-smoke \
   --prod-smoke-ops \
+  --frontend-smoke \
   --base-url https://your-staging-agent.example.com
 ```
 
 `--prod-smoke-ops` 会要求 deployed API 的 `/api/v1/ready?deep=true&ops=true`
 通过，确认 alert dispatcher、monitor review worker 和 audit export batch
 这些异步生产环也在运行，而不只是 HTTP API 能启动。
+`--frontend-smoke` 会读取 `FRONTEND_SMOKE_BASE_URL`,
+`FRONTEND_CONSOLE_USERNAME` 和 `FRONTEND_CONSOLE_PASSWORD`，确认真实
+Next.js console 未登录时返回 Basic Auth 401，登录后能通过 BFF 调用
+`/api/console/readiness?deep=true&ops=true`。
 
 ## 核心架构
 

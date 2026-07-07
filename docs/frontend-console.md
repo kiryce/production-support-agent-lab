@@ -181,6 +181,14 @@ uses after the browser has been authenticated. Production mode rejects missing
 actor values, placeholder secrets, `APP_TENANT_ID=demo_tenant`, short internal
 API keys, and short actor signature secrets before it calls the Agent API.
 
+Before promoting a deployment that includes the console, run
+`python scripts/run_release_check.py --frontend-smoke` with
+`FRONTEND_SMOKE_BASE_URL`, `FRONTEND_CONSOLE_USERNAME`, and
+`FRONTEND_CONSOLE_PASSWORD` set for staging. The smoke verifies the deployed
+console rejects unauthenticated BFF readiness, then confirms the authenticated
+console can call `/api/console/readiness?deep=true&ops=true` through the real
+BFF signing path.
+
 With Docker Compose:
 
 ```bash

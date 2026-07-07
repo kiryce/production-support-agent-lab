@@ -935,6 +935,7 @@ python scripts/run_release_check.py \
   --production-config \
   --prod-smoke \
   --prod-smoke-ops \
+  --frontend-smoke \
   --base-url https://your-staging-agent.example.com \
   --smoke-user-id user_prod \
   --smoke-admin-id admin_prod \
@@ -948,6 +949,8 @@ and same-origin console write protection. `--prod-smoke` is intentionally
 explicit because it calls a deployed service and can reach your real OpenAI,
 business, and knowledge integrations through `/api/v1/ready?deep=true` and
 `/api/v1/chat/messages`.
+`--production-config` is fail-closed: it requires `APP_ENV=production` and
+`APP_REQUIRE_PRODUCTION=true` before it accepts any other production settings.
 
 Add `--prod-smoke-ops` when staging is meant to represent a deployable
 environment. The smoke first calls `/api/v1/ready?deep=true&ops=true`, requires
@@ -957,16 +960,27 @@ checks. Use `--smoke-only` in CI after the deterministic release gate has
 already run, for example in a protected GitHub `staging` environment before
 creating a tag release.
 
+Add `--frontend-smoke` when the deployed Next.js console is part of the release.
+It uses `FRONTEND_SMOKE_BASE_URL`, `FRONTEND_CONSOLE_USERNAME`, and
+`FRONTEND_CONSOLE_PASSWORD` unless the matching CLI flags are provided. The
+smoke first verifies unauthenticated `/api/console/readiness?deep=true&ops=true`
+returns a Basic Auth `401`, then loads `/`, then calls the go-live readiness BFF
+with console credentials and requires the same deep+ops checks to pass. This
+catches broken frontend production env vars, Basic Auth middleware, BFF signing,
+and frontend-to-backend networking before a GitHub Release is created.
+
 The bundled tag release workflow runs that protected staging smoke before
 `gh release create`. Configure these environment or repository secrets so the
 runner can both sign requests and validate the expected production settings:
 `STAGING_AGENT_BASE_URL`, `STAGING_APP_TENANT_ID`,
 `STAGING_APP_INTERNAL_API_KEY`, `STAGING_APP_ACTOR_SIGNATURE_SECRET`,
 `STAGING_OPENAI_API_KEY`, `STAGING_BUSINESS_API_BASE_URL`,
-`STAGING_BUSINESS_API_KEY`, `STAGING_KNOWLEDGE_API_BASE_URL`, and
-`STAGING_KNOWLEDGE_API_KEY`. Optional secrets `STAGING_SMOKE_USER_ID`,
-`STAGING_SMOKE_ADMIN_ID`, and `STAGING_SMOKE_MESSAGE` let you choose the
-staging customer/admin actors and safe smoke prompt.
+`STAGING_BUSINESS_API_KEY`, `STAGING_KNOWLEDGE_API_BASE_URL`,
+`STAGING_KNOWLEDGE_API_KEY`, `STAGING_CONSOLE_BASE_URL`,
+`STAGING_CONSOLE_USERNAME`, and `STAGING_CONSOLE_PASSWORD`. Optional secrets
+`STAGING_SMOKE_USER_ID`, `STAGING_SMOKE_ADMIN_ID`, and
+`STAGING_SMOKE_MESSAGE` let you choose the staging customer/admin actors and
+safe smoke prompt.
 
 Use `/api/v1/ready?deep=true&ops=true` as the stricter deploy or on-call
 preflight after the API, alert dispatcher, monitor review worker, and audit
@@ -977,7 +991,7 @@ sanitized audit export batch is missing, stale, failed, partial, or cannot
 advance its cursor. The normal `/ready` endpoint keeps `ops=false` by default so
 basic container liveness does not require every background profile to be started.
 
-- GitHub Actions passes for deployment policy checks, unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, frontend lint/typecheck/test/build, and Docker image build.
+- GitHub Actions passes for deployment policy checks, unit tests, golden/security/tool/memory/routing evals, monitor eval, retrieval challenge, production request signer smoke test, frontend lint/typecheck/test/build, Docker image build, and staging frontend console smoke before tag release.
 - `.env` uses `APP_ENV=production` and `APP_REQUIRE_PRODUCTION=true`.
 - Business URLs are real internal services, not local fixtures or placeholder domains. Knowledge is either a real HTTP service or an ingested SQLite index.
 - Removing `OPENAI_API_KEY`, `APP_BUSINESS_API_BASE_URL`, or the configured knowledge backend requirement makes startup/readiness fail.

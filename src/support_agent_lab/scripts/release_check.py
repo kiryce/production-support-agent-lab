@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import subprocess
@@ -197,6 +198,10 @@ def validate_deployment_policy(root: Path) -> None:
 def validate_production_config(root: Path) -> None:
     env_file = root / ".env"
     settings = Settings(_env_file=env_file if env_file.exists() else None)
+    if not settings.is_production:
+        raise RuntimeError("production config validation requires APP_ENV=production")
+    if not settings.app_require_production:
+        raise RuntimeError("production config validation requires APP_REQUIRE_PRODUCTION=true")
     settings.validate_production_ready()
 
 
@@ -362,6 +367,54 @@ def run_production_smoke(
     print(f"production smoke passed for trace {trace_id}")
 
 
+def run_frontend_console_smoke(
+    *,
+    frontend_base_url: str,
+    username: str,
+    password: str,
+    timeout_seconds: float,
+) -> None:
+    frontend_base_url = frontend_base_url.rstrip("/")
+    auth_headers = {"Authorization": _basic_auth_header(username, password)}
+
+    with httpx.Client(base_url=frontend_base_url, timeout=timeout_seconds) as client:
+        unauthenticated = client.get("/api/console/readiness?deep=true&ops=true")
+        if unauthenticated.status_code != 401:
+            raise RuntimeError(
+                "frontend console auth smoke failed: "
+                f"expected unauthenticated readiness to return 401, got {unauthenticated.status_code} "
+                f"{unauthenticated.text[:300]}"
+            )
+        auth_challenge = unauthenticated.headers.get("www-authenticate", "").lower()
+        if "basic" not in auth_challenge:
+            raise RuntimeError("frontend console auth smoke failed: missing Basic auth challenge")
+
+        root = client.get("/", headers=auth_headers)
+        if root.status_code != 200:
+            raise RuntimeError(
+                f"frontend console root failed: expected HTTP 200, got {root.status_code} {root.text[:300]}"
+            )
+        if "Production Support" not in root.text and "PSA Lab Console" not in root.text:
+            raise RuntimeError("frontend console root did not look like the operations console")
+
+        readiness = client.get("/api/console/readiness?deep=true&ops=true", headers=auth_headers)
+        _require_json_status(readiness, 200, "frontend console go-live readiness")
+        readiness_body = readiness.json()
+        if readiness_body.get("status") != "ok":
+            raise RuntimeError(
+                "frontend console go-live readiness returned "
+                f"{readiness_body.get('status')}: {readiness_body}"
+            )
+        _require_ops_readiness_confirmed(readiness_body)
+
+    print("frontend console smoke passed")
+
+
+def _basic_auth_header(username: str, password: str) -> str:
+    encoded = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return f"Basic {encoded}"
+
+
 def _require_ops_readiness_confirmed(ready_body: dict) -> None:
     if ready_body.get("ops") is not True:
         raise RuntimeError("ops readiness did not confirm ops=true; the deployed service may be an older build")
@@ -427,9 +480,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--smoke-only",
         action="store_true",
-        help="Skip deterministic local gates and run only deployment policy, optional production config, and --prod-smoke.",
+        help="Skip deterministic local gates and run only deployment policy, optional production config, and smoke checks.",
     )
     parser.add_argument("--base-url", help="Base URL for --prod-smoke, for example https://agent.example.com.")
+    parser.add_argument(
+        "--frontend-smoke",
+        action="store_true",
+        help="Call a deployed frontend console, require Basic Auth, and verify the go-live readiness BFF.",
+    )
+    parser.add_argument(
+        "--frontend-base-url",
+        default=os.environ.get("FRONTEND_SMOKE_BASE_URL"),
+        help="Base URL for --frontend-smoke. Defaults to FRONTEND_SMOKE_BASE_URL.",
+    )
+    parser.add_argument(
+        "--frontend-console-username",
+        default=os.environ.get("FRONTEND_CONSOLE_USERNAME"),
+        help="Basic Auth username for --frontend-smoke. Defaults to FRONTEND_CONSOLE_USERNAME.",
+    )
+    parser.add_argument(
+        "--frontend-console-password",
+        default=os.environ.get("FRONTEND_CONSOLE_PASSWORD"),
+        help="Basic Auth password for --frontend-smoke. Defaults to FRONTEND_CONSOLE_PASSWORD.",
+    )
     parser.add_argument("--smoke-user-id", default="user_prod", help="Existing production/staging user id.")
     parser.add_argument("--smoke-admin-id", default="admin_prod", help="Existing production/staging admin actor id.")
     parser.add_argument(
@@ -457,8 +530,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("--prod-smoke requires --base-url")
         if args.prod_smoke_ops and not args.prod_smoke:
             raise RuntimeError("--prod-smoke-ops requires --prod-smoke")
-        if args.smoke_only and not args.prod_smoke:
-            raise RuntimeError("--smoke-only requires --prod-smoke")
+        if args.smoke_only and not (args.prod_smoke or args.frontend_smoke):
+            raise RuntimeError("--smoke-only requires --prod-smoke or --frontend-smoke")
+        if args.frontend_smoke and not args.frontend_base_url:
+            raise RuntimeError("--frontend-smoke requires --frontend-base-url or FRONTEND_SMOKE_BASE_URL")
+        if args.frontend_smoke and not args.frontend_console_username:
+            raise RuntimeError("--frontend-smoke requires --frontend-console-username or FRONTEND_CONSOLE_USERNAME")
+        if args.frontend_smoke and not args.frontend_console_password:
+            raise RuntimeError("--frontend-smoke requires --frontend-console-password or FRONTEND_CONSOLE_PASSWORD")
         if args.production_config:
             print("==> production config validation")
             validate_production_config(root)
@@ -487,6 +566,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except RuntimeError as exc:
             print(f"\nproduction smoke failed: {exc}", file=sys.stderr)
+            return 1
+
+    if args.frontend_smoke:
+        try:
+            print("\n==> frontend console smoke")
+            run_frontend_console_smoke(
+                frontend_base_url=args.frontend_base_url,
+                username=args.frontend_console_username,
+                password=args.frontend_console_password,
+                timeout_seconds=args.smoke_timeout_seconds,
+            )
+        except RuntimeError as exc:
+            print(f"\nfrontend console smoke failed: {exc}", file=sys.stderr)
             return 1
 
     print("\nrelease check passed")

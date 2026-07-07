@@ -75,7 +75,7 @@ def test_prod_smoke_ops_requires_prod_smoke():
     assert exit_code == 2
 
 
-def test_smoke_only_requires_prod_smoke():
+def test_smoke_only_requires_at_least_one_smoke():
     exit_code = release_check.main(["--cwd", ".", "--smoke-only"])
 
     assert exit_code == 2
@@ -110,6 +110,38 @@ def test_smoke_only_skips_local_steps_and_can_require_ops_readiness(monkeypatch)
     assert exit_code == 0
     assert captured["base_url"] == "https://staging.agent.test"
     assert captured["ops_readiness"] is True
+
+
+def test_production_config_requires_explicit_production_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("APP_REQUIRE_PRODUCTION", raising=False)
+
+    with pytest.raises(RuntimeError, match="APP_ENV=production"):
+        release_check.validate_production_config(tmp_path)
+
+
+def test_production_config_requires_fail_closed_flag(monkeypatch, tmp_path):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("APP_REQUIRE_PRODUCTION", raising=False)
+
+    with pytest.raises(RuntimeError, match="APP_REQUIRE_PRODUCTION=true"):
+        release_check.validate_production_config(tmp_path)
+
+
+def test_frontend_smoke_requires_console_base_url():
+    exit_code = release_check.main(
+        [
+            "--cwd",
+            ".",
+            "--frontend-smoke",
+            "--frontend-console-username",
+            "ops",
+            "--frontend-console-password",
+            "console-password-with-length",
+        ]
+    )
+
+    assert exit_code == 2
 
 
 def test_production_smoke_can_require_ops_readiness(monkeypatch):
@@ -177,6 +209,86 @@ def test_production_smoke_can_require_ops_readiness(monkeypatch):
     assert calls[0][0:2] == ("GET", "/api/v1/ready?deep=true&ops=true")
 
 
+def test_frontend_console_smoke_requires_basic_auth_and_bff_ops_readiness(monkeypatch):
+    calls = []
+    expected_auth = release_check._basic_auth_header("ops", "console-password-with-length")
+
+    class FakeClient:
+        def __init__(self, *, base_url, timeout):
+            assert base_url == "https://staging.console.test"
+            assert timeout == 3.0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, path, headers=None):
+            calls.append(("GET", path, headers))
+            headers = headers or {}
+            if path == "/api/console/readiness?deep=true&ops=true" and not headers:
+                return httpx.Response(401, headers={"WWW-Authenticate": "Basic realm=console"})
+            if path == "/":
+                assert headers["Authorization"] == expected_auth
+                return httpx.Response(200, text="<html><body>Production Support</body></html>")
+            if path == "/api/console/readiness?deep=true&ops=true":
+                assert headers["Authorization"] == expected_auth
+                return httpx.Response(
+                    200,
+                    json={
+                        "status": "ok",
+                        "deep": True,
+                        "ops": True,
+                        "checks": [
+                            {"name": "config", "status": "ok"},
+                            {"name": "alert_dispatcher_worker", "status": "skipped"},
+                            {"name": "monitor_review_worker", "status": "ok"},
+                            {"name": "audit_export_batch", "status": "ok"},
+                        ],
+                    },
+                )
+            raise AssertionError(f"unexpected GET {path}")
+
+    monkeypatch.setattr(release_check.httpx, "Client", FakeClient)
+
+    release_check.run_frontend_console_smoke(
+        frontend_base_url="https://staging.console.test/",
+        username="ops",
+        password="console-password-with-length",
+        timeout_seconds=3.0,
+    )
+
+    assert calls[0] == ("GET", "/api/console/readiness?deep=true&ops=true", None)
+    assert calls[1][0:2] == ("GET", "/")
+    assert calls[2][0:2] == ("GET", "/api/console/readiness?deep=true&ops=true")
+
+
+def test_frontend_console_smoke_rejects_console_without_auth(monkeypatch):
+    class FakeClient:
+        def __init__(self, *, base_url, timeout):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, path, headers=None):
+            return httpx.Response(200, text="open console")
+
+    monkeypatch.setattr(release_check.httpx, "Client", FakeClient)
+
+    with pytest.raises(RuntimeError, match="expected unauthenticated readiness to return 401"):
+        release_check.run_frontend_console_smoke(
+            frontend_base_url="https://staging.console.test",
+            username="ops",
+            password="console-password-with-length",
+            timeout_seconds=3.0,
+        )
+
+
 def test_ops_readiness_confirmation_rejects_older_response_shape():
     with pytest.raises(RuntimeError, match="ops=true"):
         release_check._require_ops_readiness_confirmed(
@@ -224,7 +336,12 @@ def test_tag_release_runs_ops_smoke_before_creating_github_release():
     assert "--smoke-only" in smoke_step["run"]
     assert "--prod-smoke" in smoke_step["run"]
     assert "--prod-smoke-ops" in smoke_step["run"]
+    assert "--frontend-smoke" in smoke_step["run"]
     assert "STAGING_AGENT_BASE_URL" in smoke_step["env"]
+    assert "FRONTEND_SMOKE_BASE_URL" in smoke_step["env"]
+    assert "FRONTEND_CONSOLE_USERNAME" in smoke_step["env"]
+    assert "FRONTEND_CONSOLE_PASSWORD" in smoke_step["env"]
+    assert "APP_ACTOR_SIGNATURE_SECRET \\\n  FRONTEND_SMOKE_BASE_URL \\" in smoke_step["run"]
 
 
 def test_deployment_policy_rejects_public_compose_ports(tmp_path):
